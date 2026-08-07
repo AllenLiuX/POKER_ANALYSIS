@@ -10,8 +10,8 @@
     "note": "近似防守范围：BB 面对 CO 2.5bb 开池。CO 开池比 BTN 紧，BB 防守略收；3bet 价值线更靠前。非精确解，仅供学习。"
   },
   "actions": {
-    "raise": "JJ+, AQs+, AKo, A5s, A4s, 76s, 65s, 54s",
-    "call": "22, 33, 44, 55, 66, 77, 88, 99, TT, ATs, AJs, A6s, A7s, A8s, A9s, A2s, A3s, KTs, KJs, KQs, K8s, K9s, QTs, QJs, Q9s, JTs, J9s, T9s, 98s, 87s, 86s, ATo, AJo, AQo, KJo, KQo, QJo, JTo"
+    "raise": "JJ+, AQs, AKs, AKo, A5s, A4s, 76s, 65s, 54s",
+    "call": "22, 33, 44, 55, 66, 77, 88, 99, TT, ATs, AJs, A2s, A6s, A7s, A8s, A9s, K5s+, Q7s+, J7s+, T7s+, 96s+, 85s+, 74s, 75s, 64s, 53s, A2o, A5o, A7o, A8o, A9o, ATo, AJo, AQo, KTo, KJo, KQo, QTo, QJo, JTo, T9o, 98o"
   },
   "mixed": {
     "A5s": { "raise": 0.5 },

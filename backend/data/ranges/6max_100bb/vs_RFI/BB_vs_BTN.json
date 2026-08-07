@@ -10,12 +10,13 @@
     "note": "近似防守范围：BB 面对 BTN 2.5bb 开池。BTN 开池极宽，BB 有折扣+闭合行动，防守很宽；3bet 偏极化。非精确解，仅供学习。"
   },
   "actions": {
-    "raise": "TT+, AQs+, AKo, A5s, A4s, K9s, Q9s, J9s, 76s, 65s, 54s",
-    "call": "22, 33, 44, 55, 66, 77, 88, 99, ATs, AJs, A2s, A3s, A6s, A7s, A8s, A9s, KTs, KJs, KQs, K5s, K6s, K7s, K8s, QTs, QJs, Q8s, JTs, J8s, T8s, T9s, 97s, 98s, 87s, 86s, 75s, 64s, 53s, 43s, ATo, AJo, AQo, A9o, KTo, KJo, KQo, QTo, QJo, JTo, T9o"
+    "raise": "TT+, AQs, AKs, AKo, A5s, A4s, A3s, 76s, 65s, 54s",
+    "call": "22, 33, 44, 55, 66, 77, 88, 99, ATs, AJs, A2s, A6s, A7s, A8s, A9s, K2s+, Q4s+, J6s+, T6s+, 95s+, 85s+, 74s, 75s, 63s, 64s, 53s, 43s, A2o, A3o, A4o, A5o, A6o, A7o, A8o, A9o, ATo, AJo, AQo, KTo, KJo, KQo, QTo, QJo, JTo, T9o, 98o, 87o"
   },
   "mixed": {
     "A5s": { "raise": 0.6 },
     "54s": { "raise": 0.5 },
-    "T9o": { "call": 0.5 }
+    "T9o": { "call": 0.5 },
+    "98o": { "call": 0.5 }
   }
 }
