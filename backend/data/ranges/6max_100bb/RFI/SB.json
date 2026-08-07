@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "format": "6max_100bb",
+    "position": "SB",
+    "spot": "RFI",
+    "source": "open-source approximation",
+    "note": "近似 GTO 小盲开池(raise-first-in)范围，非精确解；实战 SB 常用 limp+raise 混合策略，此处仅取 raise 部分。约 40% VPIP。"
+  },
+  "actions": {
+    "raise": "22+, A2s+, K7s+, Q8s+, J8s+, T8s+, 97s+, 86s+, 76s, 65s, 54s, A7o+, A5o, K9o+, Q9o+, J9o+, T9o"
+  },
+  "mixed": {
+    "K6s": { "raise": 0.5 },
+    "Q7s": { "raise": 0.5 },
+    "A6o": { "raise": 0.5 },
+    "A4o": { "raise": 0.5 },
+    "K8o": { "raise": 0.5 }
+  }
+}

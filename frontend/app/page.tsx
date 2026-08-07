@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   API_BASE,
@@ -10,12 +11,12 @@ import {
 } from "@/lib/api";
 
 const MODULES = [
-  { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "Phase 2", ready: false },
-  { title: "翻后训练器", desc: "启发式 → 预计算真 GTO", phase: "Phase 5", ready: false },
-  { title: "范围表", desc: "13×13 交互网格", phase: "Phase 3", ready: false },
-  { title: "胜率 / 赔率工具", desc: "Monte Carlo equity", phase: "Phase 0", ready: true },
-  { title: "剥削训练", desc: "对手画像 + node-lock", phase: "Phase 9", ready: false },
-  { title: "截图导入", desc: "WePoker 牌谱 → 逐人剥削", phase: "Phase 6", ready: false },
+  { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "Phase 2", ready: false, href: undefined as string | undefined },
+  { title: "翻后训练器", desc: "启发式 → 预计算真 GTO", phase: "Phase 5", ready: false, href: undefined },
+  { title: "范围表", desc: "13×13 交互网格", phase: "可用", ready: true, href: "/ranges" },
+  { title: "胜率 / 赔率工具", desc: "Monte Carlo equity", phase: "Phase 0", ready: true, href: undefined },
+  { title: "剥削训练", desc: "对手画像 + node-lock", phase: "Phase 9", ready: false, href: undefined },
+  { title: "截图导入", desc: "WePoker 牌谱 → 逐人剥削", phase: "Phase 6", ready: false, href: undefined },
 ];
 
 export default function Home() {
@@ -42,26 +43,37 @@ export default function Home() {
       </header>
 
       <section className="mb-12 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {MODULES.map((m) => (
-          <div
-            key={m.title}
-            className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold">{m.title}</h3>
-              <span
-                className={`rounded-full px-2 py-0.5 text-xs ${
-                  m.ready
-                    ? "bg-emerald-900/60 text-emerald-300"
-                    : "bg-neutral-800 text-neutral-400"
-                }`}
-              >
-                {m.ready ? "可用" : m.phase}
-              </span>
+        {MODULES.map((m) => {
+          const inner = (
+            <>
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold">{m.title}</h3>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs ${
+                    m.ready
+                      ? "bg-emerald-900/60 text-emerald-300"
+                      : "bg-neutral-800 text-neutral-400"
+                  }`}
+                >
+                  {m.ready ? "可用" : m.phase}
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-neutral-400">{m.desc}</p>
+            </>
+          );
+          const cls =
+            "block rounded-xl border border-neutral-800 bg-neutral-900/60 p-4 transition" +
+            (m.href ? " hover:border-emerald-700 hover:bg-neutral-900" : "");
+          return m.href ? (
+            <Link key={m.title} href={m.href} className={cls}>
+              {inner}
+            </Link>
+          ) : (
+            <div key={m.title} className={cls}>
+              {inner}
             </div>
-            <p className="mt-1 text-sm text-neutral-400">{m.desc}</p>
-          </div>
-        ))}
+          );
+        })}
       </section>
 
       <EquityDemo />

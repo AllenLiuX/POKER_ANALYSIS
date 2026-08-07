@@ -23,6 +23,45 @@ export async function getHealth(): Promise<HealthResponse> {
   return res.json();
 }
 
+export interface SpotIndexEntry {
+  format: string;
+  spot: string;
+  position: string;
+}
+
+export interface RangeCell {
+  row: number;
+  col: number;
+  hand_class: string;
+  freqs: Record<string, number>;
+}
+
+export interface RangeGrid {
+  meta: Record<string, unknown>;
+  actions: string[];
+  ranks: string[];
+  cells: RangeCell[];
+}
+
+export async function getRangeIndex(): Promise<SpotIndexEntry[]> {
+  const res = await fetch(`${API_BASE}/api/ranges`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`ranges ${res.status}`);
+  return (await res.json()).spots;
+}
+
+export async function getRangeGrid(
+  fmt: string,
+  spot: string,
+  position: string,
+): Promise<RangeGrid> {
+  const res = await fetch(
+    `${API_BASE}/api/ranges/${fmt}/${spot}/${position}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error(`range grid ${res.status}`);
+  return res.json();
+}
+
 export async function postEquity(body: {
   hero: string[];
   villain_range: string;
