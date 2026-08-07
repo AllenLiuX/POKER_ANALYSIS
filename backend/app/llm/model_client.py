@@ -58,11 +58,14 @@ def _route_host(host: str, network: str) -> str:
 # ===========================================================================
 # 模型注册表 —— 声明顺序即默认优先级 (靠前的先用 / 先 fallback)
 # ===========================================================================
-# 密钥从环境变量读取（不硬编码）：
+# 密钥从环境变量读取（不硬编码, 且在 client 构建时才 resolve, 避免 import 早于 .env 载入）：
 #   MODEL_GATEWAY_KEY        —— 共享网关 AK（gpt-5.x / gemini）
 #   MODEL_GATEWAY_KEY_GPT4O  —— gpt-4o 专用 AK
-_SHARED_KEY = os.getenv("MODEL_GATEWAY_KEY", "")
-_GPT4O_KEY = os.getenv("MODEL_GATEWAY_KEY_GPT4O", "")
+# 注意: 每个模型记录里存的是 "api_key_env"(环境变量名), 真正的密钥在 _ensure_clients
+#       里用 os.getenv 现取, 这样 .env 只要在首次调用前载入即可。
+def _resolve_api_key(cfg: dict) -> str:
+    return os.getenv(cfg.get("api_key_env", ""), "")
+
 
 MODEL_REGISTRY: dict = {
     # ---- 文本首选: 最新 gpt-5.6 ----
@@ -70,7 +73,7 @@ MODEL_REGISTRY: dict = {
         "name": "gpt-5.6-sol",
         "host": "gpt-i18n.byteintl.net",
         "endpoint_path": "/gpt/openapi/online/v2/crawl",
-        "api_key": _SHARED_KEY,
+        "api_key_env": "MODEL_GATEWAY_KEY",
         "api_version": "2024-02-01",
         "max_tokens": 6000,
         "supports_temperature": False,  # 实测: 只接受默认 temperature=1
@@ -81,7 +84,7 @@ MODEL_REGISTRY: dict = {
         "name": "gpt-5.4-mini-2026-03-17",
         "host": "gpt-i18n.byteintl.net",
         "endpoint_path": "/gpt/openapi/online/v2/crawl",
-        "api_key": _SHARED_KEY,
+        "api_key_env": "MODEL_GATEWAY_KEY",
         "api_version": "2024-02-01",
         "max_tokens": 6000,
         "supports_temperature": True,
@@ -92,7 +95,7 @@ MODEL_REGISTRY: dict = {
         "name": "gpt-4o-2024-05-13",
         "host": "search-va.byteintl.net",
         "endpoint_path": "/gpt/openapi/online/v2/crawl",
-        "api_key": _GPT4O_KEY,
+        "api_key_env": "MODEL_GATEWAY_KEY_GPT4O",
         "api_version": "2023-07-01-preview",
         "max_tokens": 4000,
         "supports_temperature": True,
@@ -103,7 +106,7 @@ MODEL_REGISTRY: dict = {
         "name": "gemini-2.5-flash",
         "host": "aidp-i18ntt-sg.byteintl.net",
         "endpoint_path": "/api/modelhub/online/multimodal/crawl",
-        "api_key": _SHARED_KEY,
+        "api_key_env": "MODEL_GATEWAY_KEY",
         "api_version": "2024-03-01-preview",
         "max_tokens": 2000,
         "supports_temperature": True,
@@ -114,7 +117,7 @@ MODEL_REGISTRY: dict = {
         "name": "gemini-2.5-pro",
         "host": "aidp-i18ntt-sg.byteintl.net",
         "endpoint_path": "/api/modelhub/online/v2/crawl",
-        "api_key": _SHARED_KEY,
+        "api_key_env": "MODEL_GATEWAY_KEY",
         "api_version": "2024-03-01-preview",
         "max_tokens": 2000,
         "supports_temperature": True,
@@ -161,7 +164,7 @@ def _ensure_clients(network: str) -> dict:
         key: mod.AzureOpenAI(
             azure_endpoint=f"https://{_route_host(cfg['host'], network)}{cfg['endpoint_path']}",
             api_version=cfg["api_version"],
-            api_key=cfg["api_key"],
+            api_key=_resolve_api_key(cfg),
             timeout=_REQUEST_TIMEOUT,
             max_retries=0,
         )
