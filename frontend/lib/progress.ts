@@ -85,6 +85,44 @@ export function positionKey(a: Attempt): string {
   return a.opener ? `${a.heroPosition} vs ${a.opener}` : a.heroPosition;
 }
 
+export interface Target {
+  spot: string;
+  position: string;
+}
+
+/**
+ * 自适应选题：在可选 target 里按"弱项 + 练得少"加权随机挑一个。
+ * - 错误率高（且样本≥3）→ 权重高
+ * - 练得少（样本<8）→ 探索加成，避免一直重复同一个薄弱点
+ * 没有历史时退化为近似均匀随机。rnd 可注入以便测试。
+ */
+export function pickAdaptiveTarget(
+  attempts: Attempt[],
+  targets: Target[],
+  rnd: () => number = Math.random,
+): Target | null {
+  if (!targets.length) return null;
+  const buckets: Record<string, Bucket> = {};
+  for (const a of attempts) bump(buckets, `${a.spot}\u0000${a.position}`, a.correct);
+
+  const weighted = targets.map((t) => {
+    const b = buckets[`${t.spot}\u0000${t.position}`];
+    const total = b?.total ?? 0;
+    const acc = total ? b!.correct / total : 0;
+    const explore = total < 8 ? (8 - total) / 8 : 0; // 0..1
+    const errRate = total >= 3 ? 1 - acc : 0.4; // 样本足够才信任错误率
+    return { t, w: 0.2 + 1.5 * errRate + 1.0 * explore };
+  });
+
+  const totalW = weighted.reduce((s, x) => s + x.w, 0);
+  let r = rnd() * totalW;
+  for (const x of weighted) {
+    r -= x.w;
+    if (r <= 0) return x.t;
+  }
+  return weighted[weighted.length - 1].t;
+}
+
 export function summarize(attempts: Attempt[]): Summary {
   const byGrade: Record<Grade, number> = {
     optimal: 0,

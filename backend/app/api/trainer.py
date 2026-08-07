@@ -32,11 +32,17 @@ def get_trainer_next(
     format: Optional[str] = Query(None),
     spot: Optional[str] = Query(None),
     position: Optional[str] = Query(None),
+    difficulty: str = Query("standard", pattern="^(easy|standard|hard)$"),
     seed: Optional[int] = Query(None),
 ) -> dict:
-    """生成一道翻前决策题（随机或按条件）。"""
+    """生成一道翻前决策题（随机或按条件）。
+
+    difficulty 控制发牌加权：easy=自然随机，standard/hard=偏向临界手牌。
+    """
     try:
-        scenario = generate_scenario(fmt=format, spot=spot, position=position, seed=seed)
+        scenario = generate_scenario(
+            fmt=format, spot=spot, position=position, difficulty=difficulty, seed=seed
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"scenario": scenario}

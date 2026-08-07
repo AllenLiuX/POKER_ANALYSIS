@@ -17,6 +17,7 @@ import PlayingCard from "@/components/PlayingCard";
 import PokerTable from "@/components/PokerTable";
 import {
   loadAttempts,
+  pickAdaptiveTarget,
   recordAttempt,
   summarize,
   type Attempt,
@@ -28,6 +29,11 @@ const POSITION_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB"];
 const SPOT_TABS: { id: string; label: string }[] = [
   { id: "RFI", label: "开池 (RFI)" },
   { id: "vs_RFI", label: "防守 (面对开池)" },
+];
+const DIFFICULTY_TABS: { id: string; label: string; hint: string }[] = [
+  { id: "easy", label: "轻松", hint: "自然随机发牌" },
+  { id: "standard", label: "标准", hint: "偏向临界手牌" },
+  { id: "hard", label: "进阶", hint: "专攻混合/边界手牌" },
 ];
 
 function matchupLabel(pos: string): string {
@@ -47,6 +53,8 @@ export default function TrainerPage() {
   const [spots, setSpots] = useState<SpotIndexEntry[]>([]);
   const [spotFilter, setSpotFilter] = useState("RFI");
   const [posFilter, setPosFilter] = useState("随机");
+  const [difficulty, setDifficulty] = useState("standard");
+  const [adaptive, setAdaptive] = useState(false);
   const [scenario, setScenario] = useState<TrainerScenario | null>(null);
   const [answer, setAnswer] = useState<TrainerAnswer | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,17 +79,26 @@ export default function TrainerPage() {
     setAnswer(null);
     setCoach({ text: null, loading: false, error: null });
     try {
-      const scen = await getTrainerNext({
+      let target: { spot?: string; position?: string } = {
         spot: spotFilter,
         position: posFilter === "随机" ? undefined : posFilter,
-      });
+      };
+      if (adaptive && spots.length) {
+        // 智能模式：跨所有 spot 按弱项加权选题，忽略手动过滤
+        const t = pickAdaptiveTarget(
+          loadAttempts(),
+          spots.map((s) => ({ spot: s.spot, position: s.position })),
+        );
+        if (t) target = { spot: t.spot, position: t.position };
+      }
+      const scen = await getTrainerNext({ ...target, difficulty });
       setScenario(scen);
     } catch (e) {
       setErr(String(e instanceof Error ? e.message : e));
     } finally {
       setLoading(false);
     }
-  }, [spotFilter, posFilter]);
+  }, [spotFilter, posFilter, difficulty, adaptive, spots]);
 
   useEffect(() => {
     getTrainerSpots().then(setSpots).catch(() => {});
@@ -238,8 +255,43 @@ export default function TrainerPage() {
         </button>
       </div>
 
+      {/* 难度 + 智能模式 */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 rounded-lg bg-neutral-900 p-1">
+          {DIFFICULTY_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setDifficulty(t.id)}
+              title={t.hint}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                t.id === difficulty
+                  ? "bg-neutral-100 text-neutral-900"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setAdaptive((v) => !v)}
+          className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+            adaptive
+              ? "bg-violet-600 text-white"
+              : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+          }`}
+        >
+          {adaptive ? "🎯 智能训练：开" : "🎯 智能训练"}
+        </button>
+        <span className="text-xs text-neutral-600">
+          {DIFFICULTY_TABS.find((d) => d.id === difficulty)?.hint}
+        </span>
+      </div>
+
       {/* 训练类型 */}
-      <div className="mb-3 flex gap-2">
+      <div
+        className={`mb-3 flex gap-2 transition ${adaptive ? "pointer-events-none opacity-40" : ""}`}
+      >
         {SPOT_TABS.map((t) => (
           <button
             key={t.id}
@@ -256,21 +308,27 @@ export default function TrainerPage() {
       </div>
 
       {/* 位置 / 对局过滤 */}
-      <div className="mb-5 flex flex-wrap gap-2">
-        {choices.map((p) => (
-          <button
-            key={p}
-            onClick={() => setPosFilter(p)}
-            className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
-              p === posFilter
-                ? "bg-emerald-600 text-white"
-                : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-            }`}
-          >
-            {p === "随机" ? "随机" : matchupLabel(p)}
-          </button>
-        ))}
-      </div>
+      {adaptive ? (
+        <p className="mb-5 text-xs text-violet-400">
+          智能模式：按你的历史弱项与练习不足处自动挑选题目（已忽略上面的手动过滤）。
+        </p>
+      ) : (
+        <div className="mb-5 flex flex-wrap gap-2">
+          {choices.map((p) => (
+            <button
+              key={p}
+              onClick={() => setPosFilter(p)}
+              className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
+                p === posFilter
+                  ? "bg-emerald-600 text-white"
+                  : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+              }`}
+            >
+              {p === "随机" ? "随机" : matchupLabel(p)}
+            </button>
+          ))}
+        </div>
+      )}
 
       {err && (
         <p className="mb-4 rounded-lg bg-red-950/50 px-4 py-2 text-sm text-red-300">
@@ -289,8 +347,18 @@ export default function TrainerPage() {
                 <PlayingCard key={c} card={c} size="lg" />
               ))}
               <div className="text-left">
-                <div className="text-2xl font-bold text-neutral-100">
-                  {scenario.hero_class}
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl font-bold text-neutral-100">
+                    {scenario.hero_class}
+                  </span>
+                  {scenario.is_critical && (
+                    <span
+                      title="GTO 在这手牌上混合多个动作——正是最值得练的临界决策"
+                      className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/40"
+                    >
+                      临界牌
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-neutral-500">
                   {scenario.opener_position

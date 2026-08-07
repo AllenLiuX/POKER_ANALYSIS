@@ -13,8 +13,11 @@ import uuid
 from typing import Dict, List, Optional
 
 from app.poker.cards import full_deck
-from app.poker.preflop.handclass import hand_class
-from app.poker.preflop.ranges import list_spots, load_spot
+from app.poker.preflop.handclass import class_kind, hand_class
+from app.poker.preflop.ranges import PreflopSpot, list_spots, load_spot
+from app.poker.preflop.weighting import DIFFICULTIES, is_critical, sample_class
+
+_SUITS = "shdc"
 
 # 6-max 翻前行动顺序（UTG 最先，BB 最后）
 POSITION_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB"]
@@ -42,6 +45,30 @@ def _deal_hero(rng: random.Random) -> List[str]:
     deck = full_deck()
     rng.shuffle(deck)
     return [deck[0], deck[1]]
+
+
+def deal_combo_for_class(cls: str, rng: random.Random) -> List[str]:
+    """给定手牌类别（如 'AKs'/'AA'/'AKo'），随机发一个具体组合。"""
+    kind = class_kind(cls)
+    if kind == "pair":
+        rank = cls[0]
+        s1, s2 = rng.sample(_SUITS, 2)
+        return [rank + s1, rank + s2]
+    hi, lo = cls[0], cls[1]
+    if kind == "suited":
+        s = rng.choice(_SUITS)
+        return [hi + s, lo + s]
+    # offsuit：两张不同花色
+    s1, s2 = rng.sample(_SUITS, 2)
+    return [hi + s1, lo + s2]
+
+
+def _deal_weighted(ps: PreflopSpot, difficulty: str, rng: random.Random) -> List[str]:
+    """按难度加权抽类别，再发该类别的一个具体组合。"""
+    if difficulty == "easy":
+        return _deal_hero(rng)
+    cls = sample_class(ps, difficulty, rng)
+    return deal_combo_for_class(cls, rng)
 
 
 def _build_seats(
@@ -112,13 +139,18 @@ def generate_scenario(
     fmt: Optional[str] = None,
     spot: Optional[str] = None,
     position: Optional[str] = None,
+    difficulty: str = "standard",
     seed: Optional[int] = None,
 ) -> Dict[str, object]:
     """随机（或按指定条件）生成一个翻前训练场景。
 
-    未指定的维度会从现有范围数据里随机挑；hero 手牌总是随机发。
+    未指定的维度会从现有范围数据里随机挑。手牌按 difficulty 加权发：
+      - easy：自然随机发牌（等价旧行为）。
+      - standard/hard：偏向临界（混合策略）手牌，练得更高效，见 weighting.py。
     传入 seed 可复现（便于测试）。
     """
+    if difficulty not in DIFFICULTIES:
+        raise ValueError(f"未知难度 {difficulty!r}，可选：{DIFFICULTIES}")
     rng = random.Random(seed)
     pool = available_spots(fmt)
     if not pool:
@@ -137,8 +169,9 @@ def generate_scenario(
     ps = load_spot(chosen["format"], chosen["spot"], chosen["position"])
     meta = ps.meta
 
-    hero = _deal_hero(rng)
+    hero = _deal_weighted(ps, difficulty, rng)
     cls = hand_class(hero[0], hero[1])
+    critical = is_critical(ps.frequencies.get(cls, {"fold": 1.0}))
     actions = _order_actions(list(ps.actions) + ["fold"])
 
     spot = chosen["spot"]
@@ -165,6 +198,8 @@ def generate_scenario(
         "hero": hero,
         "hero_glyphs": [card_glyph(c) for c in hero],
         "hero_class": cls,
+        "difficulty": difficulty,
+        "is_critical": critical,
         "effective_stack_bb": 100,
         "blinds": {"sb": 0.5, "bb": 1.0},
         "pot_bb": pot_bb,

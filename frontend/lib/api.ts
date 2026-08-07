@@ -82,6 +82,8 @@ export interface TrainerScenario {
   hero: string[];
   hero_glyphs: string[];
   hero_class: string;
+  difficulty: string;
+  is_critical: boolean;
   effective_stack_bb: number;
   blinds: { sb: number; bb: number };
   pot_bb: number;
@@ -137,11 +139,13 @@ export async function getTrainerNext(params?: {
   format?: string;
   spot?: string;
   position?: string;
+  difficulty?: string;
 }): Promise<TrainerScenario> {
   const qs = new URLSearchParams();
   if (params?.format) qs.set("format", params.format);
   if (params?.spot) qs.set("spot", params.spot);
   if (params?.position) qs.set("position", params.position);
+  if (params?.difficulty) qs.set("difficulty", params.difficulty);
   const url = `${API_BASE}/api/trainer/next${qs.toString() ? `?${qs}` : ""}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
