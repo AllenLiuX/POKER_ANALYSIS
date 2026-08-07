@@ -1,0 +1,58 @@
+# =============================================================================
+# Poker Analysis nginx 反向代理示例（把前端 :3000 + 后端 :8000 收敛到单域名）
+#   /            → 前端 Next.js (127.0.0.1:3000)
+#   /api/        → 后端 FastAPI (127.0.0.1:8000)
+#   /health /docs /openapi.json → 后端
+#
+# 收敛到同域名后浏览器只访问一个地址，免 CORS / 混合内容；前端只需：
+#   NEXT_PUBLIC_API_BASE_URL=https://your-domain.com
+#
+# 安装：
+#   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/poker
+#   sudo nano /etc/nginx/sites-available/poker      # 改 server_name
+#   sudo ln -s /etc/nginx/sites-available/poker /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d your-domain.com          # 自动签 HTTPS
+# =============================================================================
+
+# HTTP → HTTPS 强跳（跑完 certbot 后再启用）
+# server {
+#     listen 80;
+#     server_name your-domain.com;
+#     return 301 https://$server_name$request_uri;
+# }
+
+server {
+    listen 80;                       # certbot 会自动改成 443 ssl
+    server_name your-domain.com;     # ← 改成你的域名 / 公网 IP
+
+    client_max_body_size 20m;        # 截图上传留足空间
+
+    # ---- 后端 API ----
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 300s;     # LLM 复盘 / 截图解析可能较慢
+        proxy_send_timeout 300s;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /health     { proxy_pass http://127.0.0.1:8000/health; access_log off; }
+    location /docs         { proxy_pass http://127.0.0.1:8000/docs; }
+    location = /openapi.json { proxy_pass http://127.0.0.1:8000/openapi.json; }
+
+    # ---- 前端 Next.js ----
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

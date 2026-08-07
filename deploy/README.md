@@ -1,98 +1,113 @@
-# 部署指南（AWS / 任意 Linux 服务器）
+# 生产部署速查（自有服务器 · pm2）
 
-一套用于在单台服务器上部署本项目的脚本：**后端 FastAPI（:8000）** + **前端 Next.js（:3000）**。
-脚本会自动结束旧进程、（重）安装依赖、后台启动服务并做健康检查。
+在单台 Linux 服务器上，用 **pm2** 同时托管 **后端 FastAPI(:8000)** 和 **前端 Next.js(:3000)**。
+脚本负责：装依赖 / 前端构建 / pm2 启动或重载 / 健康检查。~15 分钟跑通。
 
 ## 目录
 
 ```
 deploy/
-├── config.env.example      # 部署配置模板（复制为 config.env 使用）
-├── deploy.sh               # 一键部署（可 --pull 先拉代码）
-├── backend.sh              # 仅部署/重启后端
-├── frontend.sh             # 仅部署/重启前端
-├── stop.sh                 # 停止服务
-├── status.sh               # 查看状态
-├── lib/common.sh           # 共享函数（勿直接执行）
-├── systemd/                # 可选：开机自启 + 崩溃重启的 systemd 单元模板
-└── nginx/                  # 可选：反向代理示例（收敛到单域名，免 CORS）
+├── ecosystem.config.js   # pm2 进程编排（poker-backend + poker-frontend）
+├── start_prod.sh         # 部署/上线：装依赖→前端 build→pm2 起→健康检查（幂等）
+├── restart_prod.sh       # 一键：git pull → 重建 → pm2 reload → 健康检查
+├── stop.sh / status.sh   # 停止 / 状态
+├── config.env.example    # 端口 / API 地址 / worker 配置模板
+├── lib/common.sh         # 共享函数（勿直接执行）
+└── nginx.conf.example    # 可选：单域名反代（免 CORS + HTTPS）
 ```
 
-## 前置条件（服务器上）
+## 你需要
 
-- **Python 3.10+**（`python3 -m venv` 可用；Ubuntu 需 `sudo apt install python3-venv`）
-- **Node.js 18+**（推荐 20/22 LTS）与 npm
-- `git`、`curl`、`lsof`
-- AWS 安全组放行端口：前端 `3000`、后端 `8000`（若用 nginx 则放行 `80/443` 即可）
+- 一台公网可达的 Linux 服务器（Ubuntu/Debian 推荐，1C2G 起步）
+- **Node.js 18+**（推荐 20/22 LTS）、npm、**pm2**（`npm install -g pm2`）
+- **Python 3.10+**（`python3-venv`；Ubuntu：`sudo apt install python3-venv python3-pip`）
+- `git`、`curl`；AWS 安全组放行 `3000` / `8000`（用 nginx 则只放 `80/443`）
 
-## 快速开始
+## 一、服务器准备
 
 ```bash
-# 1) 克隆代码
+# 基础工具（一次性）
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git curl nginx
+# Node + pm2（若未装）
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs
+sudo npm install -g pm2
+
+# 拉代码
 git clone https://github.com/AllenLiuX/POKER_ANALYSIS.git poker_analysis
 cd poker_analysis
-
-# 2) 部署配置：把 API 地址改成「浏览器能访问到的」后端地址
-cp deploy/config.env.example deploy/config.env
-#   编辑 deploy/config.env，至少设置：
-#   NEXT_PUBLIC_API_BASE_URL=http://<你的公网IP>:8000
-
-# 3) 后端密钥（LLM / Supabase，可留空则功能降级）
-cp backend/.env.example backend/.env
-#   按需填入 MODEL_GATEWAY_KEY / OPENAI_API_KEY / SUPABASE_* 等
-#   并把前端来源加入 CORS：
-#   BACKEND_CORS_ORIGINS=http://<你的公网IP>:3000
-
-# 4) 一键部署（前后端）
-./deploy/deploy.sh
 ```
 
-部署完成后：
-
-- 前端：`http://<公网IP>:3000`
-- 后端健康检查：`http://<公网IP>:8000/health`
-- 接口文档：`http://<公网IP>:8000/docs`
-
-## 常用命令
+## 二、配置
 
 ```bash
-./deploy/deploy.sh            # 部署前后端
-./deploy/deploy.sh --pull     # 先 git pull 再部署（更新上线常用）
-./deploy/deploy.sh backend    # 仅后端
-./deploy/deploy.sh frontend   # 仅前端
-./deploy/status.sh            # 查看运行状态
-./deploy/stop.sh              # 停止前后端
-tail -f logs/backend.log      # 后端日志
-tail -f logs/frontend.log     # 前端日志
+# 1) 部署配置：把 API 地址改成「浏览器能访问到的」后端地址
+cp deploy/config.env.example deploy/config.env
+nano deploy/config.env
+#   NEXT_PUBLIC_API_BASE_URL=http://<你的公网IP>:8000
+#   （用 nginx 单域名时写 https://your-domain.com）
+
+# 2) 后端密钥 + CORS
+cp backend/.env.example backend/.env
+nano backend/.env
+#   BACKEND_CORS_ORIGINS=http://<你的公网IP>:3000    # 前端来源，必须放行
+#   MODEL_GATEWAY_KEY / OPENAI_API_KEY / SUPABASE_* 按需填（留空则相关功能降级）
+```
+
+## 三、一键部署
+
+```bash
+./deploy/start_prod.sh          # 装依赖 + 前端 build + pm2 起 + 健康检查
+```
+
+看到「后端就绪 / 前端就绪」即成。访问：
+
+- 前端 `http://<公网IP>:3000`　后端 `http://<公网IP>:8000/health`　文档 `/docs`
+
+## 四、开机自启（一次性）
+
+```bash
+pm2 startup            # 按输出复制那条 sudo env ... 命令执行一次
+pm2 save               # 固化当前进程列表，重启服务器后自动拉起
+```
+
+## 五、nginx 反向代理 + HTTPS（可选，推荐）
+
+见 `deploy/nginx.conf.example` 顶部注释。启用后前端只需
+`NEXT_PUBLIC_API_BASE_URL=https://your-domain.com`（`/api` 会代理到后端），
+免 CORS，并用 certbot 一键签 HTTPS。
+
+## 日常运维
+
+```bash
+./deploy/restart_prod.sh          # 更新上线：git pull + 重建 + reload（最常用）
+./deploy/restart_prod.sh backend  # 仅后端 / frontend 仅前端
+./deploy/status.sh                # pm2 进程 + HTTP 探测
+./deploy/stop.sh                  # 停止前后端
+pm2 logs poker-backend            # 后端日志（或 logs/backend.*.log）
+pm2 logs poker-frontend           # 前端日志
+pm2 monit                         # 实时监控面板
 ```
 
 ## 关键注意事项
 
-- **前端环境变量在「构建时」烘焙**：`NEXT_PUBLIC_API_BASE_URL` 等 `NEXT_PUBLIC_*`
-  会在 `npm run build` 时写入产物。改了地址必须重新跑 `deploy/frontend.sh`（会重新 build）。
-- **浏览器直连后端**：默认前端在客户端直接 `fetch` 后端 API，所以该地址不能填
-  `127.0.0.1`，要填服务器公网 IP 或域名（除非用下面的 nginx 反代到同域名）。
-- **CORS**：后端 `backend/.env` 里的 `BACKEND_CORS_ORIGINS` 必须包含前端来源，
-  否则浏览器请求会被拦截。
+- **前端环境变量是「构建期」烘焙**：`NEXT_PUBLIC_*` 在 `npm run build` 时写入产物。
+  改了 `NEXT_PUBLIC_API_BASE_URL` 必须重跑 `start_prod.sh` / `restart_prod.sh`（会重新 build）。
+- **浏览器直连后端**：`NEXT_PUBLIC_API_BASE_URL` 不能填 `127.0.0.1`，要填公网 IP/域名
+  （除非用 nginx 反代到同域名）。
+- **CORS**：`backend/.env` 的 `BACKEND_CORS_ORIGINS` 必须包含前端来源，否则浏览器请求被拦。
+- **后端也在 pm2 里**：`poker-backend` 用 venv 的 uvicorn（`--workers` 由 uvicorn 自己 fork，
+  pm2 fork 单实例守护 master）。想改用 systemd 托管后端也可以，二选一即可。
 
-## 生产加固（可选，推荐）
+## 常见坑
 
-### A. systemd —— 开机自启 + 崩溃自动重启
-先手动跑一次 `deploy/backend.sh` 和 `deploy/frontend.sh`（生成 `.venv` 与 `.next`），
-再按 `deploy/systemd/*.service` 顶部注释安装单元文件。之后用
-`systemctl restart poker-backend poker-frontend` 管理。
-
-### B. nginx 反向代理 —— 单域名、免 CORS、支持 HTTPS
-见 `deploy/nginx/poker.conf` 顶部注释。启用后前端只需：
-`NEXT_PUBLIC_API_BASE_URL=https://your-domain.com`（`/api` 会被代理到后端）。
-
-## 故障排查
-
-| 现象 | 排查 |
-|------|------|
-| 健康检查失败 | 看 `logs/backend.log` / `logs/frontend.log` 末尾报错 |
-| 前端能开但调用后端失败 | 检查 `NEXT_PUBLIC_API_BASE_URL` 是否为公网可达地址、后端 CORS 是否放行 |
-| `python3 -m venv` 失败 | `sudo apt install python3-venv python3-pip` |
-| 端口未生效 | 确认 AWS 安全组 / 防火墙已放行对应端口 |
-| 改了后端代码不生效 | 重跑 `deploy/backend.sh`（或 `systemctl restart poker-backend`） |
+| 现象 | 原因 | 解决 |
+|------|------|------|
+| 浏览器 `Failed to fetch` | `NEXT_PUBLIC_API_BASE_URL` 没设或没重新 build | 改 `deploy/config.env` → `./deploy/restart_prod.sh frontend` |
+| 浏览器报 CORS | 后端未放行前端来源 | 改 `backend/.env` 的 `BACKEND_CORS_ORIGINS` → `./deploy/restart_prod.sh backend` |
+| `pm2: command not found` | 未装 pm2 | `sudo npm install -g pm2` |
+| `python3 -m venv` 失败 | 缺 venv 包 | `sudo apt install python3-venv python3-pip` |
+| 502 Bad Gateway | uvicorn 没起 / 端口不一致 | `pm2 logs poker-backend` + 核对端口 |
+| 端口不通 | 安全组/防火墙没放行 | 放行 3000/8000（或仅 80/443 走 nginx） |
+| 改了代码不生效 | 未重建/重载 | `./deploy/restart_prod.sh` |
 ```

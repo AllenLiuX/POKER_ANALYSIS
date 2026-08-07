@@ -47,18 +47,19 @@ npm run dev
 # 打开: http://localhost:3000
 ```
 
-## 部署到服务器（AWS / 任意 Linux）
+## 部署到服务器（AWS / 任意 Linux · pm2）
 
-一套自带的部署脚本，在单机上跑起 **后端(:8000)** + **前端(:3000)**：
+自带部署脚本，用 **pm2** 在单机上托管 **后端(:8000)** + **前端(:3000)**：
 
 ```bash
+npm install -g pm2                               # 一次性
 cp deploy/config.env.example deploy/config.env   # 设 NEXT_PUBLIC_API_BASE_URL 为公网可达地址
-cp backend/.env.example backend/.env             # 填密钥（可留空则降级）并配好 CORS
-./deploy/deploy.sh                               # 一键部署前后端（含健康检查）
+cp backend/.env.example backend/.env             # 填密钥；BACKEND_CORS_ORIGINS 加上前端来源
+./deploy/start_prod.sh                           # 装依赖 + 前端 build + pm2 起 + 健康检查
 ```
 
-更新上线：`./deploy/deploy.sh --pull`；查看状态：`./deploy/status.sh`；停止：`./deploy/stop.sh`。
-完整说明（systemd 自启、nginx 反代、故障排查）见 [`deploy/README.md`](./deploy/README.md)。
+更新上线：`./deploy/restart_prod.sh`（git pull + 重建 + reload）；状态：`./deploy/status.sh`；停止：`./deploy/stop.sh`。
+开机自启：`pm2 startup && pm2 save`。完整说明（nginx 反代、HTTPS、故障排查）见 [`deploy/README.md`](./deploy/README.md)。
 
 ## 安全
 

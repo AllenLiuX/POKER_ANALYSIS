@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# 查看前后端运行状态（端口监听 + HTTP 探测）。
+# 查看服务状态：pm2 进程 + HTTP 健康探测。
 #
-# 用法： deploy/status.sh
+# 用法： ./deploy/status.sh
 
 set -euo pipefail
 # shellcheck source=lib/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-check() {
-  local name="$1" port="$2" path="$3"
-  local pids code
-  pids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $2}' | sort -u | tr '\n' ' ')"
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}${path}" 2>/dev/null || echo 000)"
-  if [ -n "$pids" ]; then
-    ok "$name 运行中（端口 $port，PID: ${pids}），HTTP ${path} → $code"
+require_cmd pm2 "安装：npm install -g pm2"
+
+log "==== pm2 进程 ===="
+pm2 status
+
+probe() {
+  local name="$1" url="$2" code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || echo 000)"
+  if [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -lt 400 ] 2>/dev/null; then
+    ok "$name  $url → $code"
   else
-    warn "$name 未运行（端口 $port 无监听），HTTP ${path} → $code"
+    warn "$name  $url → $code（未就绪？）"
   fi
 }
 
-log "==== 服务状态 ===="
-check "后端" "$BACKEND_PORT" "/health"
-check "前端" "$FRONTEND_PORT" "/"
-log "日志目录：$LOG_DIR"
+echo
+log "==== HTTP 探测 ===="
+probe "后端" "http://127.0.0.1:${BACKEND_PORT}/health"
+probe "前端" "http://127.0.0.1:${FRONTEND_PORT}/"
+echo
+log "日志： pm2 logs ${APP_BACKEND} / pm2 logs ${APP_FRONTEND}（或 $LOG_DIR/*.log）"

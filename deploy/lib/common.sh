@@ -25,6 +25,11 @@ FRONTEND_DIR="$REPO_ROOT/frontend"
 # 健康检查最长等待秒数
 : "${HEALTH_TIMEOUT:=60}"
 
+# pm2 应用名（与 ecosystem.config.js 一致）
+APP_BACKEND="poker-backend"
+APP_FRONTEND="poker-frontend"
+ECOSYSTEM="$DEPLOY_DIR/ecosystem.config.js"
+
 # 若存在 deploy/config.env 则加载（覆盖上面的默认值）。
 if [ -f "$DEPLOY_DIR/config.env" ]; then
   # shellcheck disable=SC1091
@@ -39,6 +44,11 @@ log()  { printf '\033[0;36m[%s]\033[0m %s\n' "$(_ts)" "$*"; }
 ok()   { printf '\033[0;32m[%s] ✓ %s\033[0m\n' "$(_ts)" "$*"; }
 warn() { printf '\033[0;33m[%s] ! %s\033[0m\n' "$(_ts)" "$*" >&2; }
 die()  { printf '\033[0;31m[%s] ✗ %s\033[0m\n' "$(_ts)" "$*" >&2; exit 1; }
+
+# 确认命令存在，否则给出安装提示并退出。
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1。${2:-}"
+}
 
 # ---- 端口占用清理 ----
 # 杀掉监听指定端口的进程（跨 macOS/Linux 便携，避免 xargs -r 兼容问题）。
