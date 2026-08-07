@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 
 const MODULES = [
-  { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "Phase 2", ready: false, href: undefined as string | undefined },
+  { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "可用", ready: true, href: "/trainer" as string | undefined },
   { title: "翻后训练器", desc: "启发式 → 预计算真 GTO", phase: "Phase 5", ready: false, href: undefined },
   { title: "范围表", desc: "13×13 交互网格", phase: "可用", ready: true, href: "/ranges" },
   { title: "胜率 / 赔率工具", desc: "Monte Carlo equity", phase: "Phase 0", ready: true, href: undefined },

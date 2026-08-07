@@ -62,6 +62,99 @@ export async function getRangeGrid(
   return res.json();
 }
 
+// ---- Trainer ----
+export interface TrainerSeat {
+  position: string;
+  order: number;
+  status: "hero" | "folded" | "waiting";
+  is_hero: boolean;
+  is_blind: boolean;
+}
+
+export interface TrainerScenario {
+  id: string;
+  format: string;
+  spot: string;
+  position: string;
+  hero: string[];
+  hero_glyphs: string[];
+  hero_class: string;
+  effective_stack_bb: number;
+  blinds: { sb: number; bb: number };
+  pot_bb: number;
+  seats: TrainerSeat[];
+  available_actions: string[];
+  action_labels: Record<string, string>;
+  prompt: string;
+}
+
+export interface ScoreResult {
+  correct: boolean;
+  grade: "optimal" | "acceptable" | "mistake";
+  chosen: string;
+  chosen_freq: number;
+  optimal_action: string;
+  optimal_freq: number;
+  frequencies: Record<string, number>;
+  is_mixed: boolean;
+  ev_loss_proxy: number;
+}
+
+export interface Feedback {
+  grade: string;
+  headline: string;
+  explanation: string;
+  tip: string;
+}
+
+export interface TrainerAnswer {
+  scenario_id: string | null;
+  hand_class: string;
+  position: string;
+  spot: string;
+  score: ScoreResult;
+  feedback: Feedback;
+  meta: Record<string, unknown>;
+}
+
+export async function getTrainerNext(params?: {
+  format?: string;
+  spot?: string;
+  position?: string;
+}): Promise<TrainerScenario> {
+  const qs = new URLSearchParams();
+  if (params?.format) qs.set("format", params.format);
+  if (params?.spot) qs.set("spot", params.spot);
+  if (params?.position) qs.set("position", params.position);
+  const url = `${API_BASE}/api/trainer/next${qs.toString() ? `?${qs}` : ""}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `trainer next ${res.status}`);
+  }
+  return (await res.json()).scenario;
+}
+
+export async function postTrainerAnswer(body: {
+  format: string;
+  spot: string;
+  position: string;
+  hero: string[];
+  action: string;
+  scenario_id?: string;
+}): Promise<TrainerAnswer> {
+  const res = await fetch(`${API_BASE}/api/trainer/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `trainer answer ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function postEquity(body: {
   hero: string[];
   villain_range: string;
