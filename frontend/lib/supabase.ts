@@ -3,7 +3,10 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// 兼容两种客户端密钥命名：新版 publishable key（sb_publishable_...）或旧版 anon key。
+const anon =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 export const isSupabaseEnabled = Boolean(url && anon);
 
