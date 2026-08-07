@@ -362,8 +362,10 @@ GET  /api/opponents/{id}         → 对手画像 + 剥削建议
 **Phase 4 — 账号 + 进度**
 - Supabase Auth 接入、attempts 记录、Dashboard 与错题本。
 
-**Phase 5 — 翻后启发式训练器**
-- board texture / 手牌分类 / 启发式决策 + 打分 + 前端 board 展示。
+**Phase 5 — 翻后启发式训练器** ✅（首版：HU 单加注底池·翻牌）
+- board texture / 手牌分类 / 启发式决策（c-bet 频率尺度、MDF、赔率、bluff-to-value）+ 打分 + 前端 board 展示（`poker/postflop/`、`/api/trainer/postflop/*`、`/trainer/postflop`）。
+- 对手范围取自翻前数据（加注方开池范围 / 跟注方防守跟注范围），equity 用蒙特卡洛估算。
+- 后续：转牌/河牌 barreling、更多下注尺度与位置、离线预计算真 GTO 替换启发式。
 
 **Phase 6 — 截图导入与逐人剥削**（详见 [`SCREENSHOT_IMPORT.md`](./SCREENSHOT_IMPORT.md) §9）
 - 截图提取 → 引擎约束重建 → 用户确认 → 偏离标注 → 对手画像 + LLM 剥削建议。

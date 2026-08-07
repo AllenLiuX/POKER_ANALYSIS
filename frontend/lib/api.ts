@@ -220,4 +220,129 @@ export async function postEquity(body: {
   return res.json();
 }
 
+// ---------- 翻后训练器 ----------
+export interface PostflopTexture {
+  board: string[];
+  paired: boolean;
+  trips: boolean;
+  suitedness: string;
+  straightiness: number;
+  high_card: number;
+  high_label: string;
+  wetness: number;
+  wet_label: string;
+  descriptor: string;
+}
+
+export interface PostflopScenario {
+  id: string;
+  mode: string;
+  street: string;
+  role: "pfr" | "caller";
+  format: string;
+  config: { pfr: string; caller: string };
+  hero_position: string;
+  villain_position: string;
+  hero: string[];
+  hero_glyphs: string[];
+  hero_class: string;
+  board: string[];
+  board_glyphs: string[];
+  villain_range: string;
+  villain_range_label: string;
+  effective_stack_bb: number;
+  blinds: { sb: number; bb: number };
+  pot_bb: number;
+  bet_bb: number | null;
+  texture: PostflopTexture;
+  available_actions: string[];
+  action_labels: Record<string, string>;
+  prompt: string;
+}
+
+export interface PostflopHand {
+  made: string;
+  made_label: string;
+  pair_kind: string | null;
+  tier: string;
+  draws: string[];
+  draw_label: string;
+  outs: number;
+  combo_draw: boolean;
+}
+
+export interface PostflopRecommendation {
+  spot: string;
+  recommended: string;
+  accept: string[];
+  mix: boolean;
+  equity: number;
+  reasons: string[];
+  size_advice?: string;
+  required_equity?: number;
+  mdf?: number;
+  wetness?: number;
+  pot_bb?: number;
+  bet_bb?: number;
+}
+
+export interface PostflopScore {
+  correct: boolean;
+  grade: string;
+  chosen: string;
+  recommended: string;
+  accept: string[];
+  mix: boolean;
+}
+
+export interface PostflopAnswer {
+  scenario_id: string | null;
+  role: string;
+  hero_class: string;
+  texture: PostflopTexture;
+  hand: PostflopHand;
+  equity: number;
+  recommendation: PostflopRecommendation;
+  score: PostflopScore;
+  feedback: { headline: string; explanation: string; tip: string };
+  action_label: string;
+  approximate: boolean;
+}
+
+export async function getPostflopNext(params?: {
+  role?: string;
+}): Promise<PostflopScenario> {
+  const qs = new URLSearchParams();
+  if (params?.role) qs.set("role", params.role);
+  const url = `${API_BASE}/api/trainer/postflop/next${qs.toString() ? `?${qs}` : ""}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `postflop next ${res.status}`);
+  }
+  return (await res.json()).scenario;
+}
+
+export async function postPostflopAnswer(body: {
+  role: string;
+  hero: string[];
+  board: string[];
+  villain_range: string;
+  pot_bb: number;
+  bet_bb: number | null;
+  action: string;
+  scenario_id?: string;
+}): Promise<PostflopAnswer> {
+  const res = await fetch(`${API_BASE}/api/trainer/postflop/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `postflop answer ${res.status}`);
+  }
+  return res.json();
+}
+
 export { API_BASE };

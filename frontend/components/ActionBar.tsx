@@ -3,6 +3,8 @@ const ACTION_STYLE: Record<string, string> = {
   call: "bg-sky-600 hover:bg-sky-500",
   raise: "bg-red-600 hover:bg-red-500",
   allin: "bg-amber-600 hover:bg-amber-500",
+  check: "bg-slate-600 hover:bg-slate-500",
+  bet: "bg-emerald-600 hover:bg-emerald-500",
 };
 
 export default function ActionBar({

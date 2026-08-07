@@ -231,8 +231,14 @@ export default function TrainerPage() {
           </span>
         </h1>
         <Link
-          href="/progress"
+          href="/trainer/postflop"
           className="ml-auto text-sm text-emerald-400 hover:text-emerald-300"
+        >
+          翻后训练 →
+        </Link>
+        <Link
+          href="/progress"
+          className="text-sm text-emerald-400 hover:text-emerald-300"
         >
           进度详情 →
         </Link>

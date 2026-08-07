@@ -1,0 +1,176 @@
+"""翻后启发式引擎 + API 测试。"""
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.poker.postflop.analyze import analyze_spot
+from app.poker.postflop.handstrength import classify_hand
+from app.poker.postflop.heuristics import mdf, pot_odds_required, recommend_defense
+from app.poker.postflop.scenario import generate_postflop_scenario
+from app.poker.postflop.scoring import score_postflop
+from app.poker.postflop.texture import classify_board
+
+client = TestClient(app)
+
+
+# ---------- 纹理 ----------
+def test_texture_dry_high():
+    t = classify_board(["Ks", "7d", "2c"])
+    assert t["suitedness"] == "rainbow"
+    assert not t["paired"]
+    assert t["wet_label"] == "干"
+    assert t["high_label"] == "高张面"
+
+
+def test_texture_wet_connected():
+    t = classify_board(["9s", "8s", "7d"])  # 两色强连接
+    assert t["straightiness"] >= 3
+    assert t["wetness"] > classify_board(["Ks", "7d", "2c"])["wetness"]
+
+
+def test_texture_monotone():
+    t = classify_board(["Qh", "8h", "3h"])
+    assert t["suitedness"] == "monotone"
+    assert t["wetness"] >= 0.5
+
+
+# ---------- 成手 / 听牌 ----------
+def test_classify_set_is_value():
+    h = classify_hand(["7c", "7h"], ["7s", "Kd", "2c"])  # 三条
+    assert h["made"] == "Trips"
+    assert h["tier"] == "value"
+
+
+def test_classify_top_pair():
+    h = classify_hand(["Ah", "Kc"], ["Ad", "9s", "2c"])  # 顶对 A，K 踢脚
+    assert h["made"] == "Pair"
+    assert h["pair_kind"] == "top_pair"
+    assert h["tier"] == "value"
+
+
+def test_classify_flush_draw():
+    h = classify_hand(["As", "5s"], ["Ks", "9s", "2c"])  # 同花听牌（花 A 高）
+    assert "flush_draw" in h["draws"]
+    assert h["tier"] in ("draw",)  # 无成对，但强听牌
+
+
+def test_classify_oesd():
+    h = classify_hand(["9c", "8d"], ["7s", "6h", "2c"])  # 两头顺听
+    assert "oesd" in h["draws"]
+
+
+def test_classify_air():
+    h = classify_hand(["Qc", "4d"], ["Ks", "9h", "2c"])
+    assert h["tier"] == "air"
+
+
+# ---------- 赔率 / MDF ----------
+def test_pot_odds_and_mdf():
+    # 半池下注：需要 25% 胜率，MDF≈67%
+    assert abs(pot_odds_required(8.25, 2.75) - 0.25) < 1e-6
+    assert abs(mdf(8.25, 2.75) - 0.75) < 1e-6
+
+
+def test_defense_air_folds():
+    hand = {"tier": "air", "made": "High Card", "made_label": "高牌", "draw_label": ""}
+    rec = recommend_defense({"wetness": 0.3}, hand, equity=0.15, pot_bb=8.25, bet_bb=2.75)
+    assert rec["recommended"] == "fold"
+
+
+def test_defense_value_raises():
+    hand = {"tier": "value", "made": "Two Pair", "made_label": "两对", "draw_label": ""}
+    rec = recommend_defense({"wetness": 0.4}, hand, equity=0.72, pot_bb=8.25, bet_bb=2.75)
+    assert rec["recommended"] == "raise"
+    assert "call" in rec["accept"]
+
+
+# ---------- 打分 ----------
+def test_score_optimal_and_mistake():
+    rec = {"recommended": "bet", "accept": ["bet", "check"], "mix": True}
+    assert score_postflop(rec, "bet")["grade"] == "optimal"
+    assert score_postflop(rec, "check")["grade"] == "acceptable"
+    assert score_postflop(rec, "fold")["grade"] == "mistake"
+
+
+# ---------- 场景 ----------
+def test_scenario_reproducible():
+    a = generate_postflop_scenario(seed=11)
+    b = generate_postflop_scenario(seed=11)
+    a.pop("id")
+    b.pop("id")
+    assert a == b
+
+
+def test_scenario_shape_pfr():
+    s = generate_postflop_scenario(role="pfr", seed=5)
+    assert s["role"] == "pfr"
+    assert set(s["available_actions"]) == {"check", "bet"}
+    assert len(s["board"]) == 3 and len(s["hero"]) == 2
+    assert s["villain_range"]
+    assert s["bet_bb"] is None
+
+
+def test_scenario_shape_caller():
+    s = generate_postflop_scenario(role="caller", seed=6)
+    assert s["role"] == "caller"
+    assert set(s["available_actions"]) == {"fold", "call", "raise"}
+    assert s["bet_bb"] and s["bet_bb"] > 0
+
+
+# ---------- 门面 + API ----------
+def test_analyze_nuts_defense_raises():
+    # 87 在 9-8-7 面拿到两对+，面对下注应加注
+    _, hand, eq, rec = analyze_spot(
+        role="caller",
+        hero=["8c", "7c"],
+        board=["9s", "8d", "7h"],
+        villain_range="AA, KK, QQ, AKs, AKo, AQs",
+        pot_bb=8.25,
+        bet_bb=2.75,
+    )
+    assert rec["recommended"] in ("raise", "call")
+    assert rec["equity"] > 0.4
+
+
+def test_postflop_next_and_answer_endpoints():
+    r = client.get("/api/trainer/postflop/next", params={"role": "caller", "seed": 7})
+    assert r.status_code == 200
+    scen = r.json()["scenario"]
+    assert scen["role"] == "caller"
+
+    ans = client.post(
+        "/api/trainer/postflop/answer",
+        json={
+            "role": scen["role"],
+            "hero": scen["hero"],
+            "board": scen["board"],
+            "villain_range": scen["villain_range"],
+            "pot_bb": scen["pot_bb"],
+            "bet_bb": scen["bet_bb"],
+            "action": "fold",
+            "scenario_id": scen["id"],
+        },
+    )
+    assert ans.status_code == 200
+    body = ans.json()
+    assert body["approximate"] is True
+    assert body["score"]["grade"] in ("optimal", "acceptable", "mistake")
+    assert body["feedback"]["headline"]
+    assert "recommendation" in body
+
+
+def test_postflop_answer_deterministic():
+    payload = {
+        "role": "pfr",
+        "hero": ["Ah", "Ad"],
+        "board": ["Ks", "7d", "2c"],
+        "villain_range": "22-99, AJs, KQs, T9s, 98s",
+        "pot_bb": 5.5,
+        "bet_bb": None,
+        "action": "bet",
+    }
+    a = client.post("/api/trainer/postflop/answer", json=payload).json()
+    b = client.post("/api/trainer/postflop/answer", json=payload).json()
+    assert a["equity"] == b["equity"]  # 种子固定 -> 可复现
+    assert a["score"]["grade"] == "optimal"  # AA 超对干面必下注
