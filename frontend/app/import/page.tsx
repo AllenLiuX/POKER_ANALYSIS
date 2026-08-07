@@ -168,7 +168,6 @@ export default function ImportPage() {
             <span className="rounded-full bg-emerald-900/60 px-2 py-0.5 text-emerald-300">
               Beta
             </span>
-            <span className="text-neutral-600">Phase 6 · S1 观测提取 + S2 下注序列重建</span>
           </div>
           <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
             WePoker 截图 →{" "}
@@ -179,7 +178,6 @@ export default function ImportPage() {
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-neutral-400">
             可一次拖入多张微扑克手牌回放截图。多模态模型先转写「看得见的事实」，引擎再把逐街动作
             重建为下注序列并校验筹码守恒。若某张图不是手牌截图，会单独给出提示，不影响其它图。
-            偏离标注与逐人剥削（S3~S4）随后接入。
           </p>
         </header>
 
@@ -302,14 +300,13 @@ export default function ImportPage() {
             <ResultCard key={`err-${item.filename}-${i}`} item={item} />
           ))}
 
-          {/* 历史记录（本地持久化，刷新不丢） */}
+          {/* 历史记录（本地持久化，默认折叠，点开再渲染详情） */}
           {history.length > 0 && (
             <div className="flex items-center gap-2 pt-1">
               <h2 className="text-sm font-semibold text-neutral-300">
                 历史记录
                 <span className="ml-1.5 text-neutral-500">（{history.length}）</span>
               </h2>
-              <span className="text-xs text-neutral-600">· 本地保存，刷新不丢</span>
               <button
                 onClick={clearHistory}
                 className="ml-auto rounded-lg border border-neutral-800 px-2.5 py-1 text-xs text-neutral-400 transition hover:border-red-800/60 hover:text-red-300"
@@ -320,13 +317,7 @@ export default function ImportPage() {
           )}
 
           {history.map((e) => (
-            <ResultCard
-              key={e.id}
-              item={e.item}
-              ts={e.ts}
-              thumb={e.thumb}
-              onDelete={() => deleteEntry(e.id)}
-            />
+            <HistoryItem key={e.id} entry={e} onDelete={() => deleteEntry(e.id)} />
           ))}
 
           {!loading && history.length === 0 && runErrors.length === 0 && picked.length === 0 && (
@@ -352,6 +343,111 @@ function fmtTime(ts?: number): string | null {
   } catch {
     return null;
   }
+}
+
+function statusBadge(item: IngestItem): { label: string; cls: string } {
+  if (!item.ok) return { label: "失败", cls: "bg-red-500/15 text-red-300 ring-red-500/30" };
+  if (item.recognized === false)
+    return { label: "未识别", cls: "bg-amber-500/15 text-amber-300 ring-amber-500/30" };
+  if (item.reconstruction) return RECON_STATUS[item.reconstruction.status] ?? RECON_STATUS.needs_user;
+  const t = item.facts?.screenshot_type ?? "unknown";
+  return { label: TYPE_LABEL[t] ?? t, cls: TYPE_STYLE[t] ?? TYPE_STYLE.unknown };
+}
+
+/** 历史条目：默认折叠，只显示轻量摘要；点开时才渲染完整详情（事实 + 重建）。 */
+function HistoryItem({ entry, onDelete }: { entry: ImportEntry; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const { item, ts, thumb, filename } = entry;
+  const badge = statusBadge(item);
+  const time = fmtTime(ts);
+  return (
+    <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/50">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        className="flex cursor-pointer items-center gap-3 p-3 transition hover:bg-neutral-900/70"
+      >
+        <span
+          className={`shrink-0 text-neutral-500 transition-transform ${open ? "rotate-90" : ""}`}
+          aria-hidden
+        >
+          ▸
+        </span>
+        {thumb && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={thumb}
+            alt={filename}
+            className="h-10 w-10 shrink-0 rounded-md border border-neutral-800 object-cover"
+          />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-neutral-200">{filename}</div>
+          {time && <div className="text-[11px] text-neutral-500">{time}</div>}
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${badge.cls}`}>
+          {badge.label}
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="shrink-0 rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-800/60 hover:text-red-300"
+          title="从历史中删除"
+        >
+          删除
+        </button>
+      </div>
+      {open && (
+        <div className="border-t border-neutral-800 p-4 sm:p-5">
+          <ResultDetail item={item} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 结果详情主体（不含头部）：硬失败 / 未识别 / 已识别三种。 */
+function ResultDetail({ item }: { item: IngestItem }) {
+  if (!item.ok) {
+    return <p className="text-sm text-red-300">{item.error ?? "解析失败"}</p>;
+  }
+  if (item.recognized === false) {
+    return (
+      <>
+        <p className="text-sm leading-relaxed text-amber-200/90">
+          {item.facts?.notes ||
+            "这张图似乎不是微扑克手牌截图，或画面不清晰。请上传「手牌回放/详情」截图（底部有播放条、逐街动作与净额）。"}
+        </p>
+        {item.raw_model_output && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs text-neutral-500 hover:text-neutral-300">
+              查看模型原始输出
+            </summary>
+            <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-neutral-950 p-3 text-[11px] leading-relaxed text-neutral-400">
+              {item.raw_model_output}
+            </pre>
+          </details>
+        )}
+      </>
+    );
+  }
+  return (
+    <>
+      {item.facts && (
+        <FactsView facts={item.facts} note={item.note ?? ""} raw={item.raw_model_output ?? ""} />
+      )}
+      {item.reconstruction && <ReconstructionView recon={item.reconstruction} />}
+    </>
+  );
 }
 
 function CardHeader({
@@ -573,9 +669,7 @@ function ReconstructionView({ recon }: { recon: Reconstruction }) {
   return (
     <div className="mt-5 border-t border-neutral-800 pt-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wider text-neutral-500">
-          下注序列重建（阶段②）
-        </span>
+        <span className="text-[11px] uppercase tracking-wider text-neutral-500">下注序列重建</span>
         <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${st.cls}`}>
           {st.label}
         </span>
@@ -590,8 +684,12 @@ function ReconstructionView({ recon }: { recon: Reconstruction }) {
           label={`净额守恒${c.net_sum != null ? `（Σ=${c.net_sum}）` : ""}`}
         />
         <Check
-          ok={c.pot_consistent}
-          label={`底池一致（投入 ${c.invested_sum}${c.pot != null ? ` / 底池 ${c.pot}` : ""}）`}
+          ok={c.rows_consistent}
+          label={
+            c.rows_consistent
+              ? "动作与净额一致"
+              : `${c.uncertain_count} 行动作与净额对不上（可能未完整识别）`
+          }
         />
       </div>
 
@@ -612,9 +710,22 @@ function ReconstructionView({ recon }: { recon: Reconstruction }) {
                   我
                 </span>
               )}
+              {p.is_winner && (
+                <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                  赢家
+                </span>
+              )}
               {p.position && (
                 <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-300">
                   {p.position}
+                </span>
+              )}
+              {p.uncertain && (
+                <span
+                  className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300 ring-1 ring-amber-500/30"
+                  title="逐街动作金额之和与净额对不上，可能有动作未被识别"
+                >
+                  动作待复核
                 </span>
               )}
               <span className="ml-auto text-xs text-neutral-500">
@@ -638,11 +749,17 @@ function ReconstructionView({ recon }: { recon: Reconstruction }) {
                     key={j}
                     className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-300"
                   >
+                    {a.street && <span className="text-neutral-500">{a.street}·</span>}
                     {a.label}
                     {a.amount != null ? ` ${a.amount}` : ""}
                   </span>
                 ))}
               </div>
+            )}
+            {p.uncertain && (
+              <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/80">
+                逐街动作之和 {p.parsed_invested}，按净额应约 {p.invested}——可能有一街动作未被识别，已按净额校正投入。
+              </p>
             )}
           </div>
         ))}

@@ -22,6 +22,8 @@ ImageInput = Union[bytes, bytearray, str]
 # 视觉模型优先级（都支持 vision）
 _VISION_ORDER = ["gemini-flash", "gemini-pro", "gpt-4o"]
 _TEXT_MODEL = "gpt-5.6-sol"
+# 首选文本模型偶发返回空内容（推理模型把内容留在思考里）；空时回退到稳定的 gpt-4o。
+_TEXT_FALLBACK = "gpt-4o"
 
 
 class LLMProvider:
@@ -45,21 +47,32 @@ class LLMProvider:
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         log_id: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         if self.gateway_ready:
-            try:
-                from app.llm import model_client
+            from app.llm import model_client
 
-                return model_client.call_model(
-                    prompt,
-                    model=_TEXT_MODEL,
-                    system=system,
-                    max_tokens=max_tokens,
-                    network=self.settings.model_client_network,
-                    log_id=log_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[llm] gateway text failed, fallback to OpenAI: %s", exc)
+            # 依次尝试首选模型与稳定回退模型；空内容（非异常）也视为失败继续下一个。
+            order = []
+            for m in (model or _TEXT_MODEL, _TEXT_FALLBACK):
+                if m not in order:
+                    order.append(m)
+            for m in order:
+                try:
+                    out = model_client.call_model(
+                        prompt,
+                        model=m,
+                        system=system,
+                        max_tokens=max_tokens,
+                        network=self.settings.model_client_network,
+                        log_id=log_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[llm] gateway text (%s) failed: %s", m, exc)
+                    continue
+                if out and out.strip():
+                    return out
+                logger.warning("[llm] gateway text (%s) returned empty, trying next", m)
         return self._openai_text(prompt, system=system, max_tokens=max_tokens)
 
     # ---------------- 视觉 ----------------

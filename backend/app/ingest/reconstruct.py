@@ -1,9 +1,13 @@
 """阶段②：把观测事实（尤其是 hand_replay 的逐街动作原文）重建为结构化下注序列，
-并用引擎规则校验（净额守恒 / 底池一致）。
+并用引擎规则校验。
 
-铁律：LLM 只在阶段①做视觉转写；这里的解析与校验完全是**确定性引擎逻辑**，
-真相（合法性/守恒）由引擎判定，不经过 LLM。回放类截图动作已显式标注，属高置信主路径；
-结算类或缺动作的截图标为待用户确认（needs_user）。
+铁律：LLM 只在阶段①做视觉转写；这里的解析、推算与校验完全是**确定性引擎逻辑**。
+
+关键设计——用「净额」推算投入，而非只信任逐街动作串：
+截图里每位玩家右侧的净额（net）是单个数字，识别最可靠；而逐街动作串是多段文本，
+多模态模型偶尔会漏读中间某一街。因此每位玩家的**总投入以 net 推算**（输家=|net|，
+含盲注/前注；赢家=底池−net），再与「逐街动作金额之和」交叉核对：若两者对不上，
+说明该行动作很可能没被完整识别，标记为待复核，避免展示"投入 32 却净输 1200"这类自相矛盾。
 """
 from __future__ import annotations
 
@@ -13,7 +17,6 @@ from typing import Dict, List, Optional
 # 需要计入投入的动作（会往池里放钱）
 _MONEY_ACTIONS = {"bet", "raise", "call", "allin"}
 
-# 中文/英文动作词 → 规范化动作（顺序敏感：先匹配更具体的）
 _ACTION_LABELS = {
     "fold": "弃牌",
     "check": "过牌",
@@ -22,6 +25,13 @@ _ACTION_LABELS = {
     "raise": "加注",
     "allin": "全下",
 }
+
+# 回放里每位玩家一行的动作按街从左到右排列：翻前 / 翻牌 / 转牌 / 河牌
+_STREETS = ["翻前", "翻牌", "转牌", "河牌"]
+
+
+def _street_for_index(i: int) -> str:
+    return _STREETS[i] if i < len(_STREETS) else _STREETS[-1]
 
 
 def _classify_action(piece: str) -> Optional[str]:
@@ -61,8 +71,8 @@ def parse_actions(raw: Optional[str]) -> List[Dict[str, object]]:
     return out
 
 
-def _sum(vals: List[float]) -> float:
-    return round(sum(vals), 2)
+def _round(x: float) -> float:
+    return round(x, 2)
 
 
 def reconstruct_hand(facts: Dict) -> Dict[str, object]:
@@ -70,55 +80,81 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
     stype = str(facts.get("screenshot_type") or "unknown")
     players_in = facts.get("players") or []
     pot = facts.get("pot")
+    pot_val = float(pot) if isinstance(pot, (int, float)) else None
+
+    # 赢家 = net 最大且为正者（简化：不处理边池/多赢家平分）
+    winner_idx: Optional[int] = None
+    best_net = 0.0
+    for i, p in enumerate(players_in):
+        n = p.get("net")
+        if isinstance(n, (int, float)) and n > best_net:
+            best_net, winner_idx = float(n), i
 
     players: List[Dict[str, object]] = []
-    for p in players_in:
-        actions = parse_actions(p.get("actions_raw"))
-        invested = _sum(
-            [a["amount"] for a in actions if a["action"] in _MONEY_ACTIONS and a["amount"]]  # type: ignore[misc]
-        )
+    for idx, p in enumerate(players_in):
+        raw_actions = parse_actions(p.get("actions_raw"))
+        actions: List[Dict[str, object]] = []
+        for i, a in enumerate(raw_actions):
+            actions.append({**a, "street": _street_for_index(i) if stype == "hand_replay" else None})
+
+        money = [a["amount"] for a in raw_actions if a["action"] in _MONEY_ACTIONS and a["amount"]]  # type: ignore[misc]
+        parsed_invested = _round(sum(money))  # type: ignore[arg-type]
+        has_money = len(money) > 0
+
+        net = p.get("net")
+        net_val = float(net) if isinstance(net, (int, float)) else None
+
+        # 用净额推算总投入（含盲注/前注）：赢家=底池−net；其余=|net|
+        if net_val is not None and idx == winner_idx and pot_val is not None:
+            contributed = _round(pot_val - net_val)
+        elif net_val is not None and idx != winner_idx:
+            contributed = _round(max(0.0, -net_val))
+        else:
+            contributed = parsed_invested
+
+        # 交叉核对：仅当该玩家有下注类动作、且能从 net 得到期望投入时才校验
+        uncertain = False
+        if has_money and net_val is not None and (idx != winner_idx or pot_val is not None):
+            tol = max(4.0, 0.1 * abs(contributed))  # 容许盲注/前注带来的小差
+            if abs(parsed_invested - contributed) > tol:
+                uncertain = True
+
         players.append(
             {
                 "alias": p.get("alias"),
                 "position": p.get("position"),
                 "is_hero": bool(p.get("is_hero")),
+                "is_winner": idx == winner_idx,
                 "hole_cards": p.get("hole_cards") or [],
-                "net": p.get("net"),
-                "invested": invested,
+                "net": net,
+                "invested": contributed,  # 以净额推算为准（权威、含盲注/前注）
+                "parsed_invested": parsed_invested,  # 逐街动作金额之和（供核对）
                 "actions": actions,
-                "street_count": len(actions),
+                "uncertain": uncertain,
             }
         )
 
-    nets = [p["net"] for p in players if isinstance(p["net"], (int, float))]
-    net_sum = _sum([float(n) for n in nets]) if nets else None  # type: ignore[arg-type]
-    abs_scale = _sum([abs(float(n)) for n in nets]) if nets else 0.0  # type: ignore[arg-type]
+    net_list = [float(p["net"]) for p in players if isinstance(p["net"], (int, float))]  # type: ignore[arg-type]
+    net_sum = _round(sum(net_list)) if net_list else None
+    abs_scale = sum(abs(n) for n in net_list) if net_list else 0.0
     net_ok = net_sum is not None and abs(net_sum) <= max(2.0, 0.02 * abs_scale)
 
-    invested_sum = _sum([float(p["invested"]) for p in players])  # type: ignore[arg-type]
-    pot_consistent = (
-        isinstance(pot, (int, float)) and abs(invested_sum - float(pot)) <= max(2.0, 0.05 * float(pot))
-    )
-
+    invested_sum = _round(sum(float(p["invested"]) for p in players))  # type: ignore[arg-type]
+    uncertain_count = sum(1 for p in players if p["uncertain"])
+    rows_consistent = uncertain_count == 0
     has_actions = any(p["actions"] for p in players)
 
     if stype == "hand_replay" and has_actions:
-        if net_ok and pot_consistent:
-            status = "validated"
-            confidence = 0.9
-        elif net_ok or pot_consistent:
-            # 部分校验通过（常见于个别玩家动作被漏读）：可用但需人工核对。
-            status = "needs_review"
-            confidence = 0.65
+        if net_ok and rows_consistent:
+            status, confidence = "validated", 0.9
+        elif net_ok:
+            status, confidence = "needs_review", 0.6
         else:
-            status = "needs_review"
-            confidence = 0.45
+            status, confidence = "needs_review", 0.45
     elif has_actions:
-        status = "needs_review"
-        confidence = 0.4
+        status, confidence = "needs_review", 0.4
     else:
-        status = "needs_user"
-        confidence = 0.25
+        status, confidence = "needs_user", 0.25
 
     return {
         "status": status,  # validated | needs_review | needs_user
@@ -131,7 +167,11 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
             "net_ok": bool(net_ok),
             "invested_sum": invested_sum,
             "pot": pot,
-            "pot_consistent": bool(pot_consistent),
+            "uncertain_count": uncertain_count,
+            "rows_consistent": bool(rows_consistent),
         },
-        "note": "逐街动作重建为近似结果；净额守恒/底池一致由引擎校验，低置信项需人工确认后再进入分析。",
+        "note": (
+            "每位玩家投入以净额推算（含盲注/前注），并与逐街动作交叉核对；"
+            "标记「待复核」的行，其动作可能未被完整识别。"
+        ),
     }

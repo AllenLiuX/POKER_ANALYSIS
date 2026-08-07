@@ -425,17 +425,20 @@ export interface ReconstructedAction {
   amount: number | null;
   label: string;
   raw: string;
+  street: string | null;
 }
 
 export interface ReconstructedPlayer {
   alias: string | null;
   position: string | null;
   is_hero: boolean;
+  is_winner: boolean;
   hole_cards: string[];
   net: number | null;
   invested: number;
+  parsed_invested: number;
   actions: ReconstructedAction[];
-  street_count: number;
+  uncertain: boolean;
 }
 
 export interface ReconstructionChecks {
@@ -443,7 +446,8 @@ export interface ReconstructionChecks {
   net_ok: boolean;
   invested_sum: number;
   pot: number | null;
-  pot_consistent: boolean;
+  uncertain_count: number;
+  rows_consistent: boolean;
 }
 
 export interface Reconstruction {

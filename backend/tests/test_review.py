@@ -79,6 +79,41 @@ def test_review_endpoint_ok(monkeypatch):
     assert body["mistakes_considered"] == 1
 
 
+def test_provider_text_retries_on_empty(monkeypatch):
+    """首选文本模型返回空内容时，应自动回退到稳定模型。"""
+    from app.llm import model_client
+    from app.llm import provider as prov
+
+    calls = []
+
+    def fake_call(prompt, *, model, **kw):
+        calls.append(model)
+        return "" if model == prov._TEXT_MODEL else "真正的复盘内容"
+
+    monkeypatch.setattr(model_client, "call_model", fake_call)
+    monkeypatch.setattr(prov.LLMProvider, "gateway_ready", property(lambda self: True))
+    monkeypatch.setattr(prov.LLMProvider, "openai_ready", property(lambda self: False))
+
+    out = prov.LLMProvider().text("hi")
+    assert out == "真正的复盘内容"
+    assert calls == [prov._TEXT_MODEL, prov._TEXT_FALLBACK]
+
+
+def test_review_endpoint_502_when_report_empty(monkeypatch):
+    from app.api import review as review_api
+
+    class _EmptyProvider:
+        gateway_ready = True
+        openai_ready = False
+
+        def text(self, prompt, **kwargs):
+            return "   "
+
+    monkeypatch.setattr(review_api, "get_provider", lambda: _EmptyProvider())
+    r = client.post("/api/trainer/review", json={"total": 5, "accuracy": 0.6})
+    assert r.status_code == 502
+
+
 def test_review_endpoint_400_when_empty(monkeypatch):
     from app.api import review as review_api
 

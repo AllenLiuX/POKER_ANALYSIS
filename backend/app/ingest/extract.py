@@ -44,8 +44,11 @@ _PROMPT = """请把这张 WePoker 截图转写为观测事实 JSON。只写你**
 - alias（昵称）、position（由「大盲/小盲/D」标记 + 座位顺序推断为 BB/SB/BTN/UTG/MP/CO，拿不准就 null）、
 - is_hero（是否为截图主人「我」，通常有高亮/视角，拿不准就 false）、
 - hole_cards（仅摊牌可见时）、net（右侧净额，输为负）、made_hand（摊牌牌型文字，如「葫芦」）、
-- actions_raw（把该玩家一行的逐街动作原文照抄，如 "加注32 → 下注38 → 跟注188 → Allin941"）、
+- actions_raw（把该玩家一行**从左到右的每一个**动作与金额都照抄，用 " → " 连接，如 "加注32 → 下注38 → 跟注188 → Allin941"）、
 - visible_actions（出现过的动作标签数组，取值：加注/下注/跟注/过牌/弃牌/全下）。
+
+特别注意（否则重建会对不上）：打到摊牌/河牌的玩家通常每条街都有一个动作（翻前/翻牌/转牌/河牌，共 3~4 个），
+务必把这一行里的**每一个**动作和金额都写进 actions_raw，不要只写第一个、也不要漏掉中间的；金额要与净额大致自洽（一个输家的各街投入之和≈其净额的绝对值）。
 
 顶层字段：hand_id、blinds（如 "2/4(1)"）、board（已知公共牌数组）、pot（底池数字）、hero_seat、extraction_confidence（0~1，你对本次转写整体把握）、notes（简短备注，如"结算画面无逐步动作"）。
 
@@ -251,5 +254,5 @@ def extract_observations(image: bytes, *, mime: Optional[str] = None, log_id: Op
         "facts": facts,
         "reconstruction": reconstruction,
         "raw_model_output": raw,
-        "note": "阶段①观测提取 + 阶段②下注序列重建（引擎校验净额守恒/底池一致）。数字/合法性以引擎为准。",
+        "note": "多模态模型转写「看得见的事实」，引擎重建下注序列并校验净额守恒。数字/合法性以引擎为准。",
     }

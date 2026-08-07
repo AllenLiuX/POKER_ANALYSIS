@@ -76,10 +76,36 @@ def test_reconstruct_net_conservation_validated():
     }
     r = reconstruct_hand(facts)
     assert r["checks"]["net_ok"] is True  # 1245-1200-33-5-5-1-1 = 0
+    assert r["checks"]["rows_consistent"] is True
     assert r["status"] == "validated"
-    # 两主力各投入 32+38+188+941=1199
     hero = next(p for p in r["players"] if p["alias"] == "先清清兵")
-    assert hero["invested"] == 1199
+    assert hero["is_winner"] is True
+    assert hero["parsed_invested"] == 1199  # 32+38+188+941
+    assert hero["invested"] == 1200  # 赢家投入以底池−净额推算：2445-1245
+    assert hero["uncertain"] is False
+    # 逐街动作带 street 标注
+    assert [a["street"] for a in hero["actions"]] == ["翻前", "翻牌", "转牌", "河牌"]
+    dv = next(p for p in r["players"] if p["alias"] == "DV999")
+    assert dv["invested"] == 1200  # |net|
+
+
+def test_reconstruct_flags_uncertain_when_actions_drop():
+    # DV999 一行动作被漏读成只有"下注32"，但净额显示输了 1245 → 应标记待复核
+    facts = {
+        "screenshot_type": "hand_replay",
+        "pot": 2490,
+        "players": [
+            {"alias": "W", "net": 1245, "actions_raw": "加注32 → 下注38 → 跟注188 → Allin941"},
+            {"alias": "L", "net": -1245, "actions_raw": "下注32"},
+        ],
+    }
+    r = reconstruct_hand(facts)
+    assert r["checks"]["net_ok"] is True  # 1245-1245=0
+    lo = next(p for p in r["players"] if p["alias"] == "L")
+    assert lo["uncertain"] is True
+    assert lo["invested"] == 1245  # 以净额推算，纠正了漏读
+    assert lo["parsed_invested"] == 32
+    assert r["status"] == "needs_review"
 
 
 def test_reconstruct_needs_user_without_actions():
@@ -134,7 +160,8 @@ def test_extract_observations_parses_normalizes_and_reconstructs(monkeypatch):
     rec = result["reconstruction"]
     assert rec is not None
     assert rec["checks"]["net_ok"] is True  # 1245 + (-1200) = 45 ≤ 2%*2445
-    assert rec["players"][0]["invested"] == 1199
+    assert rec["players"][0]["parsed_invested"] == 1199
+    assert rec["players"][0]["invested"] == 1200  # 赢家：底池−净额
 
 
 def test_extract_unrecognized_is_graceful(monkeypatch):

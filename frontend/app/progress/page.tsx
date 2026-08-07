@@ -100,7 +100,11 @@ export default function ProgressPage() {
     setReview({ text: null, loading: true, error: null });
     try {
       const res = await postTrainerReview(toReviewBody(summary));
-      setReview({ text: res.report, loading: false, error: null });
+      if (!res.report || !res.report.trim()) {
+        setReview({ text: null, loading: false, error: "复盘生成为空，请重试" });
+      } else {
+        setReview({ text: res.report, loading: false, error: null });
+      }
     } catch (e) {
       setReview({
         text: null,

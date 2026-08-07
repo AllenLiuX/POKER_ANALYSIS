@@ -172,9 +172,13 @@ def post_trainer_review(req: ReviewRequest) -> dict:
 
     prompt = build_review_prompt(req)
     try:
-        text = provider.text(prompt, system=REVIEW_SYSTEM, max_tokens=900)
+        # 复盘是较长的结构化输出：直接用稳定的 gpt-4o，避免首选推理模型偶发空返回带来的额外延迟。
+        text = provider.text(prompt, system=REVIEW_SYSTEM, max_tokens=900, model="gpt-4o")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"LLM 调用失败：{exc}") from exc
+
+    if not text or not text.strip():
+        raise HTTPException(status_code=502, detail="复盘生成为空，请重试")
 
     return {
         "report": text,
