@@ -15,6 +15,12 @@ import ActionBar from "@/components/ActionBar";
 import FeedbackPanel, { type CoachState } from "@/components/FeedbackPanel";
 import PlayingCard from "@/components/PlayingCard";
 import PokerTable from "@/components/PokerTable";
+import {
+  loadAttempts,
+  recordAttempt,
+  summarize,
+  type Grade,
+} from "@/lib/progress";
 
 const POSITION_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB"];
 const SPOT_TABS: { id: string; label: string }[] = [
@@ -45,11 +51,17 @@ export default function TrainerPage() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats>(ZERO);
+  const [lifetime, setLifetime] = useState({ total: 0, accuracy: 0 });
   const [coach, setCoach] = useState<CoachState>({
     text: null,
     loading: false,
     error: null,
   });
+
+  useEffect(() => {
+    const s = summarize(loadAttempts());
+    setLifetime({ total: s.total, accuracy: s.accuracy });
+  }, []);
 
   const loadNext = useCallback(async () => {
     setLoading(true);
@@ -117,6 +129,20 @@ export default function TrainerPage() {
             bestStreak: Math.max(s.bestStreak, streak),
           };
         });
+        const all = recordAttempt({
+          ts: Date.now(),
+          spot: scenario.spot,
+          position: scenario.position,
+          heroPosition: scenario.hero_position,
+          opener: scenario.opener_position,
+          handClass: scenario.hero_class,
+          action: res.score.chosen,
+          optimalAction: res.score.optimal_action,
+          grade: res.score.grade as Grade,
+          correct: res.score.correct,
+        });
+        const sum = summarize(all);
+        setLifetime({ total: sum.total, accuracy: sum.accuracy });
       } catch (e) {
         setErr(String(e instanceof Error ? e.message : e));
       } finally {
@@ -179,21 +205,31 @@ export default function TrainerPage() {
         <h1 className="text-2xl font-bold">
           翻前训练器{" "}
           <span className="text-sm font-normal text-neutral-500">
-            6-max · 100bb · RFI
+            6-max · 100bb
           </span>
         </h1>
+        <Link
+          href="/progress"
+          className="ml-auto text-sm text-emerald-400 hover:text-emerald-300"
+        >
+          进度详情 →
+        </Link>
       </div>
 
       {/* 统计条 */}
       <div className="mb-5 flex items-center gap-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-4 py-3 text-sm">
-        <Stat label="正确率" value={`${acc}%`} sub={`${stats.correct}/${stats.total}`} />
+        <Stat label="本次正确率" value={`${acc}%`} sub={`${stats.correct}/${stats.total}`} />
         <Stat label="连对" value={String(stats.streak)} />
-        <Stat label="最佳连对" value={String(stats.bestStreak)} />
+        <Stat
+          label="累计手数"
+          value={String(lifetime.total)}
+          sub={`${Math.round(lifetime.accuracy * 100)}%`}
+        />
         <button
           onClick={() => setStats(ZERO)}
           className="ml-auto rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700"
         >
-          重置统计
+          重置本次
         </button>
       </div>
 

@@ -14,6 +14,7 @@ const MODULES = [
   { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "可用", ready: true, href: "/trainer" as string | undefined },
   { title: "翻后训练器", desc: "启发式 → 预计算真 GTO", phase: "Phase 5", ready: false, href: undefined },
   { title: "范围表", desc: "RFI + 防守 · 13×13 网格", phase: "可用", ready: true, href: "/ranges" },
+  { title: "训练进度", desc: "正确率 / 错题回顾", phase: "可用", ready: true, href: "/progress" },
   { title: "胜率 / 赔率工具", desc: "Monte Carlo equity", phase: "Phase 0", ready: true, href: undefined },
   { title: "剥削训练", desc: "对手画像 + node-lock", phase: "Phase 9", ready: false, href: undefined },
   { title: "截图导入", desc: "WePoker 牌谱 → 逐人剥削", phase: "Phase 6", ready: false, href: undefined },
