@@ -71,16 +71,18 @@ class LLMProvider:
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         log_id: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         if self.gateway_ready:
             try:
                 from app.llm import model_client
 
-                # model_client 会在 vision 池内部按顺序 fallback；这里指定首选 gemini-flash
+                # 默认首选 gemini-flash；model_client 会在 vision 池内按顺序 fallback。
+                # 调用方可用 model= 强制某个视觉模型（如重试时强制 gpt-4o）。
                 return model_client.call_model(
                     prompt,
                     images=images,
-                    model=_VISION_ORDER[0],
+                    model=model or _VISION_ORDER[0],
                     system=system,
                     max_tokens=max_tokens,
                     network=self.settings.model_client_network,

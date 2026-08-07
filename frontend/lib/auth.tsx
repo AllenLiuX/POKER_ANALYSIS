@@ -6,11 +6,14 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseEnabled } from "./supabase";
+import { syncLocalToCloud } from "./cloud";
+import { loadAttempts } from "./progress";
 
 interface AuthResult {
   error?: string;
@@ -33,6 +36,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(isSupabaseEnabled);
+  const mergedFor = useRef<string | null>(null);
+
+  // 登录后自动把本地（登录前/离线积累的）记录对账补传到云端，一个用户只跑一次。
+  const reconcile = useCallback((u: User | null) => {
+    if (!u || mergedFor.current === u.id) return;
+    mergedFor.current = u.id;
+    syncLocalToCloud(loadAttempts()).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const sb = getSupabase();
@@ -44,13 +55,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(data.session);
       setUser(data.session?.user ?? null);
       setLoading(false);
+      reconcile(data.session?.user ?? null);
     });
     const { data: sub } = sb.auth.onAuthStateChange((_event, s) => {
       setSession(s);
       setUser(s?.user ?? null);
+      reconcile(s?.user ?? null);
     });
     return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [reconcile]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const sb = getSupabase();

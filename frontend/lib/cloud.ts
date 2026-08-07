@@ -66,15 +66,27 @@ export async function pushAttempt(a: Attempt): Promise<void> {
   await sb.from(TABLE).insert(toRow(userId, a));
 }
 
-/** 批量上传（用于把本地历史一次性同步到云端）。返回写入条数。 */
-export async function pushAttempts(attempts: Attempt[]): Promise<number> {
+/** 对账补传：把本地有、云端还没有的手牌一次性写上去（按 ts 去重，幂等）。
+ *
+ * 用于登录时合并登录前/离线积累的本地记录，或补上曾经写失败的手牌。
+ * 因为每手 ts=Date.now() 实际唯一，用 ts 去重即可避免重复插入。返回新写入条数。
+ */
+export async function syncLocalToCloud(attempts: Attempt[]): Promise<number> {
   const sb = getSupabase();
   if (!sb || attempts.length === 0) return 0;
   const userId = await currentUserId();
   if (!userId) return 0;
-  const rows = attempts.map((a) => toRow(userId, a));
-  const { error } = await sb.from(TABLE).insert(rows);
-  return error ? 0 : rows.length;
+  const { data, error: selErr } = await sb
+    .from(TABLE)
+    .select("ts")
+    .eq("user_id", userId)
+    .limit(5000);
+  if (selErr) return 0;
+  const existing = new Set((data ?? []).map((r) => Number((r as { ts: number }).ts)));
+  const missing = attempts.filter((a) => !existing.has(a.ts));
+  if (missing.length === 0) return 0;
+  const { error } = await sb.from(TABLE).insert(missing.map((a) => toRow(userId, a)));
+  return error ? 0 : missing.length;
 }
 
 /** 拉取当前用户的云端记录（按时间升序，上限 2000）。 */

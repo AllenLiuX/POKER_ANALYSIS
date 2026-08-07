@@ -1,15 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import {
-  API_BASE,
-  getHealth,
-  postEquity,
-  type EquityResponse,
-  type HealthResponse,
-} from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { useState } from "react";
+import { API_BASE, postEquity, type EquityResponse } from "@/lib/api";
 
 const TRAINING = [
   {
@@ -28,24 +21,30 @@ const TRAINING = [
   },
 ];
 
-const TOOLS = [
+const TOOLS: {
+  title: string;
+  desc: string;
+  href: string;
+  icon: string;
+  badge?: string;
+}[] = [
   { title: "范围表", desc: "RFI + 防守 · 13×13 频率网格", href: "/ranges", icon: "▦" },
   { title: "训练进度", desc: "正确率 / 连对 / 错题回顾 · 本地或云端同步", href: "/progress", icon: "📈" },
+  {
+    title: "截图导入",
+    desc: "WePoker 截图 → 观测事实提取（重建 / 剥削建设中）",
+    href: "/import",
+    icon: "📸",
+    badge: "Beta",
+  },
 ];
 
 const COMING = [
   { title: "剥削训练", desc: "对手画像 + node-lock 偏离", phase: "Phase 9", icon: "🧠" },
-  { title: "截图导入", desc: "WePoker 牌谱 → 逐人剥削建议", phase: "Phase 6", icon: "📸" },
+  { title: "逐人剥削建议", desc: "截图重建 → 偏离标注 → LLM 剥削", phase: "Phase 6 · S2+", icon: "🎯" },
 ];
 
 export default function Home() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [healthErr, setHealthErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    getHealth().then(setHealth).catch((e) => setHealthErr(String(e)));
-  }, []);
-
   return (
     <div className="relative min-h-screen overflow-hidden">
       {/* 背景光晕 */}
@@ -59,21 +58,8 @@ export default function Home() {
       />
 
       <main className="mx-auto max-w-6xl px-6 py-8">
-        {/* 顶部导航 */}
-        <nav className="flex items-center gap-3">
-          <span className="text-2xl text-emerald-400">♠</span>
-          <span className="text-lg font-bold tracking-tight">Poker Analysis</span>
-          <span className="hidden text-xs text-neutral-600 sm:inline">
-            · GTO 决策训练
-          </span>
-          <div className="ml-auto flex items-center gap-2.5">
-            <HealthBadge health={health} error={healthErr} />
-            <AuthNav />
-          </div>
-        </nav>
-
         {/* Hero */}
-        <section className="mb-16 mt-14">
+        <section className="mb-16 mt-6">
           <div className="inline-flex items-center gap-2 rounded-full border border-emerald-800/50 bg-emerald-950/30 px-3 py-1 text-xs text-emerald-300">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
             翻前 GTO · 翻后启发式 · 实时反馈
@@ -164,7 +150,14 @@ export default function Home() {
                 {m.icon}
               </span>
               <div className="min-w-0">
-                <h3 className="font-semibold text-neutral-100">{m.title}</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-semibold text-neutral-100">{m.title}</h3>
+                  {m.badge && (
+                    <span className="rounded-full bg-emerald-900/60 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+                      {m.badge}
+                    </span>
+                  )}
+                </div>
                 <p className="truncate text-sm text-neutral-400">{m.desc}</p>
               </div>
               <span className="ml-auto text-neutral-600 transition group-hover:text-emerald-400">
@@ -221,47 +214,6 @@ function SectionTitle({
       </span>
       <div className="ml-2 h-px flex-1 bg-gradient-to-r from-neutral-800 to-transparent" />
     </div>
-  );
-}
-
-function AuthNav() {
-  const { enabled, user } = useAuth();
-  if (!enabled) return null;
-  return (
-    <Link
-      href={user ? "/progress" : "/login"}
-      className="rounded-full border border-neutral-700 bg-neutral-900/60 px-3 py-1 text-xs text-neutral-300 transition hover:bg-neutral-800"
-    >
-      {user ? user.email : "登录"}
-    </Link>
-  );
-}
-
-function HealthBadge({
-  health,
-  error,
-}: {
-  health: HealthResponse | null;
-  error: string | null;
-}) {
-  if (error) {
-    return (
-      <span className="rounded-full bg-red-900/60 px-3 py-1 text-xs text-red-300">
-        后端未连接
-      </span>
-    );
-  }
-  if (!health) {
-    return (
-      <span className="rounded-full bg-neutral-800 px-3 py-1 text-xs text-neutral-400">
-        连接中…
-      </span>
-    );
-  }
-  return (
-    <span className="rounded-full bg-emerald-900/60 px-3 py-1 text-xs text-emerald-300">
-      后端 v{health.version} · 在线
-    </span>
   );
 }
 

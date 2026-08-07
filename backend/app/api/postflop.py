@@ -10,11 +10,14 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.llm import get_provider
 from app.poker.postflop.analyze import analyze_spot
 from app.poker.postflop.coach import build_feedback
+from app.poker.postflop.coach_llm import POSTFLOP_COACH_SYSTEM, build_postflop_coach_prompt
 from app.poker.postflop.heuristics import size_label
 from app.poker.postflop.scenario import ACTION_LABELS, generate_postflop_scenario
 from app.poker.postflop.scoring import score_postflop
+from app.poker.preflop.scenario import card_glyph
 
 router = APIRouter(tags=["postflop"])
 
@@ -83,4 +86,78 @@ def post_postflop_answer(req: PostflopAnswerRequest) -> dict:
         "feedback": feedback,
         "action_label": ACTION_LABELS.get(req.action, req.action),
         "approximate": True,
+    }
+
+
+class PostflopCoachRequest(BaseModel):
+    role: str = Field(..., pattern="^(pfr|caller)$")
+    hero: List[str] = Field(..., description="2 张手牌")
+    board: List[str] = Field(..., description="3 张翻牌")
+    villain_range: str = Field(..., description="对手范围字符串（场景回传）")
+    pot_bb: float
+    bet_bb: Optional[float] = None
+    hero_position: str = Field("BB", description="英雄位置（展示用）")
+    villain_position: str = Field("CO", description="对手位置（展示用）")
+    action: str = Field(..., description="玩家所选动作")
+    size: Optional[str] = Field(None, description="下注/加注尺度桶 id")
+
+
+@router.post("/trainer/postflop/coach")
+def post_postflop_coach(req: PostflopCoachRequest) -> dict:
+    """可选的 LLM 深度讲解：以引擎事实为准，解释翻后「为什么这样打」。
+
+    胜率/MDF/赔率/建议动作仍由启发式引擎得出并传给 LLM；LLM 只负责解释，不产生新数字。
+    走网关（office），失败自动兜底到 OpenAI；两者都没配则 503。
+    """
+    if len(req.hero) != 2 or len(req.board) != 3:
+        raise HTTPException(status_code=400, detail="需要 2 张手牌 + 3 张翻牌")
+    valid = {"pfr": {"check", "bet"}, "caller": {"fold", "call", "raise"}}[req.role]
+    if req.action not in valid:
+        raise HTTPException(
+            status_code=400, detail=f"该角色不支持动作 {req.action!r}，可选：{sorted(valid)}"
+        )
+
+    provider = get_provider()
+    if not (provider.gateway_ready or provider.openai_ready):
+        raise HTTPException(status_code=503, detail="LLM 未配置（见 backend/.env.example）")
+
+    try:
+        texture, hand, equity, rec = analyze_spot(
+            role=req.role,
+            hero=req.hero,
+            board=req.board,
+            villain_range=req.villain_range,
+            pot_bb=req.pot_bb,
+            bet_bb=req.bet_bb,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    score = score_postflop(rec, req.action, req.size)
+    if score.get("recommended_size"):
+        score["recommended_size_label"] = size_label(req.action, score["recommended_size"])
+    if score.get("size"):
+        score["size_label"] = size_label(req.action, str(score["size"]))
+
+    prompt = build_postflop_coach_prompt(
+        role=req.role,
+        hero_pos=req.hero_position,
+        villain_pos=req.villain_position,
+        board_glyphs=" ".join(card_glyph(c) for c in req.board),
+        texture=texture,
+        hand=hand,
+        equity=equity,
+        rec=rec,
+        score=score,
+    )
+    try:
+        text = provider.text(prompt, system=POSTFLOP_COACH_SYSTEM, max_tokens=500)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败：{exc}") from exc
+
+    return {
+        "role": req.role,
+        "action": req.action,
+        "coaching": text,
+        "action_label": ACTION_LABELS.get(req.action, req.action),
     }

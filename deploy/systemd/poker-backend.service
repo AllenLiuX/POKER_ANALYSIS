@@ -1,0 +1,29 @@
+# systemd 单元模板：后端（FastAPI + uvicorn），开机自启 + 崩溃自动重启。
+#
+# 安装（把 __REPO_ROOT__ 换成实际克隆路径，__USER__ 换成运行用户，如 ubuntu）：
+#   sudo cp deploy/systemd/poker-backend.service /etc/systemd/system/
+#   sudo sed -i "s#__REPO_ROOT__#/home/ubuntu/poker_analysis#g; s#__USER__#ubuntu#g" \
+#       /etc/systemd/system/poker-backend.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now poker-backend
+#   systemctl status poker-backend
+#
+# 前提：已跑过一次 deploy/backend.sh（生成 .venv 并安装依赖）。
+
+[Unit]
+Description=Poker Analysis Backend (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO_ROOT__/backend
+# 从 backend/.env 读取密钥等（uvicorn 通过 pydantic-settings 也会读，这里冗余保障）。
+EnvironmentFile=-__REPO_ROOT__/backend/.env
+ExecStart=__REPO_ROOT__/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

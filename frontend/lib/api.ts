@@ -362,4 +362,172 @@ export async function postPostflopAnswer(body: {
   return res.json();
 }
 
+export interface PostflopCoach {
+  role: string;
+  action: string;
+  coaching: string;
+  action_label: string;
+}
+
+export async function postPostflopCoach(body: {
+  role: string;
+  hero: string[];
+  board: string[];
+  villain_range: string;
+  pot_bb: number;
+  bet_bb: number | null;
+  hero_position: string;
+  villain_position: string;
+  action: string;
+  size?: string;
+}): Promise<PostflopCoach> {
+  const res = await fetch(`${API_BASE}/api/trainer/postflop/coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `postflop coach ${res.status}`);
+  }
+  return res.json();
+}
+
+// ---------- 截图导入（Phase 6 · S1：观测提取）----------
+export interface IngestPlayerObs {
+  seat: number | null;
+  alias: string | null;
+  position: string | null;
+  is_hero: boolean;
+  hole_cards: string[];
+  stack_end: number | null;
+  net: number | null;
+  made_hand: string | null;
+  actions_raw: string | null;
+  visible_actions: string[];
+}
+
+export interface ObservationFacts {
+  screenshot_type: "hand_replay" | "result_summary" | "unknown";
+  hand_id: string | null;
+  blinds: string | null;
+  board: string[];
+  pot: number | null;
+  hero_seat: number | null;
+  players: IngestPlayerObs[];
+  extraction_confidence: number;
+  notes: string | null;
+}
+
+// ---------- 阶段②：下注序列重建 ----------
+export interface ReconstructedAction {
+  action: string;
+  amount: number | null;
+  label: string;
+  raw: string;
+}
+
+export interface ReconstructedPlayer {
+  alias: string | null;
+  position: string | null;
+  is_hero: boolean;
+  hole_cards: string[];
+  net: number | null;
+  invested: number;
+  actions: ReconstructedAction[];
+  street_count: number;
+}
+
+export interface ReconstructionChecks {
+  net_sum: number | null;
+  net_ok: boolean;
+  invested_sum: number;
+  pot: number | null;
+  pot_consistent: boolean;
+}
+
+export interface Reconstruction {
+  status: "validated" | "needs_review" | "needs_user";
+  confidence: number;
+  pot: number | null;
+  board: string[];
+  players: ReconstructedPlayer[];
+  checks: ReconstructionChecks;
+  note: string;
+}
+
+/** 单张截图的处理结果（批量数组里的一项）。 */
+export interface IngestItem {
+  filename: string;
+  ok: boolean;
+  error?: string;
+  stage?: string;
+  recognized?: boolean;
+  facts?: ObservationFacts;
+  reconstruction?: Reconstruction | null;
+  raw_model_output?: string;
+  note?: string;
+}
+
+export interface IngestBatchResult {
+  count: number;
+  results: IngestItem[];
+}
+
+/** 批量上传截图，逐图返回观测事实 + 重建。非图片/解析失败为单图错误，不影响其它图。 */
+export async function postIngestExtract(files: File[]): Promise<IngestBatchResult> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  const res = await fetch(`${API_BASE}/api/ingest/extract`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `ingest extract ${res.status}`);
+  }
+  return res.json();
+}
+
+// ---------- AI 复盘报告 ----------
+export interface ReviewMistake {
+  spot: string;
+  position: string;
+  hero_position?: string | null;
+  opener?: string | null;
+  hand_class: string;
+  action: string;
+  optimal_action: string;
+}
+
+export interface ReviewRequestBody {
+  total: number;
+  accuracy: number;
+  current_streak: number;
+  best_streak: number;
+  by_grade: Record<string, number>;
+  by_spot: { key: string; total: number; correct: number }[];
+  by_position: { key: string; total: number; correct: number }[];
+  mistakes: ReviewMistake[];
+}
+
+export interface ReviewResult {
+  report: string;
+  analyzed: number;
+  mistakes_considered: number;
+}
+
+export async function postTrainerReview(body: ReviewRequestBody): Promise<ReviewResult> {
+  const res = await fetch(`${API_BASE}/api/trainer/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `trainer review ${res.status}`);
+  }
+  return res.json();
+}
+
 export { API_BASE };

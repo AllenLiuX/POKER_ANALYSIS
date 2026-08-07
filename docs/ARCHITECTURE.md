@@ -369,6 +369,9 @@ GET  /api/opponents/{id}         → 对手画像 + 剥削建议
 
 **Phase 6 — 截图导入与逐人剥削**（详见 [`SCREENSHOT_IMPORT.md`](./SCREENSHOT_IMPORT.md) §9）
 - 截图提取 → 引擎约束重建 → 用户确认 → 偏离标注 → 对手画像 + LLM 剥削建议。
+- S1 ✅：LLM provider 层（`app/llm/provider.py`，网关 + OpenAI 兜底）已就绪；观测事实提取（`app/ingest/extract.py`）。只抽"看得见的事实"，不做序列推理。鲁棒化：首选 gemini-flash，空/非 JSON 时自动回退 gpt-4o；仍失败或非扑克截图则优雅返回 `recognized=false` + 友好提示（不再 502）。
+- S2 ✅（首版）：下注序列重建（`app/ingest/reconstruct.py`）——确定性解析各玩家 `actions_raw` 为逐街动作，按**净额守恒 + 底池一致**做引擎校验，输出 `status`（validated / needs_review / needs_user）+ 置信度。真相由引擎判定，不经 LLM。`POST /api/ingest/extract` 支持批量（`List[UploadFile]`，≤12 张），逐图返回事实 + 重建；前端 `/import` 多图上传 + 逐结果卡片（未识别友好提示 + 校验徽章）。
+- 后续：S3 偏离标注（把重建的英雄决策点接翻前范围表 / 翻后启发式，量化偏离）；S4 对手画像 + 逐人剥削建议（LLM 接地于引擎事实）。
 
 **Phase 7 — 打磨 + 部署**
 - UI 打磨、空/错状态、部署（前端 Vercel，后端 EC2 + Supabase）。

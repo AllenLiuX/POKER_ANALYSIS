@@ -47,6 +47,19 @@ npm run dev
 # 打开: http://localhost:3000
 ```
 
+## 部署到服务器（AWS / 任意 Linux）
+
+一套自带的部署脚本，在单机上跑起 **后端(:8000)** + **前端(:3000)**：
+
+```bash
+cp deploy/config.env.example deploy/config.env   # 设 NEXT_PUBLIC_API_BASE_URL 为公网可达地址
+cp backend/.env.example backend/.env             # 填密钥（可留空则降级）并配好 CORS
+./deploy/deploy.sh                               # 一键部署前后端（含健康检查）
+```
+
+更新上线：`./deploy/deploy.sh --pull`；查看状态：`./deploy/status.sh`；停止：`./deploy/stop.sh`。
+完整说明（systemd 自启、nginx 反代、故障排查）见 [`deploy/README.md`](./deploy/README.md)。
+
 ## 安全
 
 - **所有密钥只存放于 `.env` / `.env.local`（已 `.gitignore`），绝不硬编码、绝不入 git。**

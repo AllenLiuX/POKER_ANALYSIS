@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   getRangeGrid,
@@ -84,10 +83,7 @@ export default function RangesPage() {
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
-      <div className="mb-6 flex items-center gap-3">
-        <Link href="/" className="text-sm text-neutral-400 hover:text-neutral-200">
-          ← 返回
-        </Link>
+      <div className="mb-6 flex items-baseline gap-3">
         <h1 className="text-2xl font-bold">
           翻前范围表{" "}
           <span className="text-sm font-normal text-neutral-500">6-max · 100bb</span>

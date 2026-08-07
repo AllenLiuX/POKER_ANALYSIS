@@ -230,3 +230,90 @@ def test_postflop_answer_with_size_label():
     assert score.get("size_label")  # 有中文尺度标签
     assert score.get("recommended_size_label")
     assert "启发式近似" not in body["feedback"]["explanation"]  # 不再每次都备注
+
+
+# ---------- 翻后 LLM 教练（mock provider）----------
+def test_postflop_coach_prompt_grounds_engine_facts():
+    from app.poker.postflop.analyze import analyze_spot
+    from app.poker.postflop.coach_llm import build_postflop_coach_prompt
+    from app.poker.postflop.scoring import score_postflop
+
+    texture, hand, equity, rec = analyze_spot(
+        role="caller",
+        hero=["8c", "7c"],
+        board=["9s", "8d", "7h"],
+        villain_range="AA, KK, QQ, AKs",
+        pot_bb=8.25,
+        bet_bb=2.75,
+    )
+    score = score_postflop(rec, "call")
+    prompt = build_postflop_coach_prompt(
+        role="caller",
+        hero_pos="BB",
+        villain_pos="CO",
+        board_glyphs="9♠ 8♦ 7♥",
+        texture=texture,
+        hand=hand,
+        equity=equity,
+        rec=rec,
+        score=score,
+    )
+    # 关键事实（胜率/MDF/建议）必须出现在 prompt 里，供 LLM 接地
+    assert f"{equity:.0%}" in prompt
+    assert "MDF" in prompt
+    assert "9♠ 8♦ 7♥" in prompt
+
+
+def test_postflop_coach_endpoint_ok(monkeypatch):
+    from app.api import postflop as postflop_api
+
+    class _FakeProvider:
+        gateway_ready = True
+        openai_ready = False
+
+        def text(self, prompt, **kwargs):
+            assert "估算胜率" in prompt  # 确认引擎事实进了 prompt
+            return "在湿润连接面上，你的两对已是价值牌，快速下注保护并向对手抽牌收租。"
+
+    monkeypatch.setattr(postflop_api, "get_provider", lambda: _FakeProvider())
+    r = client.post(
+        "/api/trainer/postflop/coach",
+        json={
+            "role": "caller",
+            "hero": ["8c", "7c"],
+            "board": ["9s", "8d", "7h"],
+            "villain_range": "AA, KK, QQ, AKs",
+            "pot_bb": 8.25,
+            "bet_bb": 2.75,
+            "hero_position": "BB",
+            "villain_position": "CO",
+            "action": "call",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["coaching"]
+    assert body["action_label"] == "跟注"
+
+
+def test_postflop_coach_endpoint_503_when_llm_unavailable(monkeypatch):
+    from app.api import postflop as postflop_api
+
+    class _NoProvider:
+        gateway_ready = False
+        openai_ready = False
+
+    monkeypatch.setattr(postflop_api, "get_provider", lambda: _NoProvider())
+    r = client.post(
+        "/api/trainer/postflop/coach",
+        json={
+            "role": "pfr",
+            "hero": ["Ah", "Ad"],
+            "board": ["Ks", "7d", "2c"],
+            "villain_range": "22-99, AJs",
+            "pot_bb": 5.5,
+            "bet_bb": None,
+            "action": "bet",
+        },
+    )
+    assert r.status_code == 503

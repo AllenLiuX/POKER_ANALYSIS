@@ -265,8 +265,9 @@ POST /api/opponents/{id}/reexploit  基于最新样本重算剥削
 
 | 阶段 | 交付 |
 |------|------|
-| **S1** | LLM provider 层（model_client + OpenAI fallback）；单张截图 → 观测事实提取（阶段①） |
-| **S2** | 引擎约束重建（阶段②）+ 置信度 + 用户确认/编辑界面 |
+| **S1** ✅ | LLM provider 层（`app/llm/provider.py`：model_client + OpenAI fallback）；截图 → 观测事实提取（阶段①）。后端 `app/ingest/`（schema + 提取 prompt + JSON 解析/归一化）、前端 `/import`、mock-LLM 单测（`tests/test_ingest.py`）。**鲁棒化**：gemini-flash 空/非 JSON 时自动回退 gpt-4o；非扑克截图/无法识别时优雅返回 `recognized=false` + 友好提示，不再 502。 |
+| **S2** ✅（首版） | 下注序列重建（阶段②）：`app/ingest/reconstruct.py` 确定性解析 `actions_raw` → 逐街动作；按**净额守恒 Σnet=0 + 底池一致**引擎校验，产出 `status`（validated/needs_review/needs_user）+ 置信度。`POST /api/ingest/extract` 支持批量（`List[UploadFile]` ≤12 张、逐图结果 + 早期 503）；前端 `/import` 多图上传 + 逐结果卡片 + 校验徽章。**待办**：可编辑确认界面、结算类截图的多解枚举。 |
+| **S2.5** | 用户确认/编辑界面（改牌、改动作、街边界）+ 结算类截图的约束多解 |
 | **S3** | GTO 偏离标注（阶段③），接翻前范围表（翻后先启发式） |
 | **S4** | 对手画像聚合 + LLM 逐人剥削建议（阶段④） |
 | **S5** | 多张/整场批量导入、对手身份合并、剥削看板打磨 |

@@ -5,10 +5,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getPostflopNext,
   postPostflopAnswer,
+  postPostflopCoach,
   type PostflopAnswer,
   type PostflopScenario,
 } from "@/lib/api";
 import ActionBar from "@/components/ActionBar";
+import { type CoachState } from "@/components/FeedbackPanel";
 import PlayingCard from "@/components/PlayingCard";
 import {
   loadAttempts,
@@ -41,6 +43,11 @@ export default function PostflopTrainerPage() {
   const [role, setRole] = useState("");
   const [scenario, setScenario] = useState<PostflopScenario | null>(null);
   const [answer, setAnswer] = useState<PostflopAnswer | null>(null);
+  const [coach, setCoach] = useState<CoachState>({
+    text: null,
+    loading: false,
+    error: null,
+  });
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -56,6 +63,7 @@ export default function PostflopTrainerPage() {
     setLoading(true);
     setErr(null);
     setAnswer(null);
+    setCoach({ text: null, loading: false, error: null });
     try {
       const scen = await getPostflopNext({ role: role || undefined });
       setScenario(scen);
@@ -118,6 +126,32 @@ export default function PostflopTrainerPage() {
     [scenario, answer, submitting],
   );
 
+  const requestCoach = useCallback(async () => {
+    if (!scenario || !answer || coach.loading || coach.text) return;
+    setCoach({ text: null, loading: true, error: null });
+    try {
+      const res = await postPostflopCoach({
+        role: scenario.role,
+        hero: scenario.hero,
+        board: scenario.board,
+        villain_range: scenario.villain_range,
+        pot_bb: scenario.pot_bb,
+        bet_bb: scenario.bet_bb,
+        hero_position: scenario.hero_position,
+        villain_position: scenario.villain_position,
+        action: answer.score.chosen,
+        size: answer.score.size ?? undefined,
+      });
+      setCoach({ text: res.coaching, loading: false, error: null });
+    } catch (e) {
+      setCoach({
+        text: null,
+        loading: false,
+        error: String(e instanceof Error ? e.message : e),
+      });
+    }
+  }, [scenario, answer, coach.loading, coach.text]);
+
   // 出招快捷键由 ActionBar 自己处理；这里只在已有反馈时用 Enter/空格进入下一手。
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -160,10 +194,7 @@ export default function PostflopTrainerPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-10">
-      <div className="mb-6 flex items-center gap-3">
-        <Link href="/" className="text-sm text-neutral-400 hover:text-neutral-200">
-          ← 返回
-        </Link>
+      <div className="mb-6 flex items-baseline gap-3">
         <h1 className="text-2xl font-bold">
           翻后训练器{" "}
           <span
@@ -173,12 +204,6 @@ export default function PostflopTrainerPage() {
             翻牌 · 启发式 ⓘ
           </span>
         </h1>
-        <Link
-          href="/trainer"
-          className="ml-auto text-sm text-emerald-400 hover:text-emerald-300"
-        >
-          翻前训练 →
-        </Link>
       </div>
 
       {/* 统计条 */}
@@ -277,7 +302,12 @@ export default function PostflopTrainerPage() {
                 onAct={act}
               />
             ) : (
-              <PostflopFeedback answer={answer} onNext={loadNext} />
+              <PostflopFeedback
+                answer={answer}
+                coach={coach}
+                onRequestCoach={requestCoach}
+                onNext={loadNext}
+              />
             )}
           </div>
 
@@ -294,9 +324,13 @@ export default function PostflopTrainerPage() {
 
 function PostflopFeedback({
   answer,
+  coach,
+  onRequestCoach,
   onNext,
 }: {
   answer: PostflopAnswer;
+  coach: CoachState;
+  onRequestCoach: () => void;
   onNext: () => void;
 }) {
   const { score, feedback, recommendation: rec, equity } = answer;
@@ -369,6 +403,32 @@ function PostflopFeedback({
           <span className="rounded bg-neutral-800 px-2 py-1 text-neutral-400">
             尺度建议：{rec.size_advice}
           </span>
+        )}
+      </div>
+
+      {/* AI 深度教练（可选，点击才调 LLM） */}
+      <div className="mt-4 border-t border-neutral-800 pt-4">
+        {coach.text ? (
+          <div className="rounded-xl bg-neutral-900/70 p-3">
+            <div className="mb-1 flex items-center gap-2 text-xs font-medium text-violet-300">
+              <span>AI 教练</span>
+              <span className="text-neutral-600">讲解为什么这样打</span>
+            </div>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-neutral-200">
+              {coach.text}
+            </p>
+          </div>
+        ) : (
+          <button
+            onClick={onRequestCoach}
+            disabled={coach.loading}
+            className="w-full rounded-xl border border-violet-700/60 bg-violet-950/30 py-2.5 text-sm font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
+          >
+            {coach.loading ? "AI 教练思考中…" : "🧠 AI 深度讲解：为什么这样打？"}
+          </button>
+        )}
+        {coach.error && (
+          <p className="mt-2 text-xs text-red-400">教练暂时不可用：{coach.error}</p>
         )}
       </div>
 

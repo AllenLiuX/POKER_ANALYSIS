@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getTrainerNext,
@@ -227,28 +226,13 @@ export default function TrainerPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-10">
-      <div className="mb-6 flex items-center gap-3">
-        <Link href="/" className="text-sm text-neutral-400 hover:text-neutral-200">
-          ← 返回
-        </Link>
+      <div className="mb-6 flex items-baseline gap-3">
         <h1 className="text-2xl font-bold">
           翻前训练器{" "}
           <span className="text-sm font-normal text-neutral-500">
             6-max · 100bb
           </span>
         </h1>
-        <Link
-          href="/trainer/postflop"
-          className="ml-auto text-sm text-emerald-400 hover:text-emerald-300"
-        >
-          翻后训练 →
-        </Link>
-        <Link
-          href="/progress"
-          className="text-sm text-emerald-400 hover:text-emerald-300"
-        >
-          进度详情 →
-        </Link>
       </div>
 
       {/* 统计条 */}
