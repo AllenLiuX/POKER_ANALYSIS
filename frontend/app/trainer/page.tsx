@@ -268,80 +268,68 @@ export default function TrainerPage() {
         </button>
       </div>
 
-      {/* 难度 + 智能模式 */}
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="flex gap-1 rounded-lg bg-neutral-900 p-1">
-          {DIFFICULTY_TABS.map((t) => (
+      {/* 训练设置：类型 / 难度 / 模式 收进一张卡，位置在下一行 */}
+      <div className="mb-5 rounded-xl border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+          <Segmented
+            label="类型"
+            options={SPOT_TABS}
+            value={spotFilter}
+            onChange={selectSpot}
+            disabled={adaptive}
+          />
+          <Segmented
+            label="难度"
+            options={DIFFICULTY_TABS}
+            value={difficulty}
+            onChange={setDifficulty}
+          />
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-neutral-500">
+              模式
+            </span>
             <button
-              key={t.id}
-              onClick={() => setDifficulty(t.id)}
-              title={t.hint}
+              onClick={() => setAdaptive((v) => !v)}
+              title="按你的历史弱项与练习不足处自动挑选题目"
               className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                t.id === difficulty
-                  ? "bg-neutral-100 text-neutral-900"
-                  : "text-neutral-400 hover:text-neutral-200"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => setAdaptive((v) => !v)}
-          className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-            adaptive
-              ? "bg-violet-600 text-white"
-              : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-          }`}
-        >
-          {adaptive ? "🎯 智能训练：开" : "🎯 智能训练"}
-        </button>
-        <span className="text-xs text-neutral-600">
-          {DIFFICULTY_TABS.find((d) => d.id === difficulty)?.hint}
-        </span>
-      </div>
-
-      {/* 训练类型 */}
-      <div
-        className={`mb-3 flex gap-2 transition ${adaptive ? "pointer-events-none opacity-40" : ""}`}
-      >
-        {SPOT_TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => selectSpot(t.id)}
-            className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${
-              t.id === spotFilter
-                ? "bg-neutral-100 text-neutral-900"
-                : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* 位置 / 对局过滤 */}
-      {adaptive ? (
-        <p className="mb-5 text-xs text-violet-400">
-          智能模式：按你的历史弱项与练习不足处自动挑选题目（已忽略上面的手动过滤）。
-        </p>
-      ) : (
-        <div className="mb-5 flex flex-wrap gap-2">
-          {choices.map((p) => (
-            <button
-              key={p}
-              onClick={() => setPosFilter(p)}
-              className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
-                p === posFilter
-                  ? "bg-emerald-600 text-white"
+                adaptive
+                  ? "bg-violet-600 text-white"
                   : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
               }`}
             >
-              {p === "随机" ? "随机" : matchupLabel(p)}
+              🎯 智能训练{adaptive ? "：开" : ""}
             </button>
-          ))}
+          </div>
         </div>
-      )}
+
+        {/* 位置 / 对局 */}
+        <div className="mt-3 border-t border-neutral-800/70 pt-3">
+          {adaptive ? (
+            <p className="text-xs text-violet-400">
+              智能模式：按你的历史弱项与练习不足处自动挑选题目（已忽略手动过滤）。
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-[10px] uppercase tracking-wider text-neutral-500">
+                {spotFilter === "RFI" ? "位置" : "对局"}
+              </span>
+              {choices.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPosFilter(p)}
+                  className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
+                    p === posFilter
+                      ? "bg-emerald-600 text-white"
+                      : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+                  }`}
+                >
+                  {p === "随机" ? "随机" : matchupLabel(p)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
 
       {err && (
         <p className="mb-4 rounded-lg bg-red-950/50 px-4 py-2 text-sm text-red-300">
@@ -412,6 +400,44 @@ export default function TrainerPage() {
         <p className="text-center text-neutral-500">发牌中…</p>
       )}
     </main>
+  );
+}
+
+function Segmented({
+  label,
+  options,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  options: { id: string; label: string; hint?: string }[];
+  value: string;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={`flex flex-col gap-1 ${disabled ? "pointer-events-none opacity-40" : ""}`}>
+      <span className="text-[10px] uppercase tracking-wider text-neutral-500">
+        {label}
+      </span>
+      <div className="flex gap-1 rounded-lg bg-neutral-900 p-1">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            onClick={() => onChange(o.id)}
+            title={o.hint}
+            className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+              o.id === value
+                ? "bg-neutral-100 text-neutral-900"
+                : "text-neutral-400 hover:text-neutral-200"
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

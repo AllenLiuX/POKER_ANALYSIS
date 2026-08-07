@@ -199,20 +199,25 @@ export default function PostflopTrainerPage() {
       </div>
 
       {/* 角色 */}
-      <div className="mb-5 flex flex-wrap gap-2">
-        {ROLE_TABS.map((t) => (
-          <button
-            key={t.id || "any"}
-            onClick={() => setRole(t.id)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-              t.id === role
-                ? "bg-neutral-100 text-neutral-900"
-                : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="mb-5 rounded-xl border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="mr-1 text-[10px] uppercase tracking-wider text-neutral-500">
+            角色
+          </span>
+          {ROLE_TABS.map((t) => (
+            <button
+              key={t.id || "any"}
+              onClick={() => setRole(t.id)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                t.id === role
+                  ? "bg-neutral-100 text-neutral-900"
+                  : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {err && (
