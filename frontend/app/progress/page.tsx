@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   clearProgress,
   loadAttempts,
@@ -11,6 +11,12 @@ import {
   type Bucket,
   type Summary,
 } from "@/lib/progress";
+import {
+  clearCloudAttempts,
+  fetchCloudAttempts,
+  pushAttempts,
+} from "@/lib/cloud";
+import { useAuth } from "@/lib/auth";
 
 const ACTION_LABEL: Record<string, string> = {
   fold: "弃牌",
@@ -34,19 +40,42 @@ function accColor(a: number): string {
 }
 
 export default function ProgressPage() {
+  const { enabled, user, signOut } = useAuth();
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const cloud = enabled && !!user;
 
-  function refresh() {
-    setSummary(summarize(loadAttempts()));
-  }
+  const refresh = useCallback(async () => {
+    const attempts = cloud ? await fetchCloudAttempts() : loadAttempts();
+    setSummary(summarize(attempts));
+  }, [cloud]);
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refresh]);
+
+  async function handleClear() {
+    if (!confirm("确定清空记录？此操作不可撤销。")) return;
+    setBusy(true);
+    if (cloud) await clearCloudAttempts();
+    else clearProgress();
+    await refresh();
+    setBusy(false);
+  }
+
+  async function handleUpload() {
+    const local = loadAttempts();
+    if (!local.length) return;
+    setBusy(true);
+    await pushAttempts(local);
+    await refresh();
+    setBusy(false);
+  }
 
   if (!summary) return null;
 
   const empty = summary.total === 0;
+  const localCount = typeof window !== "undefined" ? loadAttempts().length : 0;
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
@@ -55,20 +84,61 @@ export default function ProgressPage() {
           ← 训练器
         </Link>
         <h1 className="text-2xl font-bold">我的进度</h1>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs ${
+            cloud
+              ? "bg-emerald-900/60 text-emerald-300"
+              : "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          {cloud ? `云端 · ${user?.email}` : "本地模式"}
+        </span>
         {!empty && (
           <button
-            onClick={() => {
-              if (confirm("确定清空本地进度记录？此操作不可撤销。")) {
-                clearProgress();
-                refresh();
-              }
-            }}
-            className="ml-auto rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-red-900/60 hover:text-red-300"
+            onClick={handleClear}
+            disabled={busy}
+            className="ml-auto rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-red-900/60 hover:text-red-300 disabled:opacity-50"
           >
             清空进度
           </button>
         )}
       </div>
+
+      {/* 账户 / 同步操作条 */}
+      {enabled && (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 px-4 py-2.5 text-sm">
+          {cloud ? (
+            <>
+              <span className="text-neutral-400">已登录，进度云端同步中</span>
+              {localCount > 0 && (
+                <button
+                  onClick={handleUpload}
+                  disabled={busy}
+                  className="rounded-lg bg-emerald-700/70 px-3 py-1.5 text-xs text-emerald-100 hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  上传本地 {localCount} 手到云端
+                </button>
+              )}
+              <button
+                onClick={() => signOut()}
+                className="ml-auto rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700"
+              >
+                退出登录
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-neutral-400">登录后可跨设备同步进度</span>
+              <Link
+                href="/login"
+                className="ml-auto rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+              >
+                登录 / 注册
+              </Link>
+            </>
+          )}
+        </div>
+      )}
 
       {empty ? (
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-10 text-center">
@@ -80,7 +150,9 @@ export default function ProgressPage() {
             去练一把 →
           </Link>
           <p className="mt-4 text-xs text-neutral-600">
-            进度保存在本机浏览器（localStorage）。登录云同步将在接入 Supabase 后开放。
+            {enabled
+              ? "登录后进度将云端同步，可跨设备访问。"
+              : "进度保存在本机浏览器（localStorage）。配置 Supabase 后可开启登录云同步。"}
           </p>
         </div>
       ) : (
@@ -137,7 +209,11 @@ export default function ProgressPage() {
           </section>
 
           <p className="mt-6 text-center text-xs text-neutral-600">
-            进度保存在本机浏览器（localStorage）。登录云同步将在接入 Supabase 后开放。
+            {cloud
+              ? "进度已云端同步。"
+              : enabled
+                ? "本地模式；登录后可云端同步跨设备。"
+                : "进度保存在本机浏览器（localStorage）。配置 Supabase 后可开启登录云同步。"}
           </p>
         </>
       )}

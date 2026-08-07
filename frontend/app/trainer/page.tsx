@@ -19,8 +19,10 @@ import {
   loadAttempts,
   recordAttempt,
   summarize,
+  type Attempt,
   type Grade,
 } from "@/lib/progress";
+import { pushAttempt } from "@/lib/cloud";
 
 const POSITION_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB"];
 const SPOT_TABS: { id: string; label: string }[] = [
@@ -129,7 +131,7 @@ export default function TrainerPage() {
             bestStreak: Math.max(s.bestStreak, streak),
           };
         });
-        const all = recordAttempt({
+        const attempt: Attempt = {
           ts: Date.now(),
           spot: scenario.spot,
           position: scenario.position,
@@ -140,9 +142,12 @@ export default function TrainerPage() {
           optimalAction: res.score.optimal_action,
           grade: res.score.grade as Grade,
           correct: res.score.correct,
-        });
+        };
+        const all = recordAttempt(attempt);
         const sum = summarize(all);
         setLifetime({ total: sum.total, accuracy: sum.accuracy });
+        // 登录后顺带同步到云端（未登录/未启用则静默跳过）
+        pushAttempt(attempt).catch(() => {});
       } catch (e) {
         setErr(String(e instanceof Error ? e.message : e));
       } finally {

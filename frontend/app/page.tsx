@@ -9,6 +9,7 @@ import {
   type EquityResponse,
   type HealthResponse,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 const MODULES = [
   { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "可用", ready: true, href: "/trainer" as string | undefined },
@@ -37,6 +38,7 @@ export default function Home() {
             Poker Analysis
           </h1>
           <HealthBadge health={health} error={healthErr} />
+          <AuthNav />
         </div>
         <p className="mt-2 text-neutral-400">
           面向进阶牌手的 GTO 决策训练与剥削分析平台 · 后端 <code className="text-neutral-500">{API_BASE}</code>
@@ -79,6 +81,19 @@ export default function Home() {
 
       <EquityDemo />
     </main>
+  );
+}
+
+function AuthNav() {
+  const { enabled, user } = useAuth();
+  if (!enabled) return null;
+  return (
+    <Link
+      href={user ? "/progress" : "/login"}
+      className="ml-auto rounded-full bg-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
+    >
+      {user ? user.email : "登录"}
+    </Link>
   );
 }
 
