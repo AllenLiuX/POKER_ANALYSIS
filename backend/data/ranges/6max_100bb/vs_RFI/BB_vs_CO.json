@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "format": "6max_100bb",
+    "spot": "vs_RFI",
+    "position": "BB_vs_CO",
+    "hero_position": "BB",
+    "opener_position": "CO",
+    "open_size_bb": 2.5,
+    "source": "open-source approximation",
+    "note": "近似防守范围：BB 面对 CO 2.5bb 开池。CO 开池比 BTN 紧，BB 防守略收；3bet 价值线更靠前。非精确解，仅供学习。"
+  },
+  "actions": {
+    "raise": "JJ+, AQs+, AKo, A5s, A4s, 76s, 65s, 54s",
+    "call": "22, 33, 44, 55, 66, 77, 88, 99, TT, ATs, AJs, A6s, A7s, A8s, A9s, A2s, A3s, KTs, KJs, KQs, K8s, K9s, QTs, QJs, Q9s, JTs, J9s, T9s, 98s, 87s, 86s, ATo, AJo, AQo, KJo, KQo, QJo, JTo"
+  },
+  "mixed": {
+    "A5s": { "raise": 0.5 },
+    "TT": { "raise": 0.3, "call": 0.7 }
+  }
+}

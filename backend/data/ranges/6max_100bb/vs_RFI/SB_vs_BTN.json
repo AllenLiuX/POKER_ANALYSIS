@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "format": "6max_100bb",
+    "spot": "vs_RFI",
+    "position": "SB_vs_BTN",
+    "hero_position": "SB",
+    "opener_position": "BTN",
+    "open_size_bb": 2.5,
+    "source": "open-source approximation",
+    "note": "近似防守范围：SB 面对 BTN 2.5bb 开池。SB 翻后永远 OOP，偏向 3bet-or-fold，只保留少量强跟注牌。非精确解，仅供学习。"
+  },
+  "actions": {
+    "raise": "77+, ATs, AJs, AQs, AKs, KTs, KJs, KQs, QTs, JTs, A5s, A4s, A3s, AJo, AQo, AKo, KQo, 76s, 65s",
+    "call": "22, 33, 44, 55, 66, A9s, K9s, QJs, T9s, 98s, ATo"
+  },
+  "mixed": {
+    "A5s": { "raise": 0.7 },
+    "76s": { "raise": 0.5 },
+    "66": { "raise": 0.5, "call": 0.5 }
+  }
+}

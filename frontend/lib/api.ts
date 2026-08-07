@@ -66,7 +66,7 @@ export async function getRangeGrid(
 export interface TrainerSeat {
   position: string;
   order: number;
-  status: "hero" | "folded" | "waiting";
+  status: "hero" | "folded" | "waiting" | "raiser";
   is_hero: boolean;
   is_blind: boolean;
 }
@@ -76,6 +76,9 @@ export interface TrainerScenario {
   format: string;
   spot: string;
   position: string;
+  hero_position: string;
+  opener_position: string | null;
+  facing: { opener_position: string; open_size_bb: number } | null;
   hero: string[];
   hero_glyphs: string[];
   hero_class: string;
@@ -111,10 +114,23 @@ export interface TrainerAnswer {
   scenario_id: string | null;
   hand_class: string;
   position: string;
+  hero_position: string;
+  opener_position: string | null;
   spot: string;
   score: ScoreResult;
   feedback: Feedback;
   meta: Record<string, unknown>;
+}
+
+export async function getTrainerSpots(
+  format?: string,
+): Promise<SpotIndexEntry[]> {
+  const qs = format ? `?format=${encodeURIComponent(format)}` : "";
+  const res = await fetch(`${API_BASE}/api/trainer/spots${qs}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`trainer spots ${res.status}`);
+  return (await res.json()).spots;
 }
 
 export async function getTrainerNext(params?: {

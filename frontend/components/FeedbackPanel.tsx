@@ -64,7 +64,11 @@ export default function FeedbackPanel({
           {feedback.headline}
         </span>
         <span className="text-sm text-neutral-400">
-          {answer.hand_class} @ {answer.position}
+          {answer.hand_class}
+          {" · "}
+          {answer.opener_position
+            ? `${answer.hero_position} vs ${answer.opener_position}`
+            : answer.hero_position}
         </span>
       </div>
 

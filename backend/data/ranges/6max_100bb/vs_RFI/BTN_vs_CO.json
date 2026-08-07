@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "format": "6max_100bb",
+    "spot": "vs_RFI",
+    "position": "BTN_vs_CO",
+    "hero_position": "BTN",
+    "opener_position": "CO",
+    "open_size_bb": 2.5,
+    "source": "open-source approximation",
+    "note": "近似防守范围：BTN 面对 CO 2.5bb 开池。BTN 有绝对位置，大量在位跟注 + 极化 3bet 拿走死钱。非精确解，仅供学习。"
+  },
+  "actions": {
+    "raise": "JJ+, AQs+, AKo, A5s, A4s, KJs, 76s",
+    "call": "22, 33, 44, 55, 66, 77, 88, 99, TT, ATs, AJs, A6s, A7s, A8s, A9s, KTs, KQs, K9s, QTs, QJs, Q9s, JTs, J9s, T9s, 98s, 87s, 65s, ATo, AJo, AQo, KQo, KJo, QJo, JTo"
+  },
+  "mixed": {
+    "A5s": { "raise": 0.5 },
+    "KJs": { "raise": 0.4, "call": 0.6 }
+  }
+}

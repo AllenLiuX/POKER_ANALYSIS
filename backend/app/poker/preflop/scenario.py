@@ -44,17 +44,24 @@ def _deal_hero(rng: random.Random) -> List[str]:
     return [deck[0], deck[1]]
 
 
-def _build_seats(hero_position: str, spot: str) -> List[Dict[str, object]]:
+def _build_seats(
+    hero_position: str, spot: str, opener_position: Optional[str] = None
+) -> List[Dict[str, object]]:
     """按行动顺序生成 6 个座位状态，供前端画牌桌。
 
-    RFI：hero 之前的位置全部 folded，之后的位置 waiting；SB/BB 标记已下盲注。
+    RFI：hero 之前的位置全部 folded，之后的位置 waiting。
+    vs_RFI：opener 标记为 raiser，hero 之前的其它位置 folded，之后 waiting。
+    SB/BB 恒标记 is_blind。
     """
     hero_idx = POSITION_ORDER.index(hero_position)
+    opener_idx = POSITION_ORDER.index(opener_position) if opener_position else None
     seats: List[Dict[str, object]] = []
     for idx, pos in enumerate(POSITION_ORDER):
         if pos == hero_position:
             status = "hero"
-        elif spot == "RFI" and idx < hero_idx:
+        elif opener_idx is not None and idx == opener_idx:
+            status = "raiser"
+        elif idx < hero_idx:
             status = "folded"
         else:
             status = "waiting"
@@ -70,15 +77,27 @@ def _build_seats(hero_position: str, spot: str) -> List[Dict[str, object]]:
     return seats
 
 
-def _prompt_text(spot: str, position: str, hero: List[str]) -> str:
+def _prompt_text(
+    spot: str,
+    hero_position: str,
+    hero: List[str],
+    opener_position: Optional[str] = None,
+    open_size_bb: float = 2.5,
+) -> str:
     hand = " ".join(card_glyph(c) for c in hero)
     if spot == "RFI":
-        if position == "UTG":
+        if hero_position == "UTG":
             lead = "轮到你在 UTG 首先行动"
         else:
-            lead = f"前面玩家全部弃牌，轮到你在 {position} 首先行动"
+            lead = f"前面玩家全部弃牌，轮到你在 {hero_position} 首先行动"
         return f"6-max 100bb。{lead}。你的手牌是 {hand}。该怎么打？"
-    return f"6-max 100bb。位置 {position}（{spot}）。你的手牌是 {hand}。该怎么打？"
+    if spot == "vs_RFI":
+        size = f"{open_size_bb:g}bb"
+        return (
+            f"6-max 100bb。{opener_position} 加注开池到 {size}，"
+            f"其余玩家弃牌，轮到你在 {hero_position} 防守。你的手牌是 {hand}。该怎么打？"
+        )
+    return f"6-max 100bb。位置 {hero_position}（{spot}）。你的手牌是 {hand}。该怎么打？"
 
 
 def available_spots(fmt: Optional[str] = None) -> List[Dict[str, str]]:
@@ -116,24 +135,41 @@ def generate_scenario(
 
     chosen = rng.choice(pool)
     ps = load_spot(chosen["format"], chosen["spot"], chosen["position"])
+    meta = ps.meta
 
     hero = _deal_hero(rng)
     cls = hand_class(hero[0], hero[1])
     actions = _order_actions(list(ps.actions) + ["fold"])
 
+    spot = chosen["spot"]
+    hero_position = str(meta.get("hero_position", chosen["position"]))
+    opener_position = meta.get("opener_position")
+    opener_position = str(opener_position) if opener_position else None
+    open_size_bb = float(meta.get("open_size_bb", 2.5))
+
+    if spot == "vs_RFI":
+        pot_bb = round(0.5 + 1.0 + open_size_bb, 2)
+        facing = {"opener_position": opener_position, "open_size_bb": open_size_bb}
+    else:
+        pot_bb = 1.5
+        facing = None
+
     return {
         "id": uuid.uuid4().hex,
         "format": chosen["format"],
-        "spot": chosen["spot"],
-        "position": chosen["position"],
+        "spot": spot,
+        "position": chosen["position"],  # 评分/加载键（vs_RFI 为 'BB_vs_BTN' 复合键）
+        "hero_position": hero_position,
+        "opener_position": opener_position,
+        "facing": facing,
         "hero": hero,
         "hero_glyphs": [card_glyph(c) for c in hero],
         "hero_class": cls,
         "effective_stack_bb": 100,
         "blinds": {"sb": 0.5, "bb": 1.0},
-        "pot_bb": 1.5,
-        "seats": _build_seats(chosen["position"], chosen["spot"]),
+        "pot_bb": pot_bb,
+        "seats": _build_seats(hero_position, spot, opener_position),
         "available_actions": actions,
         "action_labels": {a: ACTION_LABELS.get(a, a) for a in actions},
-        "prompt": _prompt_text(chosen["spot"], chosen["position"], hero),
+        "prompt": _prompt_text(spot, hero_position, hero, opener_position, open_size_bb),
     }

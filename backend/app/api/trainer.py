@@ -74,14 +74,24 @@ def post_trainer_answer(req: TrainerAnswerRequest) -> dict:
             detail=f"该 spot 不支持动作 {req.action!r}，可选：{sorted(freqs.keys())}",
         )
 
+    hero_position = str(ps.meta.get("hero_position", req.position))
+    opener_position = ps.meta.get("opener_position")
+    opener_position = str(opener_position) if opener_position else None
+
     score = score_action(freqs, req.action)
     feedback = build_feedback(
-        position=req.position, spot=req.spot, hand_class=cls, score=score
+        hero_position=hero_position,
+        spot=req.spot,
+        hand_class=cls,
+        score=score,
+        opener_position=opener_position,
     )
     return {
         "scenario_id": req.scenario_id,
         "hand_class": cls,
         "position": req.position,
+        "hero_position": hero_position,
+        "opener_position": opener_position,
         "spot": req.spot,
         "score": score,
         "feedback": feedback,
@@ -123,14 +133,19 @@ def post_trainer_coach(req: TrainerCoachRequest) -> dict:
     if not (provider.gateway_ready or provider.openai_ready):
         raise HTTPException(status_code=503, detail="LLM 未配置（见 backend/.env.example）")
 
+    hero_position = str(ps.meta.get("hero_position", req.position))
+    opener_position = ps.meta.get("opener_position")
+    opener_position = str(opener_position) if opener_position else None
+
     score = score_action(freqs, req.action)
     glyphs = " ".join(card_glyph(c) for c in req.hero)
     prompt = build_coach_prompt(
-        position=req.position,
+        hero_position=hero_position,
         spot=req.spot,
         hand_class=cls,
         hero_glyphs=glyphs,
         score=score,
+        opener_position=opener_position,
     )
     try:
         text = provider.text(prompt, system=COACH_SYSTEM, max_tokens=500)

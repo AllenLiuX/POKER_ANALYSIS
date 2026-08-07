@@ -11,10 +11,46 @@ const SEAT_SLOT: Record<string, { left: string; top: string }> = {
   BB: { left: "13%", top: "27%" },
 };
 
-function SeatChip({ seat, hero }: { seat: TrainerSeat; hero: string[] }) {
+function SeatChip({
+  seat,
+  hero,
+  openSize,
+}: {
+  seat: TrainerSeat;
+  hero: string[];
+  openSize: number;
+}) {
   const slot = SEAT_SLOT[seat.position] ?? { left: "50%", top: "50%" };
   const base =
     "absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1";
+  const chipStyle =
+    seat.status === "hero"
+      ? "border-emerald-400 bg-emerald-500/20 text-emerald-200 ring-2 ring-emerald-400/50"
+      : seat.status === "raiser"
+        ? "border-red-400 bg-red-500/20 text-red-200 ring-2 ring-red-400/50"
+        : seat.status === "folded"
+          ? "border-neutral-800 bg-neutral-900 text-neutral-600"
+          : "border-neutral-600 bg-neutral-800 text-neutral-300";
+  const labelStyle =
+    seat.status === "hero"
+      ? "text-emerald-300"
+      : seat.status === "raiser"
+        ? "text-red-300"
+        : seat.status === "folded"
+          ? "text-neutral-600"
+          : "text-neutral-500";
+  const label =
+    seat.status === "hero"
+      ? "YOU"
+      : seat.status === "raiser"
+        ? `加注 ${openSize}bb`
+        : seat.status === "folded"
+          ? "fold"
+          : seat.is_blind
+            ? seat.position === "SB"
+              ? "SB 0.5"
+              : "BB 1"
+            : "待行动";
   return (
     <div className={base} style={{ left: slot.left, top: slot.top }}>
       {seat.status === "hero" && (
@@ -25,35 +61,11 @@ function SeatChip({ seat, hero }: { seat: TrainerSeat; hero: string[] }) {
         </div>
       )}
       <div
-        className={`flex h-12 w-12 items-center justify-center rounded-full border-2 text-xs font-bold transition ${
-          seat.status === "hero"
-            ? "border-emerald-400 bg-emerald-500/20 text-emerald-200 ring-2 ring-emerald-400/50"
-            : seat.status === "folded"
-              ? "border-neutral-800 bg-neutral-900 text-neutral-600"
-              : "border-neutral-600 bg-neutral-800 text-neutral-300"
-        }`}
+        className={`flex h-12 w-12 items-center justify-center rounded-full border-2 text-xs font-bold transition ${chipStyle}`}
       >
         {seat.position}
       </div>
-      <span
-        className={`text-[10px] ${
-          seat.status === "hero"
-            ? "text-emerald-300"
-            : seat.status === "folded"
-              ? "text-neutral-600"
-              : "text-neutral-500"
-        }`}
-      >
-        {seat.status === "hero"
-          ? "YOU"
-          : seat.status === "folded"
-            ? "fold"
-            : seat.is_blind
-              ? seat.position === "SB"
-                ? "SB 0.5"
-                : "BB 1"
-              : "待行动"}
-      </span>
+      <span className={`text-[10px] ${labelStyle}`}>{label}</span>
       {seat.position === "BTN" && (
         <span className="absolute -right-4 top-0 flex h-5 w-5 items-center justify-center rounded-full bg-white text-[10px] font-bold text-neutral-900">
           D
@@ -64,6 +76,7 @@ function SeatChip({ seat, hero }: { seat: TrainerSeat; hero: string[] }) {
 }
 
 export default function PokerTable({ scenario }: { scenario: TrainerScenario }) {
+  const openSize = scenario.facing?.open_size_bb ?? 2.5;
   return (
     <div className="relative mx-auto aspect-[4/3] w-full max-w-xl">
       {/* 桌面 */}
@@ -83,7 +96,12 @@ export default function PokerTable({ scenario }: { scenario: TrainerScenario }) 
       </div>
       {/* 座位 */}
       {scenario.seats.map((seat) => (
-        <SeatChip key={seat.position} seat={seat} hero={scenario.hero} />
+        <SeatChip
+          key={seat.position}
+          seat={seat}
+          hero={scenario.hero}
+          openSize={openSize}
+        />
       ))}
     </div>
   );

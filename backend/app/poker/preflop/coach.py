@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Dict
 
 ACTION_LABELS = {"fold": "弃牌", "call": "跟注", "raise": "加注", "allin": "全下"}
-SPOT_DESC = {"RFI": "开池（首先行动）"}
 
 
 def _pct(x: float) -> str:
@@ -19,12 +18,21 @@ def _label(action: str) -> str:
     return ACTION_LABELS.get(action, action)
 
 
+def _spot_desc(spot: str, opener_position: str | None) -> str:
+    if spot == "RFI":
+        return "开池（首先行动）"
+    if spot == "vs_RFI":
+        return f"面对 {opener_position} 开池" if opener_position else "面对开池"
+    return spot
+
+
 def build_feedback(
     *,
-    position: str,
+    hero_position: str,
     spot: str,
     hand_class: str,
     score: Dict[str, object],
+    opener_position: str | None = None,
 ) -> Dict[str, object]:
     """根据 score_action 的结果生成 {grade, headline, explanation, tip}。"""
     grade = score["grade"]
@@ -33,7 +41,8 @@ def build_feedback(
     optimal = str(score["optimal_action"])
     optimal_freq = float(score["optimal_freq"])
     is_mixed = bool(score["is_mixed"])
-    spot_desc = SPOT_DESC.get(spot, spot)
+    position = hero_position
+    spot_desc = _spot_desc(spot, opener_position)
 
     if grade == "optimal":
         headline = "正解"

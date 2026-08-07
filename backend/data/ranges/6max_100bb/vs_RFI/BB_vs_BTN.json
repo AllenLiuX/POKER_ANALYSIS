@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "format": "6max_100bb",
+    "spot": "vs_RFI",
+    "position": "BB_vs_BTN",
+    "hero_position": "BB",
+    "opener_position": "BTN",
+    "open_size_bb": 2.5,
+    "source": "open-source approximation",
+    "note": "近似防守范围：BB 面对 BTN 2.5bb 开池。BTN 开池极宽，BB 有折扣+闭合行动，防守很宽；3bet 偏极化。非精确解，仅供学习。"
+  },
+  "actions": {
+    "raise": "TT+, AQs+, AKo, A5s, A4s, K9s, Q9s, J9s, 76s, 65s, 54s",
+    "call": "22, 33, 44, 55, 66, 77, 88, 99, ATs, AJs, A2s, A3s, A6s, A7s, A8s, A9s, KTs, KJs, KQs, K5s, K6s, K7s, K8s, QTs, QJs, Q8s, JTs, J8s, T8s, T9s, 97s, 98s, 87s, 86s, 75s, 64s, 53s, 43s, ATo, AJo, AQo, A9o, KTo, KJo, KQo, QTo, QJo, JTo, T9o"
+  },
+  "mixed": {
+    "A5s": { "raise": 0.6 },
+    "54s": { "raise": 0.5 },
+    "T9o": { "call": 0.5 }
+  }
+}

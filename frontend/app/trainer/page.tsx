@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getTrainerNext,
+  getTrainerSpots,
   postTrainerAnswer,
   postTrainerCoach,
+  type SpotIndexEntry,
   type TrainerAnswer,
   type TrainerScenario,
 } from "@/lib/api";
@@ -14,7 +16,15 @@ import FeedbackPanel, { type CoachState } from "@/components/FeedbackPanel";
 import PlayingCard from "@/components/PlayingCard";
 import PokerTable from "@/components/PokerTable";
 
-const POSITIONS = ["随机", "UTG", "MP", "CO", "BTN", "SB"];
+const POSITION_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB"];
+const SPOT_TABS: { id: string; label: string }[] = [
+  { id: "RFI", label: "开池 (RFI)" },
+  { id: "vs_RFI", label: "防守 (面对开池)" },
+];
+
+function matchupLabel(pos: string): string {
+  return pos.replace("_vs_", " vs ");
+}
 
 interface Stats {
   total: number;
@@ -26,6 +36,8 @@ interface Stats {
 const ZERO: Stats = { total: 0, correct: 0, streak: 0, bestStreak: 0 };
 
 export default function TrainerPage() {
+  const [spots, setSpots] = useState<SpotIndexEntry[]>([]);
+  const [spotFilter, setSpotFilter] = useState("RFI");
   const [posFilter, setPosFilter] = useState("随机");
   const [scenario, setScenario] = useState<TrainerScenario | null>(null);
   const [answer, setAnswer] = useState<TrainerAnswer | null>(null);
@@ -46,7 +58,7 @@ export default function TrainerPage() {
     setCoach({ text: null, loading: false, error: null });
     try {
       const scen = await getTrainerNext({
-        spot: "RFI",
+        spot: spotFilter,
         position: posFilter === "随机" ? undefined : posFilter,
       });
       setScenario(scen);
@@ -55,11 +67,30 @@ export default function TrainerPage() {
     } finally {
       setLoading(false);
     }
-  }, [posFilter]);
+  }, [spotFilter, posFilter]);
+
+  useEffect(() => {
+    getTrainerSpots().then(setSpots).catch(() => {});
+  }, []);
 
   useEffect(() => {
     loadNext();
   }, [loadNext]);
+
+  // 当前训练类型下可选的位置/对局
+  const choices = useMemo(() => {
+    const forSpot = spots.filter((s) => s.spot === spotFilter);
+    const positions =
+      spotFilter === "RFI"
+        ? POSITION_ORDER.filter((p) => forSpot.some((s) => s.position === p))
+        : forSpot.map((s) => s.position);
+    return ["随机", ...positions];
+  }, [spots, spotFilter]);
+
+  function selectSpot(id: string) {
+    setSpotFilter(id);
+    setPosFilter("随机");
+  }
 
   const act = useCallback(
     async (action: string) => {
@@ -166,9 +197,26 @@ export default function TrainerPage() {
         </button>
       </div>
 
-      {/* 位置过滤 */}
+      {/* 训练类型 */}
+      <div className="mb-3 flex gap-2">
+        {SPOT_TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => selectSpot(t.id)}
+            className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${
+              t.id === spotFilter
+                ? "bg-neutral-100 text-neutral-900"
+                : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 位置 / 对局过滤 */}
       <div className="mb-5 flex flex-wrap gap-2">
-        {POSITIONS.map((p) => (
+        {choices.map((p) => (
           <button
             key={p}
             onClick={() => setPosFilter(p)}
@@ -178,7 +226,7 @@ export default function TrainerPage() {
                 : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
             }`}
           >
-            {p}
+            {p === "随机" ? "随机" : matchupLabel(p)}
           </button>
         ))}
       </div>
@@ -204,7 +252,9 @@ export default function TrainerPage() {
                   {scenario.hero_class}
                 </div>
                 <div className="text-xs text-neutral-500">
-                  你在 {scenario.position} 首先行动
+                  {scenario.opener_position
+                    ? `你在 ${scenario.hero_position} 防守 ${scenario.opener_position} 的开池`
+                    : `你在 ${scenario.hero_position} 首先行动`}
                 </div>
               </div>
             </div>
