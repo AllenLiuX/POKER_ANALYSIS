@@ -6,29 +6,44 @@
     "license": "MIT",
     "source_url": "https://github.com/AHTOOOXA/poker-charts",
     "note": "开源图表包导出的近 GTO 简化策略；离散频率（含 50/50 混合）。",
-    "spot": "RFI",
-    "position": "BTN",
-    "hero_position": "BTN",
-    "vpip_pct": 44.8
+    "spot": "vs_RFI",
+    "position": "BB_vs_SB",
+    "hero_position": "BB",
+    "opener_position": "SB",
+    "open_size_bb": 2.5,
+    "vpip_pct": 64.7
   },
   "actions": [
-    "raise"
+    "raise",
+    "call"
   ],
   "grid": {
     "22": {
       "raise": 1.0
     },
+    "32s": {
+      "call": 1.0
+    },
     "33": {
       "raise": 1.0
     },
+    "42s": {
+      "call": 1.0
+    },
     "43s": {
-      "raise": 0.5
+      "raise": 1.0
     },
     "44": {
       "raise": 1.0
     },
+    "52s": {
+      "call": 1.0
+    },
     "53s": {
-      "raise": 0.5
+      "raise": 1.0
+    },
+    "54o": {
+      "call": 1.0
     },
     "54s": {
       "raise": 1.0
@@ -37,10 +52,13 @@
       "raise": 1.0
     },
     "63s": {
-      "raise": 0.5
+      "call": 1.0
     },
     "64s": {
       "raise": 1.0
+    },
+    "65o": {
+      "call": 1.0
     },
     "65s": {
       "raise": 1.0
@@ -48,11 +66,20 @@
     "66": {
       "raise": 1.0
     },
+    "73s": {
+      "call": 1.0
+    },
     "74s": {
-      "raise": 0.5
+      "raise": 1.0
+    },
+    "75o": {
+      "call": 1.0
     },
     "75s": {
       "raise": 1.0
+    },
+    "76o": {
+      "call": 1.0
     },
     "76s": {
       "raise": 1.0
@@ -60,11 +87,23 @@
     "77": {
       "raise": 1.0
     },
+    "83s": {
+      "call": 1.0
+    },
+    "84s": {
+      "raise": 1.0
+    },
     "85s": {
-      "raise": 0.5
+      "raise": 1.0
+    },
+    "86o": {
+      "call": 1.0
     },
     "86s": {
       "raise": 1.0
+    },
+    "87o": {
+      "call": 1.0
     },
     "87s": {
       "raise": 1.0
@@ -72,14 +111,26 @@
     "88": {
       "raise": 1.0
     },
+    "93s": {
+      "raise": 1.0
+    },
+    "94s": {
+      "raise": 1.0
+    },
+    "95s": {
+      "raise": 1.0
+    },
     "96s": {
       "raise": 1.0
+    },
+    "97o": {
+      "call": 1.0
     },
     "97s": {
       "raise": 1.0
     },
     "98o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "98s": {
       "raise": 1.0
@@ -87,38 +138,44 @@
     "99": {
       "raise": 1.0
     },
+    "A2o": {
+      "call": 1.0
+    },
     "A2s": {
       "raise": 1.0
+    },
+    "A3o": {
+      "call": 1.0
     },
     "A3s": {
       "raise": 1.0
     },
     "A4o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "A4s": {
       "raise": 1.0
     },
     "A5o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "A5s": {
       "raise": 1.0
     },
     "A6o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "A6s": {
       "raise": 1.0
     },
     "A7o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "A7s": {
       "raise": 1.0
     },
     "A8o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "A8s": {
       "raise": 1.0
@@ -156,17 +213,26 @@
     "ATs": {
       "raise": 1.0
     },
+    "J3s": {
+      "raise": 1.0
+    },
+    "J4s": {
+      "raise": 1.0
+    },
     "J5s": {
       "raise": 1.0
     },
     "J6s": {
       "raise": 1.0
     },
+    "J7o": {
+      "call": 1.0
+    },
     "J7s": {
       "raise": 1.0
     },
     "J8o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "J8s": {
       "raise": 1.0
@@ -192,20 +258,32 @@
     "K3s": {
       "raise": 1.0
     },
+    "K4o": {
+      "call": 1.0
+    },
     "K4s": {
       "raise": 1.0
+    },
+    "K5o": {
+      "call": 1.0
     },
     "K5s": {
       "raise": 1.0
     },
+    "K6o": {
+      "call": 1.0
+    },
     "K6s": {
       "raise": 1.0
+    },
+    "K7o": {
+      "call": 1.0
     },
     "K7s": {
       "raise": 1.0
     },
     "K8o": {
-      "raise": 0.5
+      "call": 1.0
     },
     "K8s": {
       "raise": 1.0
@@ -249,14 +327,20 @@
     "Q5s": {
       "raise": 1.0
     },
+    "Q6o": {
+      "call": 1.0
+    },
     "Q6s": {
       "raise": 1.0
+    },
+    "Q7o": {
+      "call": 1.0
     },
     "Q7s": {
       "raise": 1.0
     },
     "Q8o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "Q8s": {
       "raise": 1.0
@@ -282,6 +366,15 @@
     "QTs": {
       "raise": 1.0
     },
+    "T3s": {
+      "raise": 1.0
+    },
+    "T4s": {
+      "raise": 1.0
+    },
+    "T5s": {
+      "raise": 1.0
+    },
     "T6s": {
       "raise": 1.0
     },
@@ -289,13 +382,13 @@
       "raise": 1.0
     },
     "T8o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "T8s": {
       "raise": 1.0
     },
     "T9o": {
-      "raise": 1.0
+      "call": 1.0
     },
     "T9s": {
       "raise": 1.0

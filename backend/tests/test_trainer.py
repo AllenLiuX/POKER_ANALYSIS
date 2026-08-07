@@ -137,19 +137,19 @@ def test_vs_rfi_scenario_has_raiser_seat():
 
 
 def test_vs_rfi_answer_call_optimal():
-    # T9s BB vs BTN -> call 应为 optimal
+    # A9s BB vs BTN -> 纯 call（BB 的扁平防守区），应为 optimal
     r = client.post(
         "/api/trainer/answer",
         json={
             "spot": "vs_RFI",
             "position": "BB_vs_BTN",
-            "hero": ["Ts", "9s"],
+            "hero": ["As", "9s"],
             "action": "call",
         },
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["hand_class"] == "T9s"
+    assert body["hand_class"] == "A9s"
     assert body["hero_position"] == "BB"
     assert body["opener_position"] == "BTN"
     assert body["score"]["grade"] == "optimal"

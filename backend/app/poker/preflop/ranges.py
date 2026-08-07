@@ -1,12 +1,22 @@
 """范围数据模型：把紧凑的范围字符串展开为逐类别的动作频率。
 
-数据文件（JSON）示意：
+支持两种数据文件（JSON）格式：
+
+1) 范围字符串格式（手写/近似用）：
     {
-      "meta": {"format": "6max_100bb", "position": "CO", "spot": "RFI", "source": "..."},
+      "meta": {...},
       "actions": {"raise": "22+, A2s+, K9s+, ..."},   // 各非 fold 动作的范围字符串
-      "mixed":   {"A5s": {"raise": 0.5}}               // 可选：对特定类别覆盖频率（混合策略）
+      "mixed":   {"A5s": {"raise": 0.5}}               // 可选：混合策略覆盖
     }
-fold 频率 = 1 - Σ(其它动作频率)。
+
+2) 逐类别频率格式（solver/图表导入用，见 scripts/import_ranges.py）：
+    {
+      "meta": {...},
+      "actions": ["raise", "call"],                    // 有序的非 fold 动作
+      "grid": {"AA": {"raise": 1.0}, "AKo": {"raise": 0.5}, ...}  // 缺省类别=全 fold
+    }
+
+两种格式下 fold 频率 = 1 - Σ(其它动作频率)。
 """
 from __future__ import annotations
 
@@ -75,8 +85,37 @@ def build_spot(
     return PreflopSpot(meta=meta, actions=actions, frequencies=freqs)
 
 
+def build_spot_from_grid(
+    meta: Dict[str, object],
+    actions: List[str],
+    grid: Dict[str, Dict[str, float]],
+) -> PreflopSpot:
+    """逐类别频率格式 -> PreflopSpot。缺省类别视为全 fold。"""
+    freqs: Dict[str, Dict[str, float]] = {}
+    for cls in all_classes():
+        cell = grid.get(cls, {})
+        d: Dict[str, float] = {a: float(cell.get(a, 0.0)) for a in actions}
+        nonfold = sum(d.values())
+        if nonfold > 1.0:  # 归一，避免溢出
+            scale = 1.0 / nonfold
+            for a in actions:
+                d[a] *= scale
+            nonfold = 1.0
+        d["fold"] = round(max(0.0, 1.0 - nonfold), 6)
+        for a in actions:
+            d[a] = round(d[a], 6)
+        freqs[cls] = d
+    return PreflopSpot(meta=meta, actions=list(actions), frequencies=freqs)
+
+
 def load_spot_file(path: Path) -> PreflopSpot:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if "grid" in data:
+        return build_spot_from_grid(
+            meta=data.get("meta", {}),
+            actions=data["actions"],
+            grid=data["grid"],
+        )
     return build_spot(
         meta=data.get("meta", {}),
         actions_ranges=data["actions"],

@@ -6,22 +6,27 @@
     "license": "MIT",
     "source_url": "https://github.com/AHTOOOXA/poker-charts",
     "note": "开源图表包导出的近 GTO 简化策略；离散频率（含 50/50 混合）。",
-    "spot": "RFI",
-    "position": "MP",
-    "hero_position": "MP",
-    "vpip_pct": 19.4
+    "spot": "vs_RFI",
+    "position": "SB_vs_UTG",
+    "hero_position": "SB",
+    "opener_position": "UTG",
+    "open_size_bb": 2.5,
+    "vpip_pct": 15.8
   },
   "actions": [
     "raise"
   ],
   "grid": {
     "22": {
-      "raise": 0.5
+      "raise": 1.0
     },
     "33": {
       "raise": 1.0
     },
     "44": {
+      "raise": 1.0
+    },
+    "54s": {
       "raise": 1.0
     },
     "55": {
@@ -96,13 +101,7 @@
     "AQs": {
       "raise": 1.0
     },
-    "ATo": {
-      "raise": 1.0
-    },
     "ATs": {
-      "raise": 1.0
-    },
-    "J9s": {
       "raise": 1.0
     },
     "JJ": {
@@ -111,31 +110,16 @@
     "JTs": {
       "raise": 1.0
     },
-    "K8s": {
-      "raise": 1.0
-    },
-    "K9s": {
-      "raise": 1.0
-    },
-    "KJo": {
-      "raise": 1.0
-    },
     "KJs": {
       "raise": 1.0
     },
     "KK": {
       "raise": 1.0
     },
-    "KQo": {
-      "raise": 1.0
-    },
     "KQs": {
       "raise": 1.0
     },
     "KTs": {
-      "raise": 1.0
-    },
-    "Q9s": {
       "raise": 1.0
     },
     "QJs": {
@@ -146,9 +130,6 @@
     },
     "QTs": {
       "raise": 1.0
-    },
-    "T8s": {
-      "raise": 0.5
     },
     "T9s": {
       "raise": 1.0

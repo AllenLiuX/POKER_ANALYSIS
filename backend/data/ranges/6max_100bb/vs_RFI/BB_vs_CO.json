@@ -1,20 +1,268 @@
 {
   "meta": {
     "format": "6max_100bb",
+    "source": "Greenline Poker charts",
+    "provider": "greenline",
+    "license": "MIT",
+    "source_url": "https://github.com/AHTOOOXA/poker-charts",
+    "note": "开源图表包导出的近 GTO 简化策略；离散频率（含 50/50 混合）。",
     "spot": "vs_RFI",
     "position": "BB_vs_CO",
     "hero_position": "BB",
     "opener_position": "CO",
     "open_size_bb": 2.5,
-    "source": "open-source approximation",
-    "note": "近似防守范围：BB 面对 CO 2.5bb 开池。CO 开池比 BTN 紧，BB 防守略收；3bet 价值线更靠前。非精确解，仅供学习。"
+    "vpip_pct": 32.7
   },
-  "actions": {
-    "raise": "JJ+, AQs, AKs, AKo, A5s, A4s, 76s, 65s, 54s",
-    "call": "22, 33, 44, 55, 66, 77, 88, 99, TT, ATs, AJs, A2s, A6s, A7s, A8s, A9s, K5s+, Q7s+, J7s+, T7s+, 96s+, 85s+, 74s, 75s, 64s, 53s, A2o, A5o, A7o, A8o, A9o, ATo, AJo, AQo, KTo, KJo, KQo, QTo, QJo, JTo, T9o, 98o"
-  },
-  "mixed": {
-    "A5s": { "raise": 0.5 },
-    "TT": { "raise": 0.3, "call": 0.7 }
+  "actions": [
+    "raise",
+    "call"
+  ],
+  "grid": {
+    "22": {
+      "call": 1.0
+    },
+    "33": {
+      "call": 1.0
+    },
+    "43s": {
+      "call": 1.0
+    },
+    "44": {
+      "call": 1.0
+    },
+    "53s": {
+      "call": 1.0
+    },
+    "54s": {
+      "call": 1.0
+    },
+    "55": {
+      "call": 1.0
+    },
+    "63s": {
+      "call": 1.0
+    },
+    "64s": {
+      "call": 1.0
+    },
+    "65s": {
+      "raise": 1.0
+    },
+    "66": {
+      "call": 1.0
+    },
+    "74s": {
+      "call": 1.0
+    },
+    "75s": {
+      "call": 1.0
+    },
+    "76s": {
+      "raise": 1.0
+    },
+    "77": {
+      "call": 1.0
+    },
+    "84s": {
+      "call": 1.0
+    },
+    "85s": {
+      "call": 1.0
+    },
+    "86s": {
+      "call": 1.0
+    },
+    "87s": {
+      "raise": 1.0
+    },
+    "88": {
+      "call": 1.0
+    },
+    "95s": {
+      "call": 1.0
+    },
+    "96s": {
+      "call": 1.0
+    },
+    "97s": {
+      "call": 1.0
+    },
+    "98s": {
+      "raise": 1.0
+    },
+    "99": {
+      "call": 1.0
+    },
+    "A2s": {
+      "call": 1.0
+    },
+    "A3s": {
+      "call": 1.0
+    },
+    "A4s": {
+      "raise": 1.0
+    },
+    "A5s": {
+      "raise": 1.0
+    },
+    "A6s": {
+      "call": 1.0
+    },
+    "A7s": {
+      "call": 1.0
+    },
+    "A8o": {
+      "call": 1.0
+    },
+    "A8s": {
+      "call": 1.0
+    },
+    "A9o": {
+      "call": 1.0
+    },
+    "A9s": {
+      "call": 1.0
+    },
+    "AA": {
+      "raise": 1.0
+    },
+    "AJo": {
+      "raise": 1.0
+    },
+    "AJs": {
+      "raise": 1.0
+    },
+    "AKo": {
+      "raise": 1.0
+    },
+    "AKs": {
+      "raise": 1.0
+    },
+    "AQo": {
+      "raise": 1.0
+    },
+    "AQs": {
+      "raise": 1.0
+    },
+    "ATo": {
+      "call": 1.0
+    },
+    "ATs": {
+      "raise": 1.0
+    },
+    "J5s": {
+      "call": 1.0
+    },
+    "J6s": {
+      "call": 1.0
+    },
+    "J7s": {
+      "call": 1.0
+    },
+    "J8s": {
+      "call": 1.0
+    },
+    "J9s": {
+      "call": 1.0
+    },
+    "JJ": {
+      "raise": 1.0
+    },
+    "JTs": {
+      "raise": 1.0
+    },
+    "K2s": {
+      "call": 1.0
+    },
+    "K3s": {
+      "call": 1.0
+    },
+    "K4s": {
+      "call": 1.0
+    },
+    "K5s": {
+      "call": 1.0
+    },
+    "K6s": {
+      "call": 1.0
+    },
+    "K7s": {
+      "call": 1.0
+    },
+    "K8s": {
+      "call": 1.0
+    },
+    "K9s": {
+      "call": 1.0
+    },
+    "KJo": {
+      "call": 1.0
+    },
+    "KJs": {
+      "raise": 1.0
+    },
+    "KK": {
+      "raise": 1.0
+    },
+    "KQo": {
+      "raise": 1.0
+    },
+    "KQs": {
+      "raise": 1.0
+    },
+    "KTo": {
+      "call": 1.0
+    },
+    "KTs": {
+      "call": 1.0
+    },
+    "Q3s": {
+      "call": 1.0
+    },
+    "Q4s": {
+      "call": 1.0
+    },
+    "Q5s": {
+      "call": 1.0
+    },
+    "Q6s": {
+      "call": 1.0
+    },
+    "Q7s": {
+      "call": 1.0
+    },
+    "Q8s": {
+      "call": 1.0
+    },
+    "Q9s": {
+      "call": 1.0
+    },
+    "QJo": {
+      "call": 1.0
+    },
+    "QJs": {
+      "raise": 1.0
+    },
+    "QQ": {
+      "raise": 1.0
+    },
+    "QTs": {
+      "call": 1.0
+    },
+    "T6s": {
+      "call": 1.0
+    },
+    "T7s": {
+      "call": 1.0
+    },
+    "T8s": {
+      "call": 1.0
+    },
+    "T9s": {
+      "call": 1.0
+    },
+    "TT": {
+      "raise": 1.0
+    }
   }
 }

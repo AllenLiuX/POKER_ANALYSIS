@@ -40,10 +40,10 @@ def test_load_spot_and_fold_complement():
     trash = ps.hand_freqs("72o")
     assert trash["fold"] == 1.0
     assert trash["raise"] == 0.0
-    # 混合：UTG 的 66 应为 0.5 raise / 0.5 fold
-    six = ps.hand_freqs("66")
-    assert abs(six["raise"] - 0.5) < 1e-6
-    assert abs(six["fold"] - 0.5) < 1e-6
+    # 混合：UTG 的 22 应为 0.5 raise / 0.5 fold（边界小对）
+    mix = ps.hand_freqs("22")
+    assert abs(mix["raise"] - 0.5) < 1e-6
+    assert abs(mix["fold"] - 0.5) < 1e-6
 
 
 def test_scoring_optimal_and_mistake():
@@ -54,8 +54,8 @@ def test_scoring_optimal_and_mistake():
     # AA fold = mistake
     r = score_action(ps.hand_freqs("AA"), "fold")
     assert not r["correct"] and r["grade"] == "mistake"
-    # 混合 66：raise 与 fold 都 acceptable
-    r_raise = score_action(ps.hand_freqs("66"), "raise")
-    r_fold = score_action(ps.hand_freqs("66"), "fold")
+    # 混合 22：raise 与 fold 都 acceptable
+    r_raise = score_action(ps.hand_freqs("22"), "raise")
+    r_fold = score_action(ps.hand_freqs("22"), "fold")
     assert r_raise["correct"] and r_fold["correct"]
     assert r_raise["is_mixed"] is True

@@ -1,20 +1,213 @@
 {
   "meta": {
     "format": "6max_100bb",
+    "source": "Greenline Poker charts",
+    "provider": "greenline",
+    "license": "MIT",
+    "source_url": "https://github.com/AHTOOOXA/poker-charts",
+    "note": "开源图表包导出的近 GTO 简化策略；离散频率（含 50/50 混合）。",
     "spot": "vs_RFI",
     "position": "BTN_vs_CO",
     "hero_position": "BTN",
     "opener_position": "CO",
     "open_size_bb": 2.5,
-    "source": "open-source approximation",
-    "note": "近似防守范围：BTN 面对 CO 2.5bb 开池。BTN 有绝对位置，大量在位跟注 + 极化 3bet 拿走死钱。非精确解，仅供学习。"
+    "vpip_pct": 26.2
   },
-  "actions": {
-    "raise": "JJ+, AQs, AKs, AKo, A5s, A4s, 76s",
-    "call": "22, 33, 44, 55, 66, 77, 88, 99, TT, ATs, AJs, A2s, A3s, A6s, A7s, A8s, A9s, K2s, K3s, K4s, K5s, K6s, K7s, K8s, K9s, KTs, KQs, Q6s, Q7s, Q8s, Q9s, QTs, QJs, J7s, J8s, J9s, JTs, T7s, T8s, T9s, 96s, 97s, 98s, 86s, 87s, 75s, 64s, 65s, 54s, ATo, AJo, AQo, A9o, KTo, KJo, KQo, QTo, QJo, JTo, T9o, 98o"
-  },
-  "mixed": {
-    "A5s": { "raise": 0.5 },
-    "KJs": { "raise": 0.4, "call": 0.6 }
+  "actions": [
+    "raise"
+  ],
+  "grid": {
+    "44": {
+      "raise": 0.5
+    },
+    "54s": {
+      "raise": 1.0
+    },
+    "55": {
+      "raise": 1.0
+    },
+    "64s": {
+      "raise": 1.0
+    },
+    "65s": {
+      "raise": 1.0
+    },
+    "66": {
+      "raise": 1.0
+    },
+    "75s": {
+      "raise": 1.0
+    },
+    "76s": {
+      "raise": 1.0
+    },
+    "77": {
+      "raise": 1.0
+    },
+    "85s": {
+      "raise": 1.0
+    },
+    "86s": {
+      "raise": 1.0
+    },
+    "87s": {
+      "raise": 1.0
+    },
+    "88": {
+      "raise": 1.0
+    },
+    "96s": {
+      "raise": 1.0
+    },
+    "97s": {
+      "raise": 1.0
+    },
+    "98s": {
+      "raise": 1.0
+    },
+    "99": {
+      "raise": 1.0
+    },
+    "A2s": {
+      "raise": 1.0
+    },
+    "A3s": {
+      "raise": 1.0
+    },
+    "A4s": {
+      "raise": 1.0
+    },
+    "A5s": {
+      "raise": 1.0
+    },
+    "A6s": {
+      "raise": 1.0
+    },
+    "A7s": {
+      "raise": 1.0
+    },
+    "A8s": {
+      "raise": 1.0
+    },
+    "A9o": {
+      "raise": 1.0
+    },
+    "A9s": {
+      "raise": 1.0
+    },
+    "AA": {
+      "raise": 1.0
+    },
+    "AJo": {
+      "raise": 1.0
+    },
+    "AJs": {
+      "raise": 1.0
+    },
+    "AKo": {
+      "raise": 1.0
+    },
+    "AKs": {
+      "raise": 1.0
+    },
+    "AQo": {
+      "raise": 1.0
+    },
+    "AQs": {
+      "raise": 1.0
+    },
+    "ATo": {
+      "raise": 1.0
+    },
+    "ATs": {
+      "raise": 1.0
+    },
+    "J7s": {
+      "raise": 1.0
+    },
+    "J8s": {
+      "raise": 1.0
+    },
+    "J9s": {
+      "raise": 1.0
+    },
+    "JJ": {
+      "raise": 1.0
+    },
+    "JTs": {
+      "raise": 1.0
+    },
+    "K5s": {
+      "raise": 1.0
+    },
+    "K6s": {
+      "raise": 1.0
+    },
+    "K7s": {
+      "raise": 1.0
+    },
+    "K8s": {
+      "raise": 1.0
+    },
+    "K9s": {
+      "raise": 1.0
+    },
+    "KJo": {
+      "raise": 1.0
+    },
+    "KJs": {
+      "raise": 1.0
+    },
+    "KK": {
+      "raise": 1.0
+    },
+    "KQo": {
+      "raise": 1.0
+    },
+    "KQs": {
+      "raise": 1.0
+    },
+    "KTo": {
+      "raise": 1.0
+    },
+    "KTs": {
+      "raise": 1.0
+    },
+    "Q6s": {
+      "raise": 1.0
+    },
+    "Q7s": {
+      "raise": 1.0
+    },
+    "Q8s": {
+      "raise": 1.0
+    },
+    "Q9s": {
+      "raise": 1.0
+    },
+    "QJo": {
+      "raise": 1.0
+    },
+    "QJs": {
+      "raise": 1.0
+    },
+    "QQ": {
+      "raise": 1.0
+    },
+    "QTs": {
+      "raise": 1.0
+    },
+    "T7s": {
+      "raise": 1.0
+    },
+    "T8s": {
+      "raise": 1.0
+    },
+    "T9s": {
+      "raise": 1.0
+    },
+    "TT": {
+      "raise": 1.0
+    }
   }
 }

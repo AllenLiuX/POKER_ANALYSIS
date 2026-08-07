@@ -11,3 +11,5 @@ openai==1.59.6
 
 # Dev / test
 pytest==8.3.4
+# 仅离线数据导入脚本使用（scripts/import_ranges.py 解析图表 TS 模块）
+json5==0.15.0
