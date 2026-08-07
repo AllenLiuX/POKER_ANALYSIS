@@ -93,6 +93,33 @@ def test_score_optimal_and_mistake():
     assert score_postflop(rec, "fold")["grade"] == "mistake"
 
 
+def test_score_size_downgrades_optimal_to_acceptable():
+    rec = {
+        "recommended": "bet",
+        "accept": ["bet"],
+        "recommended_size": "big",
+        "accept_sizes": ["half", "big", "pot"],
+    }
+    # 正确尺度 -> 仍 optimal
+    ok = score_postflop(rec, "bet", "big")
+    assert ok["grade"] == "optimal" and ok["size_ok"] is True
+    # 偏离尺度 -> 降为 acceptable，但仍算正确
+    off = score_postflop(rec, "bet", "small")
+    assert off["grade"] == "acceptable" and off["correct"] is True
+    assert off["size_ok"] is False
+
+
+def test_score_size_ignored_when_action_wrong():
+    rec = {
+        "recommended": "check",
+        "accept": ["check"],
+        "recommended_size": "small",
+        "accept_sizes": ["small"],
+    }
+    s = score_postflop(rec, "bet", "pot")
+    assert s["grade"] == "mistake" and s["size_ok"] is None
+
+
 # ---------- 场景 ----------
 def test_scenario_reproducible():
     a = generate_postflop_scenario(seed=11)
@@ -109,6 +136,12 @@ def test_scenario_shape_pfr():
     assert len(s["board"]) == 3 and len(s["hero"]) == 2
     assert s["villain_range"]
     assert s["bet_bb"] is None
+    # c-bet 尺度选项：4 档、有具体 bb 额、含 ½ 池
+    assert len(s["bet_sizes"]) == 4
+    ids = {o["id"] for o in s["bet_sizes"]}
+    assert {"small", "half", "big", "pot"} <= ids
+    assert all(o["amount_bb"] > 0 for o in s["bet_sizes"])
+    assert not s["raise_sizes"]
 
 
 def test_scenario_shape_caller():
@@ -116,6 +149,10 @@ def test_scenario_shape_caller():
     assert s["role"] == "caller"
     assert set(s["available_actions"]) == {"fold", "call", "raise"}
     assert s["bet_bb"] and s["bet_bb"] > 0
+    # 加注尺度选项存在，且 raise-to 额大于对手下注
+    assert len(s["raise_sizes"]) >= 2
+    assert all(o["amount_bb"] > s["bet_bb"] for o in s["raise_sizes"])
+    assert not s["bet_sizes"]
 
 
 # ---------- 门面 + API ----------
@@ -174,3 +211,22 @@ def test_postflop_answer_deterministic():
     b = client.post("/api/trainer/postflop/answer", json=payload).json()
     assert a["equity"] == b["equity"]  # 种子固定 -> 可复现
     assert a["score"]["grade"] == "optimal"  # AA 超对干面必下注
+
+
+def test_postflop_answer_with_size_label():
+    payload = {
+        "role": "pfr",
+        "hero": ["Ah", "Ad"],
+        "board": ["Ks", "7d", "2c"],
+        "villain_range": "22-99, AJs, KQs, T9s, 98s",
+        "pot_bb": 5.5,
+        "bet_bb": None,
+        "action": "bet",
+        "size": "half",
+    }
+    body = client.post("/api/trainer/postflop/answer", json=payload).json()
+    score = body["score"]
+    assert score["size"] == "half"
+    assert score.get("size_label")  # 有中文尺度标签
+    assert score.get("recommended_size_label")
+    assert "启发式近似" not in body["feedback"]["explanation"]  # 不再每次都备注

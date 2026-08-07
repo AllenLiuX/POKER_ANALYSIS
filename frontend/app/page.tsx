@@ -11,14 +11,31 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
-const MODULES = [
-  { title: "翻前训练器", desc: "GTO 范围即时反馈", phase: "可用", ready: true, href: "/trainer" as string | undefined },
-  { title: "翻后训练器", desc: "翻牌启发式 · c-bet/MDF/赔率", phase: "可用", ready: true, href: "/trainer/postflop" as string | undefined },
-  { title: "范围表", desc: "RFI + 防守 · 13×13 网格", phase: "可用", ready: true, href: "/ranges" },
-  { title: "训练进度", desc: "正确率 / 错题回顾", phase: "可用", ready: true, href: "/progress" },
-  { title: "胜率 / 赔率工具", desc: "Monte Carlo equity", phase: "Phase 0", ready: true, href: undefined },
-  { title: "剥削训练", desc: "对手画像 + node-lock", phase: "Phase 9", ready: false, href: undefined },
-  { title: "截图导入", desc: "WePoker 牌谱 → 逐人剥削", phase: "Phase 6", ready: false, href: undefined },
+const TRAINING = [
+  {
+    title: "翻前训练器",
+    desc: "6-max · 100bb · GTO 范围即时反馈。难度加权聚焦临界手牌，智能模式自动补弱项。",
+    href: "/trainer",
+    icon: "♠",
+    tags: ["RFI / 防守", "GTO 范围", "AI 讲解"],
+  },
+  {
+    title: "翻后训练器",
+    desc: "翻牌启发式引擎：range 优势 / MDF / 赔率 / 下注尺度，透明可解释、边界宽容。",
+    href: "/trainer/postflop",
+    icon: "♣",
+    tags: ["c-bet / 防守", "下注尺度", "蒙特卡洛胜率"],
+  },
+];
+
+const TOOLS = [
+  { title: "范围表", desc: "RFI + 防守 · 13×13 频率网格", href: "/ranges", icon: "▦" },
+  { title: "训练进度", desc: "正确率 / 连对 / 错题回顾 · 本地或云端同步", href: "/progress", icon: "📈" },
+];
+
+const COMING = [
+  { title: "剥削训练", desc: "对手画像 + node-lock 偏离", phase: "Phase 9", icon: "🧠" },
+  { title: "截图导入", desc: "WePoker 牌谱 → 逐人剥削建议", phase: "Phase 6", icon: "📸" },
 ];
 
 export default function Home() {
@@ -30,57 +47,180 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-12">
-      <header className="mb-10">
-        <div className="flex items-center gap-3">
-          <span className="text-3xl">♠️</span>
-          <h1 className="text-3xl font-bold tracking-tight">
-            Poker Analysis
-          </h1>
-          <HealthBadge health={health} error={healthErr} />
-          <AuthNav />
-        </div>
-        <p className="mt-2 text-neutral-400">
-          面向进阶牌手的 GTO 决策训练与剥削分析平台 · 后端 <code className="text-neutral-500">{API_BASE}</code>
-        </p>
-      </header>
+    <div className="relative min-h-screen overflow-hidden">
+      {/* 背景光晕 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-gradient-to-b from-emerald-500/10 via-emerald-500/[0.02] to-transparent"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -right-32 -top-24 -z-10 h-[380px] w-[380px] rounded-full bg-teal-500/10 blur-3xl"
+      />
 
-      <section className="mb-12 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {MODULES.map((m) => {
-          const inner = (
-            <>
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold">{m.title}</h3>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs ${
-                    m.ready
-                      ? "bg-emerald-900/60 text-emerald-300"
-                      : "bg-neutral-800 text-neutral-400"
-                  }`}
-                >
-                  {m.ready ? "可用" : m.phase}
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        {/* 顶部导航 */}
+        <nav className="flex items-center gap-3">
+          <span className="text-2xl text-emerald-400">♠</span>
+          <span className="text-lg font-bold tracking-tight">Poker Analysis</span>
+          <span className="hidden text-xs text-neutral-600 sm:inline">
+            · GTO 决策训练
+          </span>
+          <div className="ml-auto flex items-center gap-2.5">
+            <HealthBadge health={health} error={healthErr} />
+            <AuthNav />
+          </div>
+        </nav>
+
+        {/* Hero */}
+        <section className="mb-16 mt-14">
+          <div className="inline-flex items-center gap-2 rounded-full border border-emerald-800/50 bg-emerald-950/30 px-3 py-1 text-xs text-emerald-300">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            翻前 GTO · 翻后启发式 · 实时反馈
+          </div>
+          <h1 className="mt-5 text-4xl font-black leading-[1.1] tracking-tight sm:text-6xl">
+            把每个决策
+            <br />
+            <span className="bg-gradient-to-r from-emerald-300 via-emerald-400 to-teal-300 bg-clip-text text-transparent">
+              练成本能
+            </span>
+          </h1>
+          <p className="mt-5 max-w-xl text-base leading-relaxed text-neutral-400">
+            面向进阶牌手的德州扑克决策训练平台：即时对照 GTO 范围、翻后启发式打分、
+            蒙特卡洛胜率与进度追踪——每一手都给出可解释的反馈。
+          </p>
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <Link
+              href="/trainer"
+              className="rounded-xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-emerald-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400"
+            >
+              开始翻前训练 →
+            </Link>
+            <Link
+              href="/trainer/postflop"
+              className="rounded-xl border border-neutral-700 bg-neutral-900/60 px-5 py-3 text-sm font-semibold text-neutral-200 transition hover:border-neutral-600 hover:bg-neutral-800"
+            >
+              翻后训练
+            </Link>
+            <Link
+              href="/ranges"
+              className="px-2 py-3 text-sm font-medium text-neutral-400 transition hover:text-neutral-200"
+            >
+              浏览范围表 →
+            </Link>
+          </div>
+        </section>
+
+        {/* 训练场 */}
+        <SectionTitle kicker="Train">训练场</SectionTitle>
+        <section className="mb-14 grid grid-cols-1 gap-4 md:grid-cols-2">
+          {TRAINING.map((m) => (
+            <Link
+              key={m.title}
+              href={m.href}
+              className="group relative overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/50 p-6 transition hover:border-emerald-600/70 hover:bg-neutral-900"
+            >
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-emerald-500/5 blur-2xl transition group-hover:bg-emerald-500/10"
+              />
+              <div className="flex items-start justify-between">
+                <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 text-2xl text-emerald-300 ring-1 ring-emerald-500/20">
+                  {m.icon}
+                </span>
+                <span className="rounded-full bg-emerald-900/60 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+                  可用
                 </span>
               </div>
-              <p className="mt-1 text-sm text-neutral-400">{m.desc}</p>
-            </>
-          );
-          const cls =
-            "block rounded-xl border border-neutral-800 bg-neutral-900/60 p-4 transition" +
-            (m.href ? " hover:border-emerald-700 hover:bg-neutral-900" : "");
-          return m.href ? (
-            <Link key={m.title} href={m.href} className={cls}>
-              {inner}
+              <h3 className="mt-4 text-lg font-bold text-neutral-100">{m.title}</h3>
+              <p className="mt-1.5 text-sm leading-relaxed text-neutral-400">{m.desc}</p>
+              <div className="mt-4 flex flex-wrap gap-1.5">
+                {m.tags.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded-md bg-neutral-800/80 px-2 py-0.5 text-[11px] text-neutral-400"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+              <span className="mt-5 inline-flex items-center text-sm font-medium text-emerald-400 transition group-hover:translate-x-0.5">
+                进入训练 →
+              </span>
             </Link>
-          ) : (
-            <div key={m.title} className={cls}>
-              {inner}
-            </div>
-          );
-        })}
-      </section>
+          ))}
+        </section>
 
-      <EquityDemo />
-    </main>
+        {/* 工具 & 进度 */}
+        <SectionTitle kicker="Tools">工具 &amp; 进度</SectionTitle>
+        <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {TOOLS.map((m) => (
+            <Link
+              key={m.title}
+              href={m.href}
+              className="group flex items-center gap-4 rounded-xl border border-neutral-800 bg-neutral-900/50 p-4 transition hover:border-emerald-700/60 hover:bg-neutral-900"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-xl text-neutral-300">
+                {m.icon}
+              </span>
+              <div className="min-w-0">
+                <h3 className="font-semibold text-neutral-100">{m.title}</h3>
+                <p className="truncate text-sm text-neutral-400">{m.desc}</p>
+              </div>
+              <span className="ml-auto text-neutral-600 transition group-hover:text-emerald-400">
+                →
+              </span>
+            </Link>
+          ))}
+        </section>
+
+        <EquityDemo />
+
+        {/* 即将上线 */}
+        <SectionTitle kicker="Soon">即将上线</SectionTitle>
+        <section className="mb-12 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {COMING.map((m) => (
+            <div
+              key={m.title}
+              className="flex items-center gap-4 rounded-xl border border-dashed border-neutral-800 bg-neutral-900/30 p-4"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-neutral-800/60 text-xl grayscale">
+                {m.icon}
+              </span>
+              <div className="min-w-0">
+                <h3 className="font-semibold text-neutral-300">{m.title}</h3>
+                <p className="truncate text-sm text-neutral-500">{m.desc}</p>
+              </div>
+              <span className="ml-auto rounded-full bg-neutral-800 px-2.5 py-0.5 text-xs text-neutral-400">
+                {m.phase}
+              </span>
+            </div>
+          ))}
+        </section>
+
+        <footer className="border-t border-neutral-900 pt-6 text-xs text-neutral-600">
+          后端 API <code className="text-neutral-500">{API_BASE}</code> · 训练数据存本地，登录后可云端同步。
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+function SectionTitle({
+  kicker,
+  children,
+}: {
+  kicker: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mb-4 flex items-baseline gap-3">
+      <h2 className="text-xl font-bold tracking-tight text-neutral-100">{children}</h2>
+      <span className="text-[11px] uppercase tracking-[0.2em] text-neutral-600">
+        {kicker}
+      </span>
+      <div className="ml-2 h-px flex-1 bg-gradient-to-r from-neutral-800 to-transparent" />
+    </div>
   );
 }
 
@@ -90,7 +230,7 @@ function AuthNav() {
   return (
     <Link
       href={user ? "/progress" : "/login"}
-      className="ml-auto rounded-full bg-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
+      className="rounded-full border border-neutral-700 bg-neutral-900/60 px-3 py-1 text-xs text-neutral-300 transition hover:bg-neutral-800"
     >
       {user ? user.email : "登录"}
     </Link>
@@ -155,7 +295,7 @@ function EquityDemo() {
   }
 
   return (
-    <section className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-6">
+    <section className="mb-14 mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/60 p-6">
       <h2 className="text-xl font-semibold">胜率计算器 <span className="text-sm font-normal text-neutral-500">（Monte Carlo · 已接通引擎）</span></h2>
       <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Field label="英雄手牌" value={hero} onChange={setHero} placeholder="As Ad" />

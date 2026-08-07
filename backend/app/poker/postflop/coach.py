@@ -1,5 +1,5 @@
-"""翻后确定性中文反馈。以引擎事实（纹理/成手/听牌/胜率/MDF/赔率）为准，
-明确标注"启发式近似"。深度讲解仍可另接 LLM（复用现有 provider）。"""
+"""翻后确定性中文反馈。以引擎事实（纹理/成手/听牌/胜率/MDF/赔率）为准。
+深度讲解仍可另接 LLM（复用现有 provider）。"""
 from __future__ import annotations
 
 from typing import Dict
@@ -7,8 +7,6 @@ from typing import Dict
 ACTION_LABELS = {"fold": "弃牌", "call": "跟注", "raise": "加注", "check": "过牌", "bet": "下注"}
 
 HEADLINE = {"optimal": "正解", "acceptable": "可接受", "mistake": "偏离"}
-
-APPROX_NOTE = "（启发式近似，非精确 GTO 求解）"
 
 
 def build_feedback(texture: Dict, hand: Dict, recommendation: Dict, score: Dict) -> Dict[str, str]:
@@ -25,14 +23,20 @@ def build_feedback(texture: Dict, hand: Dict, recommendation: Dict, score: Dict)
     lead = f"{texture['descriptor']}，你的牌：{hand_desc}（{_tier_cn(hand['tier'])}）。"
     reasons = "；".join(recommendation.get("reasons", []))
 
+    # 动作对、但下注/加注尺度偏离时的提示
+    size_note = ""
+    if score.get("size_ok") is False and score.get("recommended_size_label"):
+        size_note = f"（动作对，尺度更宜 {score['recommended_size_label']}）"
+
     if grade == "optimal":
-        explanation = f"{lead}建议{rec}——{reasons}。{APPROX_NOTE}"
+        explanation = f"{lead}建议{rec}——{reasons}。"
     elif grade == "acceptable":
-        explanation = (
-            f"{lead}你选择{chosen}属可接受的混合区；首选{rec}——{reasons}。{APPROX_NOTE}"
-        )
+        if size_note:
+            explanation = f"{lead}{chosen}方向正确{size_note}；{reasons}。"
+        else:
+            explanation = f"{lead}你选择{chosen}属可接受的混合区；首选{rec}——{reasons}。"
     else:
-        explanation = f"{lead}更好的做法是{rec}——{reasons}。你选了{chosen}，偏离建议。{APPROX_NOTE}"
+        explanation = f"{lead}更好的做法是{rec}——{reasons}。你选了{chosen}，偏离建议。"
 
     tip = _tip(recommendation)
     return {"headline": headline, "explanation": explanation, "tip": tip}

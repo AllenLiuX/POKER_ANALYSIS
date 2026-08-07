@@ -9,6 +9,35 @@ from __future__ import annotations
 
 from typing import Dict, List, Set
 
+# 下注尺度桶（占底池比例），用于 c-bet；判分时对比"建议桶 / 可接受桶"。
+BET_SIZE_BUCKETS = [
+    {"id": "small", "label": "⅓ 池", "fraction": 1.0 / 3.0},
+    {"id": "half", "label": "½ 池", "fraction": 0.5},
+    {"id": "big", "label": "¾ 池", "fraction": 0.75},
+    {"id": "pot", "label": "满池", "fraction": 1.0},
+]
+
+# 加注尺度桶（相对对手下注额的倍数，raise-to）。
+RAISE_SIZE_BUCKETS = [
+    {"id": "small", "label": "小加注 (≈2.5×)", "mult": 2.5},
+    {"id": "big", "label": "大加注 (≈3.5×)", "mult": 3.5},
+]
+
+
+def size_label(action: str, size_id: str) -> str:
+    """把尺度桶 id 翻成中文标签（bet 用池比例桶，raise 用倍数桶）。"""
+    buckets = (
+        BET_SIZE_BUCKETS
+        if action == "bet"
+        else RAISE_SIZE_BUCKETS
+        if action == "raise"
+        else []
+    )
+    for b in buckets:
+        if b["id"] == size_id:
+            return str(b["label"])
+    return size_id
+
 
 def pot_odds_required(pot_bb: float, bet_bb: float) -> float:
     return bet_bb / (pot_bb + bet_bb)
@@ -28,16 +57,25 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
     high_board = texture["high_card"] >= 10
     reasons: List[str] = []
     accept: Set[str] = set()
+    # rec_size / accept_sizes 表示"若选择下注，应下多大"（判分时对比）。
+    rec_size = "half"
+    accept_sizes: Set[str] = {"small", "half", "big"}
 
     if tier == "value":
         rec = "bet"
-        size = "大注(约 2/3 底池)" if wet >= 0.5 else "小到中注(约 1/3~1/2)"
+        if wet >= 0.5:
+            size = "大注(约 2/3~满池)"
+            rec_size, accept_sizes = "big", {"half", "big", "pot"}
+        else:
+            size = "小到中注(约 1/3~1/2)"
+            rec_size, accept_sizes = "half", {"small", "half"}
         accept = {"bet"}
         reasons.append(f"{hand['made_label']}属价值牌，下注取价值/保护")
         mix = False
     elif tier == "draw":
         rec = "bet"
         size = "半诈唬下注(约 1/2~2/3)"
+        rec_size, accept_sizes = "half", {"half", "big"}
         accept = {"bet", "check"}
         reasons.append(f"{hand['draw_label']}有 {hand['outs']} outs，半诈唬有弃牌率+成手潜力")
         mix = True
@@ -46,11 +84,13 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
         if wet < 0.35:
             rec = "bet"
             size = "小注(约 1/3)薄价值/否则过牌"
+            rec_size, accept_sizes = "small", {"small"}
             accept = {"bet", "check"}
             reasons.append("边缘成手在干面可小注薄价值，湿面更宜控池")
         else:
             rec = "check"
             size = "过牌控池"
+            rec_size, accept_sizes = "small", {"small"}
             accept = {"check"}
             reasons.append("边缘成手在湿面控池，避免被加注为难")
         mix = True
@@ -58,12 +98,14 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
         if wet < 0.35 and high_board:
             rec = "bet"
             size = "小注(约 1/3)范围下注"
+            rec_size, accept_sizes = "small", {"small"}
             accept = {"bet", "check"}
             reasons.append("干燥高张面加注方占范围优势，可高频小注施压")
             mix = True
         else:
             rec = "check"
             size = "过牌放弃"
+            rec_size, accept_sizes = "small", {"small"}
             accept = {"check"}
             reasons.append("湿/低面利于跟注方，空气牌下注 EV 低，过牌")
             mix = False
@@ -73,6 +115,8 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
         "recommended": rec,
         "accept": sorted(accept),
         "size_advice": size,
+        "recommended_size": rec_size,
+        "accept_sizes": sorted(accept_sizes),
         "mix": mix,
         "equity": round(equity, 3),
         "wetness": wet,
@@ -129,6 +173,9 @@ def recommend_defense(
         "spot": "defense",
         "recommended": rec,
         "accept": sorted(accept),
+        # 若选择加注：价值/半诈唬都倾向偏大的加注，两档都可接受。
+        "recommended_raise_size": "big",
+        "accept_raise_sizes": ["small", "big"],
         "mix": mix,
         "equity": round(equity, 3),
         "required_equity": round(required, 3),

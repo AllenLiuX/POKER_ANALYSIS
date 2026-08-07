@@ -195,28 +195,35 @@ export default function TrainerPage() {
     }
   }, [scenario, answer, coach.loading, coach.text]);
 
-  // 键盘快捷键：f/c/r 出招，Enter/空格 下一手
+  // 出招快捷键交给 ActionBar；此处只在有反馈时用 Enter/空格进入下一手。
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!scenario) return;
+      if (!scenario || !answer) return;
       const k = e.key.toLowerCase();
-      if (!answer) {
-        const map: Record<string, string> = { f: "fold", c: "call", r: "raise" };
-        const a = map[k];
-        if (a && scenario.available_actions.includes(a)) {
-          e.preventDefault();
-          act(a);
-        }
-      } else if (k === "enter" || k === " ") {
+      if (k === "enter" || k === " ") {
         e.preventDefault();
         loadNext();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [scenario, answer, act, loadNext]);
+  }, [scenario, answer, loadNext]);
 
   const acc = stats.total ? Math.round((stats.correct / stats.total) * 100) : 0;
+
+  const shortcutHint = useMemo(() => {
+    if (!scenario) return "";
+    const cap: Record<string, string> = {
+      fold: "F 弃牌",
+      call: "C 跟注",
+      raise: "R 加注",
+      allin: "A 全下",
+    };
+    const parts = scenario.available_actions.map(
+      (a) => cap[a] ?? `${a} ${scenario.action_labels[a] ?? a}`,
+    );
+    return `快捷键：${parts.join(" · ")} · 反馈后按 Enter 下一手`;
+  }, [scenario]);
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-10">
@@ -396,9 +403,7 @@ export default function TrainerPage() {
           </div>
 
           {!answer && (
-            <p className="mt-4 text-center text-xs text-neutral-600">
-              快捷键：F 弃牌 · C 跟注 · R 加注 · 反馈后按 Enter 下一手
-            </p>
+            <p className="mt-4 text-center text-xs text-neutral-600">{shortcutHint}</p>
           )}
         </>
       )}

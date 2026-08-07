@@ -234,6 +234,14 @@ export interface PostflopTexture {
   descriptor: string;
 }
 
+export interface SizeOption {
+  id: string;
+  label: string;
+  amount_bb: number;
+  fraction?: number;
+  mult?: number;
+}
+
 export interface PostflopScenario {
   id: string;
   mode: string;
@@ -257,6 +265,8 @@ export interface PostflopScenario {
   texture: PostflopTexture;
   available_actions: string[];
   action_labels: Record<string, string>;
+  bet_sizes: SizeOption[];
+  raise_sizes: SizeOption[];
   prompt: string;
 }
 
@@ -293,6 +303,12 @@ export interface PostflopScore {
   recommended: string;
   accept: string[];
   mix: boolean;
+  size?: string | null;
+  recommended_size?: string | null;
+  accept_sizes?: string[];
+  size_ok?: boolean | null;
+  size_label?: string;
+  recommended_size_label?: string;
 }
 
 export interface PostflopAnswer {
@@ -331,6 +347,7 @@ export async function postPostflopAnswer(body: {
   pot_bb: number;
   bet_bb: number | null;
   action: string;
+  size?: string;
   scenario_id?: string;
 }): Promise<PostflopAnswer> {
   const res = await fetch(`${API_BASE}/api/trainer/postflop/answer`, {

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.poker.postflop.analyze import analyze_spot
 from app.poker.postflop.coach import build_feedback
+from app.poker.postflop.heuristics import size_label
 from app.poker.postflop.scenario import ACTION_LABELS, generate_postflop_scenario
 from app.poker.postflop.scoring import score_postflop
 
@@ -39,6 +40,7 @@ class PostflopAnswerRequest(BaseModel):
     pot_bb: float
     bet_bb: Optional[float] = None
     action: str = Field(..., description="所选动作：check/bet/fold/call/raise")
+    size: Optional[str] = Field(None, description="下注/加注尺度桶 id（如 small/half/big/pot）")
     scenario_id: Optional[str] = None
 
 
@@ -63,7 +65,11 @@ def post_postflop_answer(req: PostflopAnswerRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    score = score_postflop(rec, req.action)
+    score = score_postflop(rec, req.action, req.size)
+    if score.get("recommended_size"):
+        score["recommended_size_label"] = size_label(req.action, score["recommended_size"])
+    if score.get("size"):
+        score["size_label"] = size_label(req.action, str(score["size"]))
     feedback = build_feedback(texture, hand, rec, score)
     return {
         "scenario_id": req.scenario_id,

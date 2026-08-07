@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getPostflopNext,
   postPostflopAnswer,
@@ -71,7 +71,7 @@ export default function PostflopTrainerPage() {
   }, [loadNext]);
 
   const act = useCallback(
-    async (action: string) => {
+    async (action: string, size?: string) => {
       if (!scenario || answer || submitting) return;
       setSubmitting(true);
       setErr(null);
@@ -84,6 +84,7 @@ export default function PostflopTrainerPage() {
           pot_bb: scenario.pot_bb,
           bet_bb: scenario.bet_bb,
           action,
+          size,
           scenario_id: scenario.id,
         });
         setAnswer(res);
@@ -117,30 +118,43 @@ export default function PostflopTrainerPage() {
     [scenario, answer, submitting],
   );
 
+  // 出招快捷键由 ActionBar 自己处理；这里只在已有反馈时用 Enter/空格进入下一手。
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!scenario) return;
+      if (!scenario || !answer) return;
       const k = e.key.toLowerCase();
-      if (!answer) {
-        const map: Record<string, string> = {
-          f: "fold",
-          c: scenario.role === "pfr" ? "check" : "call",
-          b: "bet",
-          r: "raise",
-        };
-        const a = map[k];
-        if (a && scenario.available_actions.includes(a)) {
-          e.preventDefault();
-          act(a);
-        }
-      } else if (k === "enter" || k === " ") {
+      if (k === "enter" || k === " ") {
         e.preventDefault();
         loadNext();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [scenario, answer, act, loadNext]);
+  }, [scenario, answer, loadNext]);
+
+  const sizeMap = useMemo(() => {
+    if (!scenario) return undefined;
+    const m: Record<string, { id: string; label: string; amount_bb?: number }[]> = {};
+    if (scenario.bet_sizes?.length) m.bet = scenario.bet_sizes;
+    if (scenario.raise_sizes?.length) m.raise = scenario.raise_sizes;
+    return Object.keys(m).length ? m : undefined;
+  }, [scenario]);
+
+  const shortcutHint = useMemo(() => {
+    if (!scenario) return "";
+    const cap: Record<string, string> = {
+      fold: "F 弃牌",
+      call: "C 跟注",
+      check: "C 过牌",
+      bet: "B 下注",
+      raise: "R 加注",
+    };
+    const parts = scenario.available_actions.map((a) => {
+      const base = cap[a] ?? a;
+      return sizeMap?.[a]?.length ? `${base}(选尺度)` : base;
+    });
+    return `快捷键：${parts.join(" · ")} · 反馈后按 Enter 下一手`;
+  }, [scenario, sizeMap]);
 
   const acc = stats.total ? Math.round((stats.correct / stats.total) * 100) : 0;
 
@@ -152,7 +166,12 @@ export default function PostflopTrainerPage() {
         </Link>
         <h1 className="text-2xl font-bold">
           翻后训练器{" "}
-          <span className="text-sm font-normal text-neutral-500">翻牌 · 启发式</span>
+          <span
+            title="翻后为透明启发式引擎（range 优势 / MDF / 赔率 / bluff-to-value），非精确 GTO 求解；用于建立直觉，边界处允许合理区间。"
+            className="cursor-help text-sm font-normal text-neutral-500 underline decoration-dotted underline-offset-2"
+          >
+            翻牌 · 启发式 ⓘ
+          </span>
         </h1>
         <Link
           href="/trainer"
@@ -160,11 +179,6 @@ export default function PostflopTrainerPage() {
         >
           翻前训练 →
         </Link>
-      </div>
-
-      <div className="mb-4 rounded-lg border border-amber-800/50 bg-amber-950/20 px-4 py-2 text-xs text-amber-300/90">
-        翻后为<strong>透明启发式引擎</strong>（range 优势 / MDF / 赔率 / bluff-to-value），
-        非精确 GTO 求解；用于建立直觉，边界处允许合理区间。
       </div>
 
       {/* 统计条 */}
@@ -253,6 +267,7 @@ export default function PostflopTrainerPage() {
               <ActionBar
                 actions={scenario.available_actions}
                 labels={scenario.action_labels}
+                sizes={sizeMap}
                 disabled={submitting || loading}
                 onAct={act}
               />
@@ -262,12 +277,7 @@ export default function PostflopTrainerPage() {
           </div>
 
           {!answer && (
-            <p className="mt-4 text-center text-xs text-neutral-600">
-              {scenario.role === "pfr"
-                ? "快捷键：C 过牌 · B 下注"
-                : "快捷键：F 弃牌 · C 跟注 · R 加注"}{" "}
-              · 反馈后按 Enter 下一手
-            </p>
+            <p className="mt-4 text-center text-xs text-neutral-600">{shortcutHint}</p>
           )}
         </>
       )}
@@ -297,9 +307,6 @@ function PostflopFeedback({
         <span className="text-sm text-neutral-400">
           {answer.hand.made_label}
           {answer.hand.draw_label ? ` + ${answer.hand.draw_label}` : ""}
-        </span>
-        <span className="ml-auto rounded bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">
-          启发式近似
         </span>
       </div>
 
@@ -342,13 +349,20 @@ function PostflopFeedback({
       <div className="mt-3 flex flex-wrap gap-2 text-xs">
         <span className="rounded bg-neutral-800 px-2 py-1 text-neutral-300">
           你选：{labelOf(score.chosen)}
+          {score.size_label ? ` · ${score.size_label}` : ""}
         </span>
         <span className="rounded bg-emerald-900/60 px-2 py-1 text-emerald-300">
           建议：{labelOf(score.recommended)}
+          {score.recommended_size_label ? ` · ${score.recommended_size_label}` : ""}
         </span>
+        {score.size_ok === false && (
+          <span className="rounded bg-amber-900/50 px-2 py-1 text-amber-300">
+            尺度可更优
+          </span>
+        )}
         {rec.size_advice && (
           <span className="rounded bg-neutral-800 px-2 py-1 text-neutral-400">
-            尺度：{rec.size_advice}
+            尺度建议：{rec.size_advice}
           </span>
         )}
       </div>

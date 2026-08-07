@@ -18,6 +18,7 @@ from app.poker.cards import full_deck
 from app.poker.preflop.handclass import combos_for_class
 from app.poker.preflop.ranges import load_spot
 from app.poker.preflop.scenario import card_glyph, deal_combo_for_class
+from app.poker.postflop.heuristics import BET_SIZE_BUCKETS, RAISE_SIZE_BUCKETS
 from app.poker.postflop.texture import classify_board
 
 FMT = "6max_100bb"
@@ -47,6 +48,32 @@ def _range_string(classes: List[str]) -> str:
 def _sample_class(classes: List[str], rng: random.Random) -> str:
     weights = [combos_for_class(c) for c in classes]
     return rng.choices(classes, weights=weights, k=1)[0]
+
+
+def _bet_size_options(pot_bb: float) -> List[Dict[str, object]]:
+    """c-bet 尺度选项：占底池比例 → 具体下注额（bb）。"""
+    return [
+        {
+            "id": b["id"],
+            "label": b["label"],
+            "fraction": b["fraction"],
+            "amount_bb": round(pot_bb * b["fraction"], 1),
+        }
+        for b in BET_SIZE_BUCKETS
+    ]
+
+
+def _raise_size_options(bet_bb: float) -> List[Dict[str, object]]:
+    """加注尺度选项：相对对手下注的倍数 → 加注到多少（bb）。"""
+    return [
+        {
+            "id": b["id"],
+            "label": b["label"],
+            "mult": b["mult"],
+            "amount_bb": round(bet_bb * b["mult"], 1),
+        }
+        for b in RAISE_SIZE_BUCKETS
+    ]
 
 
 def generate_postflop_scenario(
@@ -83,10 +110,13 @@ def generate_postflop_scenario(
 
     texture = classify_board(board)
 
+    bet_sizes: List[Dict[str, object]] = []
+    raise_sizes: List[Dict[str, object]] = []
     if role == "pfr":
         pot_bb = round(POT0, 2)
         bet_bb = None
         actions = ["check", "bet"]
+        bet_sizes = _bet_size_options(pot_bb)
         board_str = " ".join(card_glyph(c) for c in board)
         prompt = (
             f"6-max 100bb 单加注底池。你在 {hero_pos} 翻前加注、{villain_pos} 跟注。"
@@ -97,6 +127,7 @@ def generate_postflop_scenario(
         pot_bb = round(POT0 + villain_bet, 2)  # 含对手下注、待你行动的底池
         bet_bb = villain_bet
         actions = ["fold", "call", "raise"]
+        raise_sizes = _raise_size_options(villain_bet)
         prompt = (
             f"6-max 100bb 单加注底池。你在 {hero_pos} 翻前跟注 {villain_pos} 的开池。"
             f"翻牌 {' '.join(card_glyph(c) for c in board)}，{villain_pos} 持续下注 {villain_bet}bb"
@@ -126,5 +157,7 @@ def generate_postflop_scenario(
         "texture": texture,
         "available_actions": actions,
         "action_labels": {a: ACTION_LABELS[a] for a in actions},
+        "bet_sizes": bet_sizes,
+        "raise_sizes": raise_sizes,
         "prompt": prompt,
     }
