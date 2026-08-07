@@ -135,6 +135,33 @@ export async function getTrainerNext(params?: {
   return (await res.json()).scenario;
 }
 
+export interface TrainerCoach {
+  hand_class: string;
+  position: string;
+  action: string;
+  coaching: string;
+  action_label: string;
+}
+
+export async function postTrainerCoach(body: {
+  format: string;
+  spot: string;
+  position: string;
+  hero: string[];
+  action: string;
+}): Promise<TrainerCoach> {
+  const res = await fetch(`${API_BASE}/api/trainer/coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `trainer coach ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function postTrainerAnswer(body: {
   format: string;
   spot: string;

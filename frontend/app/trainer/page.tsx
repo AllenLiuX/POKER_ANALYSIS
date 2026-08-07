@@ -5,11 +5,12 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getTrainerNext,
   postTrainerAnswer,
+  postTrainerCoach,
   type TrainerAnswer,
   type TrainerScenario,
 } from "@/lib/api";
 import ActionBar from "@/components/ActionBar";
-import FeedbackPanel from "@/components/FeedbackPanel";
+import FeedbackPanel, { type CoachState } from "@/components/FeedbackPanel";
 import PlayingCard from "@/components/PlayingCard";
 import PokerTable from "@/components/PokerTable";
 
@@ -32,11 +33,17 @@ export default function TrainerPage() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats>(ZERO);
+  const [coach, setCoach] = useState<CoachState>({
+    text: null,
+    loading: false,
+    error: null,
+  });
 
   const loadNext = useCallback(async () => {
     setLoading(true);
     setErr(null);
     setAnswer(null);
+    setCoach({ text: null, loading: false, error: null });
     try {
       const scen = await getTrainerNext({
         spot: "RFI",
@@ -87,6 +94,27 @@ export default function TrainerPage() {
     },
     [scenario, answer, submitting],
   );
+
+  const requestCoach = useCallback(async () => {
+    if (!scenario || !answer || coach.loading || coach.text) return;
+    setCoach({ text: null, loading: true, error: null });
+    try {
+      const res = await postTrainerCoach({
+        format: scenario.format,
+        spot: scenario.spot,
+        position: scenario.position,
+        hero: scenario.hero,
+        action: answer.score.chosen,
+      });
+      setCoach({ text: res.coaching, loading: false, error: null });
+    } catch (e) {
+      setCoach({
+        text: null,
+        loading: false,
+        error: String(e instanceof Error ? e.message : e),
+      });
+    }
+  }, [scenario, answer, coach.loading, coach.text]);
 
   // 键盘快捷键：f/c/r 出招，Enter/空格 下一手
   useEffect(() => {
@@ -193,7 +221,12 @@ export default function TrainerPage() {
                 onAct={act}
               />
             ) : (
-              <FeedbackPanel answer={answer} onNext={loadNext} />
+              <FeedbackPanel
+                answer={answer}
+                coach={coach}
+                onRequestCoach={requestCoach}
+                onNext={loadNext}
+              />
             )}
           </div>
 

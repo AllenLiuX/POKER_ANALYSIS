@@ -34,11 +34,21 @@ const ACTION_LABEL: Record<string, string> = {
 
 const ACTION_ORDER = ["fold", "call", "raise", "allin"];
 
+export interface CoachState {
+  text: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
 export default function FeedbackPanel({
   answer,
+  coach,
+  onRequestCoach,
   onNext,
 }: {
   answer: TrainerAnswer;
+  coach: CoachState;
+  onRequestCoach: () => void;
   onNext: () => void;
 }) {
   const { score, feedback } = answer;
@@ -111,9 +121,35 @@ export default function FeedbackPanel({
         </div>
       </div>
 
+      {/* AI 深度教练（可选，点击才调 LLM） */}
+      <div className="mt-4 border-t border-neutral-800 pt-4">
+        {coach.text ? (
+          <div className="rounded-xl bg-neutral-900/70 p-3">
+            <div className="mb-1 flex items-center gap-2 text-xs font-medium text-violet-300">
+              <span>AI 教练</span>
+              <span className="text-neutral-600">讲解为什么这样打</span>
+            </div>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-neutral-200">
+              {coach.text}
+            </p>
+          </div>
+        ) : (
+          <button
+            onClick={onRequestCoach}
+            disabled={coach.loading}
+            className="w-full rounded-xl border border-violet-700/60 bg-violet-950/30 py-2.5 text-sm font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
+          >
+            {coach.loading ? "AI 教练思考中…" : "🧠 AI 深度讲解：为什么这样打？"}
+          </button>
+        )}
+        {coach.error && (
+          <p className="mt-2 text-xs text-red-400">教练暂时不可用：{coach.error}</p>
+        )}
+      </div>
+
       <button
         onClick={onNext}
-        className="mt-5 w-full rounded-xl bg-emerald-600 py-3 font-semibold text-white transition hover:bg-emerald-500"
+        className="mt-4 w-full rounded-xl bg-emerald-600 py-3 font-semibold text-white transition hover:bg-emerald-500"
       >
         下一手 →
       </button>

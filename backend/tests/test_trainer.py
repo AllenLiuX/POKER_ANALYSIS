@@ -4,8 +4,10 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.poker.preflop.coach_llm import build_coach_prompt
 from app.poker.preflop.handclass import hand_class
 from app.poker.preflop.scenario import POSITION_ORDER, generate_scenario
+from app.poker.preflop.scoring import score_action
 
 client = TestClient(app)
 
@@ -92,3 +94,15 @@ def test_next_bad_position_404():
 
 def test_position_order_constant():
     assert POSITION_ORDER == ["UTG", "MP", "CO", "BTN", "SB", "BB"]
+
+
+def test_coach_prompt_grounds_facts():
+    # 纯函数：不联网，只验证 prompt 里带上了事实（频率 + 手牌 + 位置）
+    score = score_action({"raise": 1.0, "fold": 0.0}, "raise")
+    p = build_coach_prompt(
+        position="UTG", spot="RFI", hand_class="AA", hero_glyphs="A♠ A♦", score=score
+    )
+    assert "AA" in p
+    assert "UTG" in p
+    assert "加注 100%" in p  # 事实频率被写入 prompt
+    assert "A♠ A♦" in p
