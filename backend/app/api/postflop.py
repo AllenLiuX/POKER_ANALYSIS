@@ -44,6 +44,7 @@ class PostflopAnswerRequest(BaseModel):
     bet_bb: Optional[float] = None
     action: str = Field(..., description="所选动作：check/bet/fold/call/raise")
     size: Optional[str] = Field(None, description="下注/加注尺度桶 id（如 small/half/big/pot）")
+    hero_range: Optional[str] = Field(None, description="英雄整段范围（场景回传，用于范围优势）")
     scenario_id: Optional[str] = None
 
 
@@ -64,6 +65,7 @@ def post_postflop_answer(req: PostflopAnswerRequest) -> dict:
             villain_range=req.villain_range,
             pot_bb=req.pot_bb,
             bet_bb=req.bet_bb,
+            hero_range=req.hero_range,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

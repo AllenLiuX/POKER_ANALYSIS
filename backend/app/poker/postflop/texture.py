@@ -30,8 +30,8 @@ def _straightiness(ranks: List[int]) -> int:
 
 def classify_board(board: List[str]) -> Dict[str, object]:
     cards = normalize_cards(board)
-    if len(cards) != 3:
-        raise ValueError("目前只支持翻牌（3 张）纹理分类")
+    if not 3 <= len(cards) <= 5:
+        raise ValueError("公共牌必须是 3~5 张（翻牌/转牌/河牌）")
     ranks = sorted((RANK_VAL[c[0]] for c in cards), reverse=True)
     suits = [c[1] for c in cards]
 
@@ -41,7 +41,8 @@ def classify_board(board: List[str]) -> Dict[str, object]:
 
     suit_counts = Counter(suits)
     max_suit = max(suit_counts.values())
-    if max_suit == 3:
+    # 3+ 同花即进入"同花区"（翻牌=成花可能；转/河可能已成花）。3 张时与旧行为一致。
+    if max_suit >= 3:
         suitedness = "monotone"
     elif max_suit == 2:
         suitedness = "two-tone"

@@ -150,6 +150,7 @@ def generate_postflop_scenario(
         "board_glyphs": [card_glyph(c) for c in board],
         "villain_range": villain_range,
         "villain_range_label": villain_range_label,
+        "hero_range": _range_string(hero_classes),
         "effective_stack_bb": 100,
         "blinds": {"sb": 0.5, "bb": 1.0},
         "pot_bb": pot_bb,

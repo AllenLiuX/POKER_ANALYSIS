@@ -52,28 +52,30 @@ def classify_hand(hero: List[str], board: List[str]) -> Dict[str, object]:
     top_board = board_ranks[0]
 
     # ---- 听牌 ----
+    # 河牌（5 张公共牌）已无后续发牌，不存在听牌；仅在翻牌/转牌识别听牌。
     draws: List[str] = []
     outs = 0
-    # 同花听牌：某花色在 hero+board 恰好 4 张且 hero 有贡献（未成花）
-    if made not in ("Flush", "Straight Flush"):
-        suit_all = Counter(hero_suits + board_suits)
-        for s, n in suit_all.items():
-            if n == 4 and hero_suits.count(s) >= 1:
-                draws.append("flush_draw")
-                outs += 9
-                break
-    # 顺子听牌
-    if made not in ("Straight", "Straight Flush"):
-        so = _straight_outs(set(hero_ranks) | set(board_ranks))
-        # 扣掉纯靠公共牌就已存在的顺听（只在 hero 参与时才算英雄的听牌）
-        so_board_only = _straight_outs(set(board_ranks))
-        hero_so = max(0, so - so_board_only)
-        if hero_so >= 2:
-            draws.append("oesd")
-            outs += 8
-        elif hero_so == 1:
-            draws.append("gutshot")
-            outs += 4
+    if len(board) < 5:
+        # 同花听牌：某花色在 hero+board 恰好 4 张且 hero 有贡献（未成花）
+        if made not in ("Flush", "Straight Flush"):
+            suit_all = Counter(hero_suits + board_suits)
+            for s, n in suit_all.items():
+                if n == 4 and hero_suits.count(s) >= 1:
+                    draws.append("flush_draw")
+                    outs += 9
+                    break
+        # 顺子听牌
+        if made not in ("Straight", "Straight Flush"):
+            so = _straight_outs(set(hero_ranks) | set(board_ranks))
+            # 扣掉纯靠公共牌就已存在的顺听（只在 hero 参与时才算英雄的听牌）
+            so_board_only = _straight_outs(set(board_ranks))
+            hero_so = max(0, so - so_board_only)
+            if hero_so >= 2:
+                draws.append("oesd")
+                outs += 8
+            elif hero_so == 1:
+                draws.append("gutshot")
+                outs += 4
 
     combo = len(draws) >= 2
 

@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth";
 const LINKS: { href: string; label: string; badge?: string }[] = [
   { href: "/trainer", label: "翻前训练" },
   { href: "/trainer/postflop", label: "翻后训练" },
+  { href: "/battle", label: "模拟对战", badge: "New" },
   { href: "/ranges", label: "范围表" },
   { href: "/import", label: "截图导入", badge: "Beta" },
   { href: "/progress", label: "我的进度" },

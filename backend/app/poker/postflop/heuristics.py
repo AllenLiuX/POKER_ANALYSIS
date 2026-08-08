@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
+
+from app.poker.postflop.range_advantage import advantage_labels
 
 # 下注尺度桶（占底池比例），用于 c-bet；判分时对比"建议桶 / 可接受桶"。
 BET_SIZE_BUCKETS = [
@@ -47,10 +49,16 @@ def mdf(pot_bb: float, bet_bb: float) -> float:
     return 1.0 - pot_odds_required(pot_bb, bet_bb)
 
 
-def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object]:
+def recommend_cbet(
+    texture: Dict, hand: Dict, equity: float, ra: Optional[Dict] = None
+) -> Dict[str, object]:
     """英雄为翻前加注方，对手过牌，决定 check / bet。
 
     actions: check / bet。size 为建议尺度（文字），不参与判分。
+
+    ra（可选）为 range_advantage.range_vs_range 的结果：提供"范围优势/坚果优势"信号，
+    用来把 c-bet 的**频率与尺度**做得更接地——有范围+坚果优势→大注极化；有范围无坚果→
+    小注高频；对手占优→多过牌。ra=None 时退化为纯手牌力启发式（与旧版一致）。
     """
     tier = hand["tier"]
     wet = float(texture["wetness"])
@@ -61,6 +69,13 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
     rec_size = "half"
     accept_sizes: Set[str] = {"small", "half", "big"}
 
+    # 范围优势信号（有则用，无则中性）
+    radv = float(ra["range_advantage"]) if ra else 0.0
+    nadv = float(ra["nut_advantage"]) if ra else 0.0
+    strong_range = radv >= 0.04
+    weak_range = radv <= -0.04
+    strong_nut = nadv >= 0.08
+
     if tier == "value":
         rec = "bet"
         if wet >= 0.5:
@@ -69,6 +84,11 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
         else:
             size = "小到中注(约 1/3~1/2)"
             rec_size, accept_sizes = "half", {"small", "half"}
+        # 坚果优势明显 → 更极化，满池可接受、建议偏大
+        if strong_nut:
+            rec_size = "big"
+            accept_sizes |= {"big", "pot"}
+            reasons.append("范围里坚果占优，极化打法可选更大尺度施压")
         accept = {"bet"}
         reasons.append(f"{hand['made_label']}属价值牌，下注取价值/保护")
         mix = False
@@ -80,13 +100,14 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
         reasons.append(f"{hand['draw_label']}有 {hand['outs']} outs，半诈唬有弃牌率+成手潜力")
         mix = True
     elif tier == "medium":
-        # 边缘成手：多控池，干面可小注薄价值
-        if wet < 0.35:
+        # 边缘成手：多控池；干面或有范围优势时可小注薄价值
+        if wet < 0.35 or strong_range:
             rec = "bet"
             size = "小注(约 1/3)薄价值/否则过牌"
             rec_size, accept_sizes = "small", {"small"}
             accept = {"bet", "check"}
-            reasons.append("边缘成手在干面可小注薄价值，湿面更宜控池")
+            why = "边缘成手在干面可小注薄价值" if wet < 0.35 else "范围占优时边缘成手可小注施压"
+            reasons.append(why + "，湿面/范围劣势更宜控池")
         else:
             rec = "check"
             size = "过牌控池"
@@ -95,12 +116,23 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
             reasons.append("边缘成手在湿面控池，避免被加注为难")
         mix = True
     else:  # air / weak
-        if wet < 0.35 and high_board:
+        # 空气牌的 c-bet 诈唬频率由范围优势主导：
+        #   对手范围占优 → 别往范围劣势里乱诈唬，过牌；
+        #   自己范围占优（或经典干燥高张面）→ 高频小注施压。
+        if weak_range:
+            rec = "check"
+            size = "过牌放弃"
+            rec_size, accept_sizes = "small", {"small"}
+            accept = {"check"}
+            reasons.append("对手范围在此面占优，空气牌诈唬 EV 低，过牌")
+            mix = False
+        elif strong_range or (wet < 0.35 and high_board):
             rec = "bet"
             size = "小注(约 1/3)范围下注"
             rec_size, accept_sizes = "small", {"small"}
             accept = {"bet", "check"}
-            reasons.append("干燥高张面加注方占范围优势，可高频小注施压")
+            why = "加注方占范围优势" if strong_range else "干燥高张面加注方占范围优势"
+            reasons.append(why + "，可高频小注施压")
             mix = True
         else:
             rec = "check"
@@ -110,7 +142,7 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
             reasons.append("湿/低面利于跟注方，空气牌下注 EV 低，过牌")
             mix = False
 
-    return {
+    out: Dict[str, object] = {
         "spot": "cbet",
         "recommended": rec,
         "accept": sorted(accept),
@@ -122,12 +154,33 @@ def recommend_cbet(texture: Dict, hand: Dict, equity: float) -> Dict[str, object
         "wetness": wet,
         "reasons": reasons,
     }
+    if ra:
+        r_label, n_label = advantage_labels(ra)
+        out.update(
+            {
+                "range_equity": ra.get("range_equity"),
+                "range_advantage": ra.get("range_advantage"),
+                "nut_advantage": ra.get("nut_advantage"),
+                "range_label": r_label,
+                "nut_label": n_label,
+            }
+        )
+    return out
 
 
 def recommend_defense(
-    texture: Dict, hand: Dict, equity: float, pot_bb: float, bet_bb: float
+    texture: Dict,
+    hand: Dict,
+    equity: float,
+    pot_bb: float,
+    bet_bb: float,
+    ra: Optional[Dict] = None,
 ) -> Dict[str, object]:
-    """英雄面对翻前加注方的 c-bet，决定 fold / call / raise。"""
+    """英雄面对翻前加注方的 c-bet，决定 fold / call / raise。
+
+    ra（可选）提供范围优势信号，仅用于展示/教练接地（防守判定仍以英雄手牌胜率 + MDF/
+    赔率为准，避免过度拟合）。
+    """
     required = pot_odds_required(pot_bb, bet_bb)
     defend = mdf(pot_bb, bet_bb)
     tier = hand["tier"]
@@ -169,7 +222,7 @@ def recommend_defense(
         reasons.append(f"空气牌胜率 {equity:.0%} < 需要 {required:.0%}，弃牌")
         mix = False
 
-    return {
+    out: Dict[str, object] = {
         "spot": "defense",
         "recommended": rec,
         "accept": sorted(accept),
@@ -184,3 +237,16 @@ def recommend_defense(
         "bet_bb": bet_bb,
         "reasons": reasons,
     }
+    if ra:
+        r_label, n_label = advantage_labels(ra)
+        # 防守方视角：加注方的 range_advantage 取反即防守方的相对优势
+        out.update(
+            {
+                "range_equity": ra.get("range_equity"),
+                "range_advantage": ra.get("range_advantage"),
+                "nut_advantage": ra.get("nut_advantage"),
+                "range_label": r_label,
+                "nut_label": n_label,
+            }
+        )
+    return out

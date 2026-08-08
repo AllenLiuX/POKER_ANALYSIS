@@ -6,7 +6,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import equity, exploit, health, ingest, postflop, ranges, review, trainer
+from app.api import battle, equity, exploit, health, ingest, postflop, ranges, review, trainer
 from app.config import get_settings
 
 settings = get_settings()
@@ -30,6 +30,7 @@ app.include_router(postflop.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api")
 app.include_router(review.router, prefix="/api")
 app.include_router(exploit.router, prefix="/api")
+app.include_router(battle.router, prefix="/api")
 
 
 @app.get("/")
