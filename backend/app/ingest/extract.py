@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+from app.ingest.deviation import analyze_deviations
 from app.ingest.reconstruct import reconstruct_hand
 from app.ingest.schemas import SCREENSHOT_TYPES, ObservationFacts
 from app.llm.provider import get_provider
@@ -192,6 +193,7 @@ def _unrecognized(raw: str, reason: str) -> Dict:
         "recognized": False,
         "facts": facts.model_dump(),
         "reconstruction": None,
+        "analysis": None,
         "raw_model_output": raw,
         "note": "未识别为可解析的微扑克手牌截图。",
     }
@@ -248,11 +250,13 @@ def extract_observations(image: bytes, *, mime: Optional[str] = None, log_id: Op
         return out
 
     reconstruction = reconstruct_hand(facts)
+    analysis = analyze_deviations(facts, reconstruction)
     return {
         "stage": "observations",
         "recognized": True,
         "facts": facts,
         "reconstruction": reconstruction,
+        "analysis": analysis,
         "raw_model_output": raw,
-        "note": "多模态模型转写「看得见的事实」，引擎重建下注序列并校验净额守恒。数字/合法性以引擎为准。",
+        "note": "多模态模型转写「看得见的事实」，引擎重建下注序列并对照 GTO 范围标注偏离。数字/合法性以引擎为准。",
     }

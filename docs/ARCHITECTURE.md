@@ -373,7 +373,9 @@ GET  /api/opponents/{id}         → 对手画像 + 剥削建议
 - 截图提取 → 引擎约束重建 → 用户确认 → 偏离标注 → 对手画像 + LLM 剥削建议。
 - S1 ✅：LLM provider 层（`app/llm/provider.py`，网关 + OpenAI 兜底）已就绪；观测事实提取（`app/ingest/extract.py`）。只抽"看得见的事实"，不做序列推理。鲁棒化：首选 gemini-flash，空/非 JSON 时自动回退 gpt-4o；仍失败或非扑克截图则优雅返回 `recognized=false` + 友好提示（不再 502）。
 - S2 ✅（首版）：下注序列重建（`app/ingest/reconstruct.py`）——确定性解析各玩家 `actions_raw` 为逐街动作（带 `翻前/翻牌/转牌/河牌` 标注）。**每位玩家投入以净额推算**（输家=`|net|`，含盲注/前注；赢家=`底池−net`），再与逐街动作金额之和**交叉核对**：对不上则该行标 `uncertain`、按净额校正投入，避免出现"投入 32 却净输 1200"这类自相矛盾。引擎校验**净额守恒 Σnet≈0** + **各行动作与净额一致**，输出 `status`（validated / needs_review / needs_user）+ 置信度。真相由引擎判定，不经 LLM。`POST /api/ingest/extract` 支持批量（`List[UploadFile]`，≤12 张），逐图返回事实 + 重建；前端 `/import` 多图上传 + 逐结果卡片（未识别友好提示 + 校验徽章），历史记录本地持久化、默认折叠、点开再渲染详情。
-- 后续：S3 偏离标注（把重建的英雄决策点接翻前范围表 / 翻后启发式，量化偏离）；S4 对手画像 + 逐人剥削建议（LLM 接地于引擎事实）。
+- S3 ✅（首版）：GTO 偏离标注（`app/ingest/deviation.py`，确定性、无 LLM）。翻前接开源近 GTO 范围表——首入池→RFI、面对单次开池→vs_RFI 防守（含 3bet），`score_action` 判级 + ev_loss 近似 + 倾向分类；离树动作（如 SB 面对开池平跟）按偏离处理；翻后启发式线路说明（`classify_hand`，标 `approximate`）。仅底牌可见玩家打分，未覆盖 spot 标 `grounded=false`。内联进 `extract` 输出 + `POST /api/ingest/analyze` 供历史回填；前端卡片内逐人渲染偏离（评级色 + 接地/近似徽章）。
+- S4 ✅（首版）：逐对手剥削（`app/api/exploit.py`，`POST /api/ingest/exploit`）。前端按对手 alias 聚合偏离标注回传，服务端做确定性倾向统计（样本量、倾向计数、开池/防守/弃牌/3bet、合规率、净额），再由 LLM（`gpt-4o`）接地产出剥削建议 + 英雄自我复盘；小样本仅给倾向提示。前端 `/import` 顶部「🎯 剥削分析」面板：画像卡 + AI 建议。
+- 后续：S2.5 用户确认/编辑界面；翻后偏离接预计算解集；对手身份合并与剥削看板打磨。
 
 **Phase 7 — 打磨 + 部署**
 - UI 打磨、空/错状态、部署（前端 Vercel，后端 EC2 + Supabase）。

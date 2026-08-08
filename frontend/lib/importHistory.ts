@@ -64,6 +64,13 @@ export function removeImportEntry(id: string): ImportEntry[] {
   return next;
 }
 
+/** 用 id→IngestItem 的补丁批量更新历史条目的 item（如回填阶段③偏离标注），并持久化。 */
+export function patchImportItems(patches: Record<string, IngestItem>): ImportEntry[] {
+  const next = loadImportHistory().map((e) => (patches[e.id] ? { ...e, item: patches[e.id] } : e));
+  persist(next);
+  return next;
+}
+
 export function clearImportHistory(): ImportEntry[] {
   if (isBrowser()) {
     try {

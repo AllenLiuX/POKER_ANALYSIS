@@ -237,3 +237,71 @@ def test_api_extract_503_when_unavailable(monkeypatch):
         files=[("files", ("a.png", b"\x89PNG\r\n\x1a\n a", "image/png"))],
     )
     assert resp.status_code == 503
+
+
+class _ReadyProvider:
+    gateway_ready = True
+    openai_ready = False
+
+
+def test_api_extract_runs_concurrently(monkeypatch):
+    """6 张各 sleep 0.4s：顺序需 ~2.4s，并发（≥4）应 <1.6s；顺序也须保持。"""
+    import time
+
+    from app.api import ingest as ingest_api
+
+    monkeypatch.setattr(ingest_api, "get_provider", lambda: _ReadyProvider())
+
+    def slow_extract(data, *, mime=None, log_id=None):
+        time.sleep(0.4)
+        return {
+            "recognized": True,
+            "facts": {"tag": data[-1]},
+            "reconstruction": None,
+            "analysis": None,
+        }
+
+    monkeypatch.setattr(ingest_api, "extract_observations", slow_extract)
+
+    files = [
+        ("files", (f"{i}.png", b"\x89PNG\r\n\x1a\n" + bytes([i]), "image/png"))
+        for i in range(6)
+    ]
+    t0 = time.time()
+    resp = client.post("/api/ingest/extract", files=files)
+    elapsed = time.time() - t0
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 6
+    assert all(r["ok"] for r in body["results"])
+    # 结果按上传顺序返回
+    assert [r["filename"] for r in body["results"]] == [f"{i}.png" for i in range(6)]
+    assert elapsed < 1.6, f"看起来仍是顺序执行：{elapsed:.2f}s"
+
+
+def test_api_extract_isolates_single_failure(monkeypatch):
+    """单张解析抛错不影响其它张，也不会让整批 500。"""
+    from app.api import ingest as ingest_api
+
+    monkeypatch.setattr(ingest_api, "get_provider", lambda: _ReadyProvider())
+
+    def flaky(data, *, mime=None, log_id=None):
+        if data.endswith(b"boom"):
+            raise RuntimeError("boom")
+        return {"recognized": True, "facts": {}, "reconstruction": None, "analysis": None}
+
+    monkeypatch.setattr(ingest_api, "extract_observations", flaky)
+
+    resp = client.post(
+        "/api/ingest/extract",
+        files=[
+            ("files", ("ok.png", b"\x89PNG\r\n\x1a\n ok", "image/png")),
+            ("files", ("bad.png", b"\x89PNG\r\n\x1a\n boom", "image/png")),
+        ],
+    )
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert results[0]["ok"] is True
+    assert results[1]["ok"] is False
+    assert "boom" in results[1]["error"]

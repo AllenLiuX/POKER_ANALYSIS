@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getHealth,
+  postExploit,
+  postIngestAnalyze,
   postIngestExtract,
+  type Analysis,
+  type Deviation,
+  type ExploitProfileInput,
+  type ExploitResult,
   type IngestItem,
   type IngestPlayerObs,
   type ObservationFacts,
@@ -14,6 +20,7 @@ import {
   buildEntry,
   clearImportHistory,
   loadImportHistory,
+  patchImportItems,
   removeImportEntry,
   type ImportEntry,
 } from "@/lib/importHistory";
@@ -34,6 +41,12 @@ const RECON_STATUS: Record<string, { label: string; cls: string }> = {
   validated: { label: "重建已校验", cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30" },
   needs_review: { label: "重建待复核", cls: "bg-amber-500/15 text-amber-300 ring-amber-500/30" },
   needs_user: { label: "需人工确认", cls: "bg-neutral-700/40 text-neutral-300 ring-neutral-600/40" },
+};
+
+const GRADE_STYLE: Record<string, string> = {
+  optimal: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  acceptable: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  mistake: "bg-red-500/15 text-red-300 ring-red-500/30",
 };
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -154,6 +167,51 @@ export default function ImportPage() {
 
   const clearHistory = useCallback(() => {
     setHistory(clearImportHistory());
+  }, []);
+
+  const [exploit, setExploit] = useState<{
+    loading: boolean;
+    data: ExploitResult | null;
+    error: string | null;
+  }>({ loading: false, data: null, error: null });
+
+  const runExploit = useCallback(async () => {
+    setExploit({ loading: true, data: null, error: null });
+    try {
+      // 回填：为早于 S3 的历史条目（有重建但无偏离标注）按需补算，并持久化，使其卡片也能展示偏离
+      const cur = loadImportHistory();
+      const missing = cur.filter(
+        (e) => e.item?.ok && e.item?.recognized && e.item?.reconstruction && !e.item?.analysis,
+      );
+      if (missing.length) {
+        const patches: Record<string, IngestItem> = {};
+        await Promise.all(
+          missing.map(async (e) => {
+            try {
+              const { analysis } = await postIngestAnalyze(e.item.facts, e.item.reconstruction ?? null);
+              patches[e.id] = { ...e.item, analysis };
+            } catch {
+              /* 单条失败不影响整体 */
+            }
+          }),
+        );
+        if (Object.keys(patches).length) setHistory(patchImportItems(patches));
+      }
+
+      const { opponents, hero, groundedTotal } = buildExploitInputs(loadImportHistory());
+      if (groundedTotal === 0) {
+        setExploit({
+          loading: false,
+          data: null,
+          error: "暂无可接地的决策点（多为未摊牌/位置缺失）。多导入几张带底牌摊牌的手牌回放再试。",
+        });
+        return;
+      }
+      const data = await postExploit({ opponents, hero });
+      setExploit({ loading: false, data, error: null });
+    } catch (e) {
+      setExploit({ loading: false, data: null, error: String(e instanceof Error ? e.message : e) });
+    }
   }, []);
 
   return (
@@ -299,6 +357,11 @@ export default function ImportPage() {
           {runErrors.map((item, i) => (
             <ResultCard key={`err-${item.filename}-${i}`} item={item} />
           ))}
+
+          {/* 剥削分析（聚合全部历史的偏离标注 → 逐对手倾向 + LLM 建议） */}
+          {history.length > 0 && (
+            <ExploitPanel state={exploit} onRun={runExploit} disabled={loading} />
+          )}
 
           {/* 历史记录（本地持久化，默认折叠，点开再渲染详情） */}
           {history.length > 0 && (
@@ -446,7 +509,280 @@ function ResultDetail({ item }: { item: IngestItem }) {
         <FactsView facts={item.facts} note={item.note ?? ""} raw={item.raw_model_output ?? ""} />
       )}
       {item.reconstruction && <ReconstructionView recon={item.reconstruction} />}
+      {item.analysis && item.analysis.supported && <DeviationView analysis={item.analysis} />}
     </>
+  );
+}
+
+function DeviationView({ analysis }: { analysis: Analysis }) {
+  const { graded, mistakes } = analysis.counts;
+  return (
+    <div className="mt-5 border-t border-neutral-800 pt-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-neutral-500">GTO 偏离标注</span>
+        <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
+          已接地 {graded} · 偏离 {mistakes}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {analysis.players.map((p, i) => (
+          <div
+            key={i}
+            className={`rounded-lg border px-3 py-2 ${
+              p.is_hero ? "border-emerald-600/40 bg-emerald-950/20" : "border-neutral-800 bg-neutral-900/40"
+            }`}
+          >
+            <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-sm">
+              <span className="font-medium text-neutral-100">{p.alias ?? "（未知）"}</span>
+              {p.is_hero && (
+                <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">我</span>
+              )}
+              {p.position && (
+                <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-300">
+                  {p.position}
+                </span>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {p.deviations.map((d, j) => (
+                <DeviationRow key={j} d={d} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-neutral-600">{analysis.note}</p>
+    </div>
+  );
+}
+
+function DeviationRow({ d }: { d: Deviation }) {
+  if (d.spot === "postflop") {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-neutral-400">
+        <span className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[10px] text-neutral-400">
+          {d.spot_label}
+        </span>
+        <span className="rounded bg-neutral-700/40 px-1.5 py-0.5 text-[10px] text-neutral-500">近似</span>
+        <span className="text-neutral-400">{d.note}</span>
+      </div>
+    );
+  }
+  const gradeCls = GRADE_STYLE[d.grade ?? "mistake"] ?? GRADE_STYLE.mistake;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[10px] text-neutral-300">
+        {d.spot_label}
+      </span>
+      {d.hand_class && (
+        <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] font-medium text-neutral-200">
+          {d.hand_class}
+        </span>
+      )}
+      <span className="text-neutral-400">
+        选 <span className="text-neutral-200">{d.actual_label}</span>
+      </span>
+      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${gradeCls}`}>
+        {d.grade_label}
+      </span>
+      {d.grade === "mistake" && d.optimal_label && (
+        <span className="text-neutral-400">
+          应 <span className="text-emerald-300">{d.optimal_label}</span>
+        </span>
+      )}
+      {d.deviation_label && (
+        <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-300">
+          {d.deviation_label}
+        </span>
+      )}
+      {typeof d.ev_loss_proxy === "number" && d.ev_loss_proxy > 0 && (
+        <span className="text-[10px] text-neutral-500" title="频率差近似，非真实 EV">
+          损失≈{Math.round(d.ev_loss_proxy * 100)}%
+        </span>
+      )}
+      {d.note && <span className="w-full text-[10px] leading-relaxed text-neutral-500">{d.note}</span>}
+    </div>
+  );
+}
+
+const LEAK_LABEL: Record<string, string> = {
+  too_tight: "过紧",
+  too_loose: "过松",
+  too_passive: "太被动",
+  too_aggressive: "太激进",
+  line_error: "线路偏差",
+};
+
+function toExploitDecisions(devs: Deviation[]) {
+  return devs
+    .filter((d) => d.grounded && (d.spot === "RFI" || d.spot === "vs_RFI"))
+    .map((d) => ({
+      street: d.street,
+      spot: d.spot,
+      spot_label: d.spot_label,
+      hand_class: d.hand_class,
+      actual: d.actual ?? "",
+      optimal_action: d.optimal_action,
+      grade: d.grade ?? "",
+      deviation_type: d.deviation_type ?? null,
+      grounded: true,
+    }));
+}
+
+/** 把全部历史里的偏离标注按对手 alias 聚合成剥削请求（英雄单独聚合）。 */
+function buildExploitInputs(history: ImportEntry[]): {
+  opponents: ExploitProfileInput[];
+  hero: ExploitProfileInput | null;
+  groundedTotal: number;
+} {
+  const oppMap = new Map<string, ExploitProfileInput>();
+  let hero: ExploitProfileInput | null = null;
+  for (const e of history) {
+    const players = e.item?.analysis?.players;
+    if (!players) continue;
+    for (const pl of players) {
+      const decs = toExploitDecisions(pl.deviations);
+      if (pl.is_hero) {
+        if (!hero) hero = { alias: pl.alias || "我", hands: 0, net: 0, decisions: [] };
+        hero.hands += 1;
+        if (typeof pl.net === "number") hero.net = (hero.net ?? 0) + pl.net;
+        hero.decisions.push(...decs);
+      } else {
+        const alias = (pl.alias || "").trim();
+        if (!alias) continue;
+        let prof = oppMap.get(alias);
+        if (!prof) {
+          prof = { alias, hands: 0, net: 0, decisions: [] };
+          oppMap.set(alias, prof);
+        }
+        prof.hands += 1;
+        if (typeof pl.net === "number") prof.net = (prof.net ?? 0) + pl.net;
+        prof.decisions.push(...decs);
+      }
+    }
+  }
+  const opponents = Array.from(oppMap.values()).filter((o) => o.decisions.length > 0);
+  const heroFinal = hero && hero.decisions.length > 0 ? hero : null;
+  const groundedTotal =
+    opponents.reduce((s, o) => s + o.decisions.length, 0) + (heroFinal ? heroFinal.decisions.length : 0);
+  return { opponents, hero: heroFinal, groundedTotal };
+}
+
+function ExploitPanel({
+  state,
+  onRun,
+  disabled,
+}: {
+  state: { loading: boolean; data: ExploitResult | null; error: string | null };
+  onRun: () => void;
+  disabled?: boolean;
+}) {
+  const { loading, data, error } = state;
+  return (
+    <div className="rounded-2xl border border-fuchsia-800/40 bg-gradient-to-b from-fuchsia-950/20 to-neutral-900/40 p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-bold text-neutral-100">🎯 剥削分析</h2>
+        <span className="rounded-full bg-fuchsia-900/50 px-2 py-0.5 text-[11px] text-fuchsia-200">
+          逐对手 · 基于偏离标注
+        </span>
+        <button
+          onClick={onRun}
+          disabled={loading || disabled}
+          className="ml-auto rounded-lg bg-fuchsia-500 px-3.5 py-1.5 text-sm font-semibold text-fuchsia-950 transition hover:bg-fuchsia-400 disabled:opacity-40"
+        >
+          {loading ? "分析中…" : data ? "重新生成" : "生成剥削分析"}
+        </button>
+      </div>
+      <p className="mt-1.5 text-xs leading-relaxed text-neutral-400">
+        汇总你导入过的所有手牌里、每个对手（及你自己）相对 GTO 的偏离，给出针对性剥削建议。
+        统计仅含底牌可见、可接地的翻前决策；样本天然偏向摊牌手，小样本仅供倾向参考。
+      </p>
+
+      {error && (
+        <p className="mt-3 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+          {error}
+        </p>
+      )}
+
+      {data && (
+        <div className="mt-4 space-y-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {data.hero && <ProfileCard s={data.hero} isHero />}
+            {data.profiles
+              .slice()
+              .sort((a, b) => b.sample - a.sample)
+              .map((s) => (
+                <ProfileCard key={s.alias} s={s} />
+              ))}
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/50 p-4">
+            <div className="mb-1.5 text-[11px] uppercase tracking-wider text-fuchsia-300/80">
+              剥削建议（AI · 接地于上方统计）
+            </div>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">{data.report}</p>
+          </div>
+          <p className="text-[11px] leading-relaxed text-neutral-600">{data.note}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfileCard({
+  s,
+  isHero,
+}: {
+  s: ExploitResult["profiles"][number];
+  isHero?: boolean;
+}) {
+  const leaks = Object.entries(s.leaks || {}).sort((a, b) => b[1] - a[1]);
+  return (
+    <div
+      className={`rounded-xl border px-3.5 py-3 ${
+        isHero ? "border-emerald-600/40 bg-emerald-950/20" : "border-neutral-800 bg-neutral-900/50"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <span className="truncate text-sm font-semibold text-neutral-100">{isHero ? "我" : s.alias}</span>
+        <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
+          样本 {s.sample}
+        </span>
+        {typeof s.net === "number" && s.net !== 0 && (
+          <span
+            className={`ml-auto text-xs font-semibold ${
+              s.net > 0 ? "text-emerald-400" : "text-red-400"
+            }`}
+          >
+            净 {s.net > 0 ? "+" : ""}
+            {s.net}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-neutral-400">
+        {s.accuracy != null && (
+          <span className="rounded bg-neutral-800/70 px-1.5 py-0.5">
+            合规率 {Math.round(s.accuracy * 100)}%（偏离 {s.mistakes}）
+          </span>
+        )}
+        {s.defend_count > 0 && (
+          <span className="rounded bg-neutral-800/70 px-1.5 py-0.5">
+            防守 {s.defend_count}·弃 {s.fold_vs_open}·3bet {s.threebet_count}
+          </span>
+        )}
+        {s.rfi_count > 0 && (
+          <span className="rounded bg-neutral-800/70 px-1.5 py-0.5">开池 {s.rfi_count}</span>
+        )}
+      </div>
+      {leaks.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {leaks.map(([k, v]) => (
+            <span key={k} className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-300">
+              {LEAK_LABEL[k] ?? k}×{v}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

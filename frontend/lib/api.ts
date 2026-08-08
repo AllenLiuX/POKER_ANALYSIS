@@ -460,6 +460,60 @@ export interface Reconstruction {
   note: string;
 }
 
+// ---------- 阶段③：GTO 偏离标注 ----------
+export type DeviationGrade = "optimal" | "acceptable" | "mistake";
+
+export interface Deviation {
+  alias: string | null;
+  is_hero: boolean;
+  street: string;
+  spot: string; // "RFI" | "vs_RFI" | "postflop"
+  spot_label: string;
+  // 翻前接地字段
+  position?: string | null;
+  opener?: string | null;
+  hand_class?: string;
+  actual?: string;
+  actual_label?: string;
+  grade?: DeviationGrade;
+  grade_label?: string;
+  optimal_action?: string;
+  optimal_label?: string;
+  chosen_freq?: number;
+  optimal_freq?: number;
+  frequencies?: Record<string, number>;
+  is_mixed?: boolean;
+  deviation_type?: string | null;
+  deviation_label?: string | null;
+  ev_loss_proxy?: number;
+  off_tree?: boolean;
+  // 翻后启发式字段
+  made_label?: string;
+  draw_label?: string;
+  tier?: string;
+  grounded: boolean;
+  approximate: boolean;
+  confidence: number;
+  note?: string | null;
+}
+
+export interface AnalysisPlayer {
+  alias: string | null;
+  is_hero: boolean;
+  position: string | null;
+  hole_cards: string[];
+  net: number | null;
+  deviations: Deviation[];
+}
+
+export interface Analysis {
+  supported: boolean;
+  format: string;
+  players: AnalysisPlayer[];
+  counts: { graded: number; grounded: number; mistakes: number };
+  note: string;
+}
+
 /** 单张截图的处理结果（批量数组里的一项）。 */
 export interface IngestItem {
   filename: string;
@@ -469,6 +523,7 @@ export interface IngestItem {
   recognized?: boolean;
   facts?: ObservationFacts;
   reconstruction?: Reconstruction | null;
+  analysis?: Analysis | null;
   raw_model_output?: string;
   note?: string;
 }
@@ -482,13 +537,108 @@ export interface IngestBatchResult {
 export async function postIngestExtract(files: File[]): Promise<IngestBatchResult> {
   const form = new FormData();
   for (const f of files) form.append("files", f);
-  const res = await fetch(`${API_BASE}/api/ingest/extract`, {
+  // 后端并发解析（每张走线程池），但视觉模型仍可能较慢；给一个随张数放宽的墙钟上限，
+  // 超时给出可操作提示而不是无限转圈。
+  const timeoutMs = Math.min(300_000, 30_000 + files.length * 45_000);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}/api/ingest/extract`, {
+      method: "POST",
+      body: form,
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `ingest extract ${res.status}`);
+    }
+    return res.json();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(
+        `解析超时（>${Math.round(timeoutMs / 1000)}s）。可能是图片较多或模型较慢，请减少单次张数后重试。`,
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 阶段③：为已有的观测事实 + 重建结果标注 GTO 偏离（确定性，无 LLM）。用于回填历史。 */
+export async function postIngestAnalyze(
+  facts: ObservationFacts | Record<string, unknown> | undefined,
+  reconstruction: Reconstruction | null | undefined,
+): Promise<{ analysis: Analysis }> {
+  const res = await fetch(`${API_BASE}/api/ingest/analyze`, {
     method: "POST",
-    body: form,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ facts: facts ?? {}, reconstruction: reconstruction ?? null }),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail || `ingest extract ${res.status}`);
+    throw new Error(detail.detail || `ingest analyze ${res.status}`);
+  }
+  return res.json();
+}
+
+// ---------- 阶段④：逐对手剥削分析 ----------
+export interface ExploitDecision {
+  street?: string;
+  spot: string;
+  spot_label?: string;
+  hand_class?: string;
+  actual: string;
+  optimal_action?: string;
+  grade: string;
+  deviation_type?: string | null;
+  grounded: boolean;
+}
+
+export interface ExploitProfileInput {
+  alias: string;
+  hands: number;
+  net?: number | null;
+  decisions: ExploitDecision[];
+}
+
+export interface ExploitRequestBody {
+  opponents: ExploitProfileInput[];
+  hero?: ExploitProfileInput | null;
+}
+
+export interface ExploitProfileSummary {
+  alias: string;
+  hands: number;
+  net: number | null;
+  sample: number;
+  mistakes: number;
+  accuracy: number | null;
+  leaks: Record<string, number>;
+  dominant_leak: string | null;
+  rfi_count: number;
+  defend_count: number;
+  fold_vs_open: number;
+  threebet_count: number;
+}
+
+export interface ExploitResult {
+  report: string;
+  profiles: ExploitProfileSummary[];
+  hero: ExploitProfileSummary | null;
+  opponents_analyzed: number;
+  note: string;
+}
+
+export async function postExploit(body: ExploitRequestBody): Promise<ExploitResult> {
+  const res = await fetch(`${API_BASE}/api/ingest/exploit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `ingest exploit ${res.status}`);
   }
   return res.json();
 }
