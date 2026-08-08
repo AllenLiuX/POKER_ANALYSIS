@@ -92,7 +92,7 @@ class LLMProvider:
         log_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> str:
-        if self.gateway_ready:
+        if self.use_gateway:
             try:
                 from app.llm import model_client
 
