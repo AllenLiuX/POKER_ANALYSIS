@@ -206,20 +206,24 @@ def recommend_defense(
         accept = {"call", "raise"}
         reasons.append(f"{hand['draw_label']}胜率 {equity:.0%} ≥ 底池赔率 {required:.0%}，跟注/半诈唬加注")
         mix = True
-    elif tier in ("medium", "weak"):
+    else:  # medium / weak / air：一律以底池赔率为准（胜率够就防守，不够就弃）
+        # 说明：纯高牌（air）也可能对一段较宽的下注范围有可观胜率（如 A 高/两高张），
+        # 此时按底池赔率跟注才是正解；此前"空气一律弃牌"会既判错又给出自相矛盾的理由。
+        tier_note = {
+            "medium": "边缘成手",
+            "weak": "弱听牌",
+            "air": "高牌/空气",
+        }.get(tier, "该牌")
         if equity >= required:
             rec = "call"
             accept = {"call"}
-            reasons.append(f"胜率 {equity:.0%} ≥ 需要 {required:.0%}，达到跟注门槛")
+            reasons.append(
+                f"{tier_note}胜率 {equity:.0%} ≥ 需要 {required:.0%}，按底池赔率达到跟注门槛"
+            )
         else:
             rec = "fold"
             accept = {"fold"}
-            reasons.append(f"胜率 {equity:.0%} < 需要 {required:.0%}，不够跟注")
-        mix = False
-    else:  # air
-        rec = "fold"
-        accept = {"fold"}
-        reasons.append(f"空气牌胜率 {equity:.0%} < 需要 {required:.0%}，弃牌")
+            reasons.append(f"{tier_note}胜率 {equity:.0%} < 需要 {required:.0%}，不够跟注，弃牌")
         mix = False
 
     out: Dict[str, object] = {

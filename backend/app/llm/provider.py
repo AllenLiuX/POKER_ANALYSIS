@@ -39,6 +39,12 @@ class LLMProvider:
     def openai_ready(self) -> bool:
         return bool(self.settings.openai_api_key)
 
+    @property
+    def use_gateway(self) -> bool:
+        """是否走网关。生产强制直连 OpenAI（LLM_FORCE_OPENAI=true）时跳过网关，
+        避免 AWS 等环境连不通网关时逐个视觉模型等到超时。"""
+        return self.gateway_ready and not self.settings.llm_force_openai
+
     # ---------------- 文本 ----------------
     def text(
         self,
@@ -49,7 +55,7 @@ class LLMProvider:
         log_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> str:
-        if self.gateway_ready:
+        if self.use_gateway:
             from app.llm import model_client
 
             # 依次尝试首选模型与稳定回退模型；空内容（非异常）也视为失败继续下一个。

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
 
     # ---- OpenAI 兜底 ----
     openai_api_key: str = ""
+    # 生产环境（如 AWS）连不通公司网关时置 true：文本与视觉都直连 OpenAI，
+    # 完全跳过网关，避免逐个视觉模型等到超时。需同时配 OPENAI_API_KEY，
+    # 视觉/文本模型分别由 OPENAI_VISION_MODEL / OPENAI_TEXT_MODEL 指定（默认 gpt-4o）。
+    llm_force_openai: bool = False
 
     # ---- Supabase（Phase 4 接入）----
     supabase_url: str = ""
