@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.poker.postflop.analyze import analyze_spot
 from app.poker.postflop.handstrength import classify_hand
-from app.poker.postflop.heuristics import mdf, pot_odds_required, recommend_defense
+from app.poker.postflop.heuristics import (
+    mdf,
+    pot_odds_required,
+    recommend_cbet,
+    recommend_defense,
+)
 from app.poker.postflop.scenario import generate_postflop_scenario
 from app.poker.postflop.scoring import score_postflop
 from app.poker.postflop.texture import classify_board
@@ -78,11 +83,92 @@ def test_defense_air_folds():
     assert rec["recommended"] == "fold"
 
 
+def test_hand_playing_the_board_is_not_value():
+    # 牌面 KK77Q，英雄 J5 一张都用不上：两对全在公共牌，只能平分 → 不是价值牌
+    hc = classify_hand(["Jd", "5d"], ["Kh", "Qc", "Kd", "7h", "7c"])
+    assert hc["made"] == "Two Pair"
+    assert hc["board_dominated"] is True
+    assert hc["tier"] == "air"  # 降到空气档，不会再建议"下注取价值"
+
+
+def test_river_straight_on_board_plays_the_board():
+    # 顺子完全在公共牌上，英雄没加强 → 打公共牌，air
+    hc = classify_hand(["2c", "3d"], ["5h", "6s", "7d", "8c", "9h"])
+    assert hc["board_dominated"] is True
+    assert hc["tier"] == "air"
+
+
+def test_real_two_pair_still_value():
+    # 英雄用上底牌构成两对（Kx + Qx），仍是价值牌
+    hc = classify_hand(["Kd", "Qs"], ["Kh", "Qc", "7d"])
+    assert hc["made"] == "Two Pair"
+    assert hc["board_dominated"] is False
+    assert hc["tier"] == "value"
+
+
+def test_board_paired_hero_unrelated_not_medium():
+    # 牌面 KKQ，英雄 8 3 无关：只是公共牌的一对 K，无听牌 → 空气，而非"中等成手"
+    hc = classify_hand(["8d", "3s"], ["Kh", "Kc", "Qd"])
+    assert hc["board_dominated"] is True
+    assert hc["tier"] == "air"
+    assert hc["tier"] != "medium"
+
+
+def test_defense_air_calls_when_pot_odds_met():
+    # 纯高牌但对宽范围有 47% 胜率、只需 25%：按底池赔率应跟注（修复此前"空气一律弃牌"的 bug）
+    hand = {"tier": "air", "made": "High Card", "made_label": "高牌", "draw_label": ""}
+    rec = recommend_defense({"wetness": 0.3}, hand, equity=0.47, pot_bb=8.25, bet_bb=2.75)
+    assert rec["recommended"] == "call"
+    # 理由不再自相矛盾（不会出现 "47% < 25%" 这种）
+    assert all("<" not in r for r in rec["reasons"])
+
+
 def test_defense_value_raises():
     hand = {"tier": "value", "made": "Two Pair", "made_label": "两对", "draw_label": ""}
     rec = recommend_defense({"wetness": 0.4}, hand, equity=0.72, pot_bb=8.25, bet_bb=2.75)
     assert rec["recommended"] == "raise"
     assert "call" in rec["accept"]
+
+
+def test_defense_draw_calls_when_priced_in():
+    # 同花听牌，到河胜率 35% ≥ 半池所需 25% → 跟注（可半诈唬加注）
+    hand = {"tier": "draw", "made": "High Card", "made_label": "高牌", "draw_label": "同花听牌"}
+    rec = recommend_defense({"wetness": 0.5}, hand, equity=0.35, pot_bb=8.25, bet_bb=2.75)
+    assert rec["recommended"] == "call"
+    assert "raise" in rec["accept"]
+
+
+def test_defense_draw_folds_when_underpriced():
+    # 同一听牌面对满池下注：需要 50%，35% 不够，且理由不再自相矛盾地写“≥”
+    hand = {"tier": "draw", "made": "High Card", "made_label": "高牌", "draw_label": "同花听牌"}
+    rec = recommend_defense({"wetness": 0.5}, hand, equity=0.35, pot_bb=5.5, bet_bb=5.5)
+    assert rec["recommended"] == "fold"
+    assert all("≥" not in r for r in rec["reasons"])
+
+
+# ---------- c-bet 河牌意识 ----------
+def test_cbet_air_range_bets_on_dry_flop_but_checks_on_river():
+    # 干燥高张翻牌：空气可高频小注范围下注
+    tex_f = classify_board(["Ks", "9h", "2c"])
+    hand_f = classify_hand(["Qc", "4d"], ["Ks", "9h", "2c"])
+    assert hand_f["tier"] in ("air", "weak")
+    rec_f = recommend_cbet(tex_f, hand_f, equity=0.10)
+    assert rec_f["recommended"] == "bet"
+    # 同样的空气到了河牌：无保护/听牌价值 → 过牌（纯手牌力不乱诈唬）
+    tex_r = classify_board(["Ks", "9h", "2c", "5d", "3s"])
+    hand_r = classify_hand(["Qc", "4d"], ["Ks", "9h", "2c", "5d", "3s"])
+    assert hand_r["tier"] in ("air", "weak")
+    rec_r = recommend_cbet(tex_r, hand_r, equity=0.10)
+    assert rec_r["recommended"] == "check"
+
+
+def test_cbet_medium_river_thin_value_needs_edge():
+    tex_r = classify_board(["Ks", "9h", "2c", "5d", "3s"])
+    hand = {"tier": "medium"}
+    # 河牌边缘成手：真的领先才薄价值下注
+    assert recommend_cbet(tex_r, hand, equity=0.60)["recommended"] == "bet"
+    # 胜率不足以领先跟注范围 → 过牌
+    assert recommend_cbet(tex_r, hand, equity=0.45)["recommended"] == "check"
 
 
 # ---------- 打分 ----------

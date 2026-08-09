@@ -16,7 +16,10 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.ingest.deviation import analyze_deviations
-from app.ingest.extract import LLMUnavailable, extract_observations
+from app.ingest.extract import LLMUnavailable, _normalize as normalize_facts, extract_observations
+from app.ingest.opponent_contrib import hand_contributions
+from app.ingest.reconstruct import reconstruct_hand
+from app.ingest.schemas import ObservationFacts
 from app.llm.provider import get_provider
 
 logger = logging.getLogger(__name__)
@@ -113,3 +116,56 @@ def ingest_analyze(req: AnalyzeRequest) -> dict:
     if not req.reconstruction:
         raise HTTPException(status_code=400, detail="缺少重建结果，无法标注偏离")
     return {"analysis": analyze_deviations(req.facts, req.reconstruction)}
+
+
+class ReanalyzeRequest(BaseModel):
+    """用户在前端修正观测事实后，重跑重建 + 偏离（确定性，无 LLM，不重新识图）。"""
+
+    facts: dict = Field(..., description="编辑后的观测事实（同 extract 的 facts 结构）")
+
+
+@router.post("/reanalyze")
+def ingest_reanalyze(req: ReanalyzeRequest) -> dict:
+    """编辑后的事实 → 重新校验重建 + GTO 偏离标注。返回 {facts, reconstruction, analysis}。
+
+    facts 先经 ObservationFacts 归一（牌面/数字宽松清洗），保证与识图产出同构；
+    再走与 extract 完全相同的引擎（reconstruct_hand + analyze_deviations），不调用任何 LLM。
+    """
+    try:
+        facts = ObservationFacts.model_validate(normalize_facts(req.facts)).model_dump()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"事实格式不合法：{exc}") from exc
+    reconstruction = reconstruct_hand(facts)
+    analysis = analyze_deviations(facts, reconstruction)
+    contributions = hand_contributions(facts, reconstruction, analysis)
+    return {
+        "recognized": True,
+        "facts": facts,
+        "reconstruction": reconstruction,
+        "analysis": analysis,
+        "contributions": contributions,
+        "note": "已按你修正后的事实重新重建下注序列并重跑 GTO 偏离标注（引擎确定性计算，未重新识图）。",
+    }
+
+
+class ContributionsRequest(BaseModel):
+    """由已有 facts（可选带 reconstruction/analysis）派生逐对手可加计数器贡献。
+
+    供前端为历史条目回填对手聚合贡献（确定性、无 LLM、不识图）。缺 reconstruction/analysis 时按引擎重算。
+    """
+
+    facts: dict = Field(..., description="观测事实")
+    reconstruction: Optional[dict] = Field(None, description="重建结果（缺省则重算）")
+    analysis: Optional[dict] = Field(None, description="偏离标注（缺省则重算）")
+
+
+@router.post("/contributions")
+def ingest_contributions(req: ContributionsRequest) -> dict:
+    """facts(+可选重建/偏离) → 逐对手可加计数器贡献（用于服务端权威聚合的增量合并）。"""
+    try:
+        facts = ObservationFacts.model_validate(normalize_facts(req.facts)).model_dump()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"事实格式不合法：{exc}") from exc
+    reconstruction = req.reconstruction or reconstruct_hand(facts)
+    analysis = req.analysis or analyze_deviations(facts, reconstruction)
+    return {"contributions": hand_contributions(facts, reconstruction, analysis)}

@@ -2,21 +2,39 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import {
+  ArrowRight,
+  Brain,
+  Camera,
+  Club,
+  Crosshair,
+  LayoutGrid,
+  Spade,
+  TrendingUp,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { API_BASE, postEquity, type EquityResponse } from "@/lib/api";
 
-const TRAINING = [
+const TRAINING: {
+  title: string;
+  desc: string;
+  href: string;
+  icon: LucideIcon;
+  tags: string[];
+}[] = [
   {
     title: "翻前训练器",
     desc: "6-max · 100bb · GTO 范围即时反馈。难度加权聚焦临界手牌，智能模式自动补弱项。",
     href: "/trainer",
-    icon: "♠",
+    icon: Spade,
     tags: ["RFI / 防守", "GTO 范围", "AI 讲解"],
   },
   {
     title: "翻后训练器",
     desc: "翻牌启发式引擎：range 优势 / MDF / 赔率 / 下注尺度，透明可解释、边界宽容。",
     href: "/trainer/postflop",
-    icon: "♣",
+    icon: Club,
     tags: ["c-bet / 防守", "下注尺度", "蒙特卡洛胜率"],
   },
 ];
@@ -25,23 +43,30 @@ const TOOLS: {
   title: string;
   desc: string;
   href: string;
-  icon: string;
+  icon: LucideIcon;
   badge?: string;
 }[] = [
-  { title: "范围表", desc: "RFI + 防守 · 13×13 频率网格", href: "/ranges", icon: "▦" },
-  { title: "训练进度", desc: "正确率 / 连对 / 错题回顾 · 本地或云端同步", href: "/progress", icon: "📈" },
+  { title: "范围表", desc: "RFI + 防守 · 13×13 频率网格", href: "/ranges", icon: LayoutGrid },
+  { title: "训练进度", desc: "正确率 / 连对 / 错题回顾 · 本地或云端同步", href: "/progress", icon: TrendingUp },
   {
     title: "截图导入",
-    desc: "WePoker 截图 → 观测事实提取（重建 / 剥削建设中）",
+    desc: "WePoker 截图 → 观测事实提取 + 下注序列重建 + GTO 偏离标注",
     href: "/import",
-    icon: "📸",
+    icon: Camera,
+    badge: "Beta",
+  },
+  {
+    title: "对手档案",
+    desc: "跨手累计对手倾向画像与净额，随时可写备注",
+    href: "/opponents",
+    icon: Users,
     badge: "Beta",
   },
 ];
 
-const COMING = [
-  { title: "剥削训练", desc: "对手画像 + node-lock 偏离", phase: "Phase 9", icon: "🧠" },
-  { title: "逐人剥削建议", desc: "截图重建 → 偏离标注 → LLM 剥削", phase: "Phase 6 · S2+", icon: "🎯" },
+const COMING: { title: string; desc: string; phase: string; icon: LucideIcon }[] = [
+  { title: "剥削训练", desc: "对手画像 + node-lock 偏离", phase: "Phase 9", icon: Brain },
+  { title: "逐人剥削建议", desc: "截图重建 → 偏离标注 → LLM 剥削", phase: "Phase 6 · S2+", icon: Crosshair },
 ];
 
 export default function Home() {
@@ -111,10 +136,10 @@ export default function Home() {
                 className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-emerald-500/5 blur-2xl transition group-hover:bg-emerald-500/10"
               />
               <div className="flex items-start justify-between">
-                <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 text-2xl text-emerald-300 ring-1 ring-emerald-500/20">
-                  {m.icon}
+                <span className="flex size-12 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/20">
+                  <m.icon className="size-6" />
                 </span>
-                <span className="rounded-full bg-emerald-900/60 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+                <span className="rounded-full bg-emerald-500/12 px-2.5 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20">
                   可用
                 </span>
               </div>
@@ -130,8 +155,9 @@ export default function Home() {
                   </span>
                 ))}
               </div>
-              <span className="mt-5 inline-flex items-center text-sm font-medium text-emerald-400 transition group-hover:translate-x-0.5">
-                进入训练 →
+              <span className="mt-5 inline-flex items-center gap-1 text-sm font-medium text-emerald-400 transition group-hover:translate-x-0.5">
+                进入训练
+                <ArrowRight className="size-4" />
               </span>
             </Link>
           ))}
@@ -144,25 +170,23 @@ export default function Home() {
             <Link
               key={m.title}
               href={m.href}
-              className="group flex items-center gap-4 rounded-xl border border-neutral-800 bg-neutral-900/50 p-4 transition hover:border-emerald-700/60 hover:bg-neutral-900"
+              className="group flex items-center gap-4 rounded-xl border border-white/[0.07] bg-neutral-900/50 p-4 transition hover:border-emerald-700/60 hover:bg-neutral-900"
             >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-xl text-neutral-300">
-                {m.icon}
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-neutral-300 ring-1 ring-white/10">
+                <m.icon className="size-5" />
               </span>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="font-semibold text-neutral-100">{m.title}</h3>
                   {m.badge && (
-                    <span className="rounded-full bg-emerald-900/60 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+                    <span className="rounded-full bg-emerald-500/12 px-2 py-0.5 text-[10px] font-medium text-emerald-300 ring-1 ring-emerald-500/20">
                       {m.badge}
                     </span>
                   )}
                 </div>
                 <p className="truncate text-sm text-neutral-400">{m.desc}</p>
               </div>
-              <span className="ml-auto text-neutral-600 transition group-hover:text-emerald-400">
-                →
-              </span>
+              <ArrowRight className="ml-auto size-4 text-neutral-600 transition group-hover:translate-x-0.5 group-hover:text-emerald-400" />
             </Link>
           ))}
         </section>
@@ -177,8 +201,8 @@ export default function Home() {
               key={m.title}
               className="flex items-center gap-4 rounded-xl border border-dashed border-neutral-800 bg-neutral-900/30 p-4"
             >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-neutral-800/60 text-xl grayscale">
-                {m.icon}
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.03] text-neutral-500 ring-1 ring-white/[0.06]">
+                <m.icon className="size-5" />
               </span>
               <div className="min-w-0">
                 <h3 className="font-semibold text-neutral-300">{m.title}</h3>

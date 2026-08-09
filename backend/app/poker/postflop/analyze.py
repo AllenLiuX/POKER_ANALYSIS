@@ -8,7 +8,7 @@ from __future__ import annotations
 import zlib
 from typing import Dict, List, Optional, Tuple
 
-from app.poker.equity import equity_hand_vs_range
+from app.poker.equity import equity_hand_vs_range_enum
 from app.poker.postflop.handstrength import classify_hand
 from app.poker.postflop.heuristics import recommend_cbet, recommend_defense
 from app.poker.postflop.range_advantage import range_vs_range
@@ -40,8 +40,10 @@ def analyze_spot(
     """
     texture = classify_board(board)
     hand = classify_hand(hero, board)
-    eq = equity_hand_vs_range(
-        hero, villain_range, board=board, trials=trials, seed=_stable_seed(hero, board)
+    # 翻后一律精确加权枚举（确定性、去除 MC 方差、尊重组合权重）；
+    # 翻牌若评估量超预算则按稳定种子确定性抽样 runout。
+    eq = equity_hand_vs_range_enum(
+        hero, villain_range, board, seed=_stable_seed(hero, board)
     )
     equity = eq["equity"]
 

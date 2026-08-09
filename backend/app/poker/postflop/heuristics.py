@@ -63,6 +63,8 @@ def recommend_cbet(
     tier = hand["tier"]
     wet = float(texture["wetness"])
     high_board = texture["high_card"] >= 10
+    # 河牌（5 张公共牌）无后续发牌：没有保护/否定权益/听牌兑现，下注只能是价值或诈唬。
+    river = len(texture.get("board", []) or []) >= 5
     reasons: List[str] = []
     accept: Set[str] = set()
     # rec_size / accept_sizes 表示"若选择下注，应下多大"（判分时对比）。
@@ -100,26 +102,53 @@ def recommend_cbet(
         reasons.append(f"{hand['draw_label']}有 {hand['outs']} outs，半诈唬有弃牌率+成手潜力")
         mix = True
     elif tier == "medium":
-        # 边缘成手：多控池；干面或有范围优势时可小注薄价值
-        if wet < 0.35 or strong_range:
+        # 边缘成手：河牌只看是否真的领先对手跟注范围（薄价值）；翻/转牌兼顾保护与控池。
+        if river:
+            thin_value = equity >= 0.55
+        else:
+            thin_value = wet < 0.35 or strong_range
+        if thin_value:
             rec = "bet"
             size = "小注(约 1/3)薄价值/否则过牌"
             rec_size, accept_sizes = "small", {"small"}
             accept = {"bet", "check"}
-            why = "边缘成手在干面可小注薄价值" if wet < 0.35 else "范围占优时边缘成手可小注施压"
-            reasons.append(why + "，湿面/范围劣势更宜控池")
+            if river:
+                reasons.append(f"河牌边缘成手胜率 {equity:.0%}，仍领先对手跟注范围，可小注薄价值")
+            else:
+                why = "边缘成手在干面可小注薄价值" if wet < 0.35 else "范围占优时边缘成手可小注施压"
+                reasons.append(why + "，湿面/范围劣势更宜控池")
         else:
             rec = "check"
             size = "过牌控池"
             rec_size, accept_sizes = "small", {"small"}
             accept = {"check"}
-            reasons.append("边缘成手在湿面控池，避免被加注为难")
+            if river:
+                reasons.append(f"河牌边缘成手胜率 {equity:.0%} 不足以薄价值，过牌抓诈/控池")
+            else:
+                reasons.append("边缘成手在湿面控池，避免被加注为难")
         mix = True
     else:  # air / weak
         # 空气牌的 c-bet 诈唬频率由范围优势主导：
         #   对手范围占优 → 别往范围劣势里乱诈唬，过牌；
         #   自己范围占优（或经典干燥高张面）→ 高频小注施压。
-        if weak_range:
+        if hand.get("board_dominated"):
+            # 成手完全来自公共牌（如河牌打公共牌）：最多平分，下注只会被更好的手跟注、
+            # 逼弃的都是同样平分的手，没有可取的价值/弃牌率 → 过牌看牌。
+            rec = "check"
+            size = "过牌摊牌（最多平分）"
+            rec_size, accept_sizes = "small", {"small"}
+            accept = {"check"}
+            reasons.append("成手完全在公共牌上，最多与对手平分，下注只会被更好的手跟注，过牌看牌")
+            mix = False
+        elif river:
+            # 河牌上的空气没有保护/听牌价值，只能作纯诈唬；纯手牌力启发式不建议乱开火。
+            rec = "check"
+            size = "过牌（河牌无摊牌价值）"
+            rec_size, accept_sizes = "small", {"small"}
+            accept = {"check"}
+            reasons.append("河牌没有听牌/保护价值，空气只能作诈唬，缺乏具体阻断牌/线路时过牌放弃")
+            mix = False
+        elif weak_range:
             rec = "check"
             size = "过牌放弃"
             rec_size, accept_sizes = "small", {"small"}
@@ -202,10 +231,22 @@ def recommend_defense(
         reasons.append("强顶对/超对领先多数持续下注范围，跟注为主，偶尔加注")
         mix = True
     elif tier == "draw":
-        rec = "call"
-        accept = {"call", "raise"}
-        reasons.append(f"{hand['draw_label']}胜率 {equity:.0%} ≥ 底池赔率 {required:.0%}，跟注/半诈唬加注")
-        mix = True
+        # 听牌用底池赔率把关：够价就跟注（有弃牌率可半诈唬加注），不够价就弃牌。
+        # equity 为到河底池权益，面对下注按即时赔率比较是常用近似（隐含赔率另计）。
+        if equity >= required:
+            rec = "call"
+            accept = {"call", "raise"}
+            reasons.append(
+                f"{hand['draw_label']}胜率 {equity:.0%} ≥ 底池赔率 {required:.0%}，跟注；有弃牌率时可半诈唬加注"
+            )
+            mix = True
+        else:
+            rec = "fold"
+            accept = {"fold"}
+            reasons.append(
+                f"{hand['draw_label']}胜率 {equity:.0%} < 底池赔率 {required:.0%}，无明显隐含赔率时跟注不划算，弃牌"
+            )
+            mix = False
     else:  # medium / weak / air：一律以底池赔率为准（胜率够就防守，不够就弃）
         # 说明：纯高牌（air）也可能对一段较宽的下注范围有可观胜率（如 A 高/两高张），
         # 此时按底池赔率跟注才是正解；此前"空气一律弃牌"会既判错又给出自相矛盾的理由。

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Target } from "lucide-react";
 import {
   getTrainerNext,
   getTrainerSpots,
@@ -13,7 +14,7 @@ import {
 import ActionBar from "@/components/ActionBar";
 import FeedbackPanel, { type CoachState } from "@/components/FeedbackPanel";
 import PlayingCard from "@/components/PlayingCard";
-import PokerTable from "@/components/PokerTable";
+import PokerTable, { scenarioToTableView } from "@/components/PokerTable";
 import {
   loadAttempts,
   pickAdaptiveTarget,
@@ -275,13 +276,14 @@ export default function TrainerPage() {
             <button
               onClick={() => setAdaptive((v) => !v)}
               title="按你的历史弱项与练习不足处自动挑选题目"
-              className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+              className={`flex items-center gap-1 rounded-md px-3 py-1 text-xs font-medium transition ${
                 adaptive
                   ? "bg-violet-600 text-white"
                   : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
               }`}
             >
-              🎯 智能训练{adaptive ? "：开" : ""}
+              <Target className="size-3.5" />
+              智能训练{adaptive ? "：开" : ""}
             </button>
           </div>
         </div>
@@ -323,7 +325,7 @@ export default function TrainerPage() {
 
       {scenario && (
         <>
-          <PokerTable scenario={scenario} />
+          <PokerTable view={scenarioToTableView(scenario)} />
 
           {/* 你的手牌 + 出题 */}
           <div className="mt-4 flex flex-col items-center gap-3">

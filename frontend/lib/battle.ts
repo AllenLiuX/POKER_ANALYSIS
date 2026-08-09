@@ -1,6 +1,6 @@
 // HU 人机对战：API 客户端 + 问题手本地存储。
 // 无状态协议：/act 只需回传 {deal_seed, hero_pos, history, action, size}，服务端重放全部状态。
-import { API_BASE } from "./api";
+import { API_BASE, streamText } from "./api";
 
 // ---------- 类型（对齐后端 engine.to_public / grade）----------
 export interface BattleSizeOption {
@@ -23,12 +23,24 @@ export interface DecisionGrade {
   severity?: number;
   ev_loss_proxy?: number;
   grounded?: boolean;
+  // 翻前特有：该手牌类别在此 spot 的动作频率（GTO 范围表，权威）
+  frequencies?: Record<string, number>;
   // 翻后特有
   made_label?: string;
   draw_label?: string;
   tier?: string;
   equity?: number;
   reasons?: string[];
+  // 翻后建议详情（accept / 需要胜率 / MDF / 范围·坚果优势标签等）
+  recommendation?: {
+    recommended?: string;
+    accept?: string[];
+    required_equity?: number | null;
+    mdf?: number | null;
+    range_label?: string;
+    nut_label?: string;
+    size_advice?: string;
+  };
 }
 
 export interface HistoryEvent {
@@ -64,8 +76,12 @@ export interface BattleResult {
 
 export interface BattleState {
   deal_seed: number;
-  hero_pos: "BTN" | "BB";
-  villain_pos: "BTN" | "BB";
+  matchup: string;
+  matchup_label: string;
+  hero_pos: string;
+  villain_pos: string;
+  opener_pos: string;
+  defender_pos: string;
   blinds: { sb: number; bb: number };
   start_stack: number;
   street: "preflop" | "flop" | "turn" | "river";
@@ -92,8 +108,23 @@ export interface BattleState {
 }
 
 // ---------- API ----------
+export interface BattleMatchup {
+  matchup: string;
+  label: string;
+  opener: string;
+  defender: string;
+  positions: string[];
+}
+
+export async function loadBattleMatchups(): Promise<BattleMatchup[]> {
+  const res = await fetch(`${API_BASE}/api/battle/matchups`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`battle matchups ${res.status}`);
+  return (await res.json()).matchups;
+}
+
 export async function newBattle(body?: {
-  hero_pos?: "BTN" | "BB";
+  matchup?: string;
+  hero_pos?: string;
   seed?: number;
 }): Promise<BattleState> {
   const res = await fetch(`${API_BASE}/api/battle/new`, {
@@ -110,7 +141,8 @@ export async function newBattle(body?: {
 
 export async function battleAct(body: {
   deal_seed: number;
-  hero_pos: "BTN" | "BB";
+  matchup: string;
+  hero_pos: string;
   history: HistoryEvent[];
   action: string;
   size?: string;
@@ -127,69 +159,153 @@ export async function battleAct(body: {
   return (await res.json()).state;
 }
 
-// ---------- 问题手（本地存储 + AI 复盘）----------
-export interface ProblemHand {
+// ---------- 对局记录（本地存储 + AI 复盘）----------
+/** 一手完整对局记录（无论是否问题手都保存，便于随时问 AI）。 */
+export interface RecordedHand {
   ts: number;
   hero_glyphs: string[];
   hero_pos: string;
   villain_pos: string;
   board_glyphs: string[];
+  villain_glyphs: string[]; // 仅摊牌可见
+  villain_class: string; // 仅摊牌可见
   hero_net: number;
   reason: string;
   winner: string;
+  is_problem: boolean;
   is_big: boolean;
   max_severity: number;
-  decisions: DecisionGrade[];
+  decisions: DecisionGrade[]; // 本手全部英雄决策（含最优/可接受/偏离）
+  history: HistoryEvent[]; // 完整行动线（双方、分街）
 }
 
-const KEY = "poker_battle_hands_v1";
-const MAX = 200;
+const ACTOR_CN: Record<string, string> = { hero: "你", villain: "对手" };
+const STREET_CN: Record<string, string> = {
+  preflop: "翻前",
+  flop: "翻牌",
+  turn: "转牌",
+  river: "河牌",
+};
+
+/** 把一手的完整历史整理成「分街行动线」，用于展示与喂给 AI。 */
+export function actionLineFromHistory(history: HistoryEvent[]): { street: string; text: string }[] {
+  const order = ["preflop", "flop", "turn", "river"];
+  const groups: Record<string, string[]> = {};
+  for (const e of history ?? []) {
+    const who = ACTOR_CN[e.actor] ?? e.actor;
+    let act = e.label ?? e.action;
+    if ((e.action === "bet" || e.action === "raise") && e.amount_to) {
+      act = `${act} ${e.amount_to}`;
+    }
+    (groups[e.street] ??= []).push(`${who}${act}`);
+  }
+  return order
+    .filter((s) => groups[s]?.length)
+    .map((s) => ({ street: STREET_CN[s] ?? s, text: groups[s].join(" · ") }));
+}
+
+export function handActionLine(h: RecordedHand): { street: string; text: string }[] {
+  return actionLineFromHistory(h.history ?? []);
+}
+
+/** 兼容旧命名：分析负载复用同一结构。 */
+export type ProblemHand = RecordedHand;
+
+const KEY = "poker_battle_history_v1";
+const OLD_KEY = "poker_battle_hands_v1"; // 旧版仅存问题手，加载时迁移
+const MAX = 300;
 
 function isBrowser(): boolean {
   return typeof window !== "undefined" && !!window.localStorage;
 }
 
-export function loadProblemHands(): ProblemHand[] {
+/** 读取全部对局记录（首次会迁移旧「问题手」存储）。 */
+export function loadHands(): RecordedHand[] {
   if (!isBrowser()) return [];
   try {
     const raw = window.localStorage.getItem(KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? (arr as ProblemHand[]) : [];
+    if (raw) {
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? (arr as RecordedHand[]) : [];
+    }
+    const old = window.localStorage.getItem(OLD_KEY);
+    if (old) {
+      const arr = JSON.parse(old);
+      if (Array.isArray(arr)) {
+        const migrated = (arr as Record<string, unknown>[]).map((h) => ({
+          villain_glyphs: [],
+          villain_class: "",
+          is_problem: true,
+          history: [],
+          ...h,
+        })) as unknown as RecordedHand[];
+        window.localStorage.setItem(KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    return [];
   } catch {
     return [];
   }
 }
 
-export function clearProblemHands(): void {
+/** 合并外部（云端）记录到本地存储，按 ts 去重，返回合并后的最新列表。 */
+export function mergeHands(incoming: RecordedHand[]): RecordedHand[] {
+  const list = loadHands();
+  const seen = new Set(list.map((h) => h.ts));
+  let changed = false;
+  for (const h of incoming) {
+    if (h && !seen.has(h.ts)) {
+      list.push(h);
+      seen.add(h.ts);
+      changed = true;
+    }
+  }
+  list.sort((a, b) => a.ts - b.ts);
+  const trimmed = list.length > MAX ? list.slice(list.length - MAX) : list;
+  if (changed && isBrowser()) {
+    try {
+      window.localStorage.setItem(KEY, JSON.stringify(trimmed));
+    } catch {
+      /* ignore quota */
+    }
+  }
+  return trimmed;
+}
+
+export function clearHands(): void {
   if (!isBrowser()) return;
   try {
     window.localStorage.removeItem(KEY);
+    window.localStorage.removeItem(OLD_KEY);
   } catch {
     /* ignore */
   }
 }
 
-/** 从一手结束的对战状态里抽出"问题手"记录（若确为问题手），存入本地并返回最新列表。 */
-export function maybeRecordProblemHand(state: BattleState): ProblemHand[] {
+/** 一手结束后记录（每手都存），返回最新列表。 */
+export function recordHand(state: BattleState): RecordedHand[] {
   const r = state.result;
-  if (!r || !r.review.is_problem) return loadProblemHands();
-  const decisions = state.grades.filter(
-    (g) => g.grade === "mistake" || g.grade === "acceptable",
-  );
-  const hand: ProblemHand = {
+  if (!r) return loadHands();
+  const showdown = r.reason === "showdown";
+  const hand: RecordedHand = {
     ts: Date.now(),
     hero_glyphs: state.hero_glyphs,
     hero_pos: state.hero_pos,
     villain_pos: state.villain_pos,
     board_glyphs: r.board.map(glyph),
+    villain_glyphs: showdown ? r.villain.map(glyph) : [],
+    villain_class: showdown ? r.villain_class : "",
     hero_net: r.hero_net,
     reason: r.reason,
     winner: r.winner,
+    is_problem: r.review.is_problem,
     is_big: r.review.is_big,
     max_severity: r.review.max_severity,
-    decisions,
+    decisions: state.grades,
+    history: state.history,
   };
-  const list = loadProblemHands();
+  const list = loadHands();
   list.push(hand);
   const trimmed = list.length > MAX ? list.slice(list.length - MAX) : list;
   if (isBrowser()) {
@@ -207,46 +323,58 @@ function glyph(card: string): string {
   return `${card[0]}${SUIT_GLYPH[card[1]?.toLowerCase()] ?? card[1] ?? ""}`;
 }
 
-export interface BattleAnalyzeResult {
-  report: string;
-  analyzed: number;
+function mapDecision(d: DecisionGrade) {
+  return {
+    street: d.street,
+    spot_label: d.spot_label,
+    hand_class: d.hand_class ?? "",
+    action: d.action,
+    optimal_action: d.optimal_action,
+    grade: d.grade,
+    made_label: d.made_label,
+    draw_label: d.draw_label,
+    tier: d.tier,
+    equity: d.equity,
+    reasons: d.reasons ?? [],
+  };
 }
 
-export async function analyzeProblemHands(
-  hands: ProblemHand[],
-): Promise<BattleAnalyzeResult> {
-  const payload = {
-    hands: hands.map((h) => ({
-      hero_glyphs: h.hero_glyphs,
-      hero_pos: h.hero_pos,
-      villain_pos: h.villain_pos,
-      board_glyphs: h.board_glyphs,
-      hero_net: h.hero_net,
-      reason: h.reason,
-      winner: h.winner,
-      decisions: h.decisions.map((d) => ({
-        street: d.street,
-        spot_label: d.spot_label,
-        hand_class: d.hand_class ?? "",
-        action: d.action,
-        optimal_action: d.optimal_action,
-        grade: d.grade,
-        made_label: d.made_label,
-        draw_label: d.draw_label,
-        tier: d.tier,
-        equity: d.equity,
-        reasons: d.reasons ?? [],
-      })),
-    })),
+function handPayload(h: RecordedHand) {
+  return {
+    hero_glyphs: h.hero_glyphs,
+    hero_pos: h.hero_pos,
+    villain_pos: h.villain_pos,
+    board_glyphs: h.board_glyphs,
+    villain_glyphs: h.villain_glyphs ?? [],
+    villain_class: h.villain_class ?? "",
+    hero_net: h.hero_net,
+    reason: h.reason,
+    winner: h.winner,
+    action_line: handActionLine(h).map((x) => `${x.street} ${x.text}`),
+    decisions: h.decisions.map(mapDecision),
   };
-  const res = await fetch(`${API_BASE}/api/battle/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.detail || `battle analyze ${res.status}`);
-  }
-  return res.json();
+}
+
+/** 批量复盘（问题手）：流式，onChunk 收到累计全文，返回最终全文。 */
+export async function streamAnalyzeProblemHands(
+  hands: RecordedHand[],
+  onChunk: (full: string) => void,
+): Promise<string> {
+  return streamText(
+    `${API_BASE}/api/battle/analyze/stream`,
+    { hands: hands.map(handPayload) },
+    onChunk,
+  );
+}
+
+/** 单手复盘：问 AI「这手打得对不对、为什么」。流式返回。 */
+export async function streamExplainHand(
+  hand: RecordedHand,
+  onChunk: (full: string) => void,
+): Promise<string> {
+  return streamText(
+    `${API_BASE}/api/battle/explain/stream`,
+    { hand: handPayload(hand) },
+    onChunk,
+  );
 }

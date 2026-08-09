@@ -22,6 +22,12 @@ from app.poker.preflop.scoring import MIN_MIX, score_action
 
 logger = logging.getLogger(__name__)
 
+# 翻后接地打分需要的模块（延迟在函数内 import 以隔离异常）
+_STREET_SEQ = ["翻牌", "转牌", "河牌"]
+_BOARD_LEN = {"翻牌": 3, "转牌": 4, "河牌": 5}
+_STREET_EN = {"翻牌": "flop", "转牌": "turn", "河牌": "river"}
+_MONEY = {"bet", "raise", "allin", "call"}
+
 POSITION_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB"]
 _RFI_POSITIONS = {"UTG", "MP", "CO", "BTN", "SB"}  # data/ranges/*/RFI/*.json
 
@@ -216,6 +222,164 @@ def _postflop_note(player: Dict, board: List[str], base_conf: float) -> Optional
     }
 
 
+def _street_money(actions: List[Dict], street: str) -> float:
+    return sum(
+        float(a["amount"])
+        for a in actions
+        if a.get("street") == street and a.get("action") in _MONEY and a.get("amount")
+    )
+
+
+def _first_action_on(actions: List[Dict], street: str) -> Optional[Dict]:
+    for a in actions:
+        if a.get("street") == street and a.get("action"):
+            return a
+    return None
+
+
+def _postflop_villain_range(opp_role: Optional[str], opp_pos: Optional[str], opener_pos: Optional[str]):
+    """按翻前角色把对手（villain）范围接地：开池方=开池范围；防守方=对应跟注范围。
+    返回 (range_str, label) 或 (None, None)（无法接地）。"""
+    try:
+        from app.poker.battle.ranges import call_range_str, open_range_str
+
+        if opp_role == "opener" and opener_pos:
+            r = open_range_str(opener_pos)
+            return (r, f"{opener_pos} 开池范围") if r else (None, None)
+        if opp_role == "caller" and opp_pos and opener_pos:
+            r = call_range_str(f"{opp_pos}_vs_{opener_pos}")
+            return (r, f"{opp_pos} 跟注范围") if r else (None, None)
+    except Exception:  # noqa: BLE001
+        return (None, None)
+    return (None, None)
+
+
+def _grade_postflop_street(
+    *, alias, is_hero, hole, board, street, actions, opp_actions,
+    prior_money: float, villain_range: str, villain_label: str, base_conf: float,
+) -> Optional[Dict]:
+    """对单条翻后街道决策接地打分（复用翻后引擎）。金额单位任意——底池赔率/胜率均无量纲。"""
+    need = _BOARD_LEN[street]
+    if len(board) < need:
+        return None
+    board_slice = board[:need]
+    first = _first_action_on(actions, street)
+    if not first:
+        return None
+    act = str(first.get("action"))
+    villain_bet = _street_money(opp_actions, street)
+
+    # 判定角色 + 归一动作
+    if act in ("call", "fold"):
+        if villain_bet <= 0:
+            return None  # 面对下注却无对手下注金额 → 无法接地
+        role, chosen, bet = "caller", act, villain_bet
+    elif act == "raise":
+        role, chosen, bet = ("caller", "raise", villain_bet) if villain_bet > 0 else ("pfr", "bet", None)
+    elif act == "allin":
+        role, chosen, bet = ("caller", "raise", villain_bet) if villain_bet > 0 else ("pfr", "bet", None)
+    elif act == "bet":
+        role, chosen, bet = "pfr", "bet", None
+    elif act == "check":
+        role, chosen, bet = "pfr", "check", None
+    else:
+        return None
+
+    pot_before = max(0.0, prior_money)
+    if pot_before <= 0:
+        return None
+    pot_bb = pot_before + (bet or 0.0)
+
+    try:
+        from app.poker.postflop.analyze import analyze_spot
+        from app.poker.postflop.scoring import score_postflop
+
+        _tex, hand, equity, rec = analyze_spot(
+            role=role, hero=hole[:2], board=board_slice, villain_range=villain_range,
+            pot_bb=pot_bb, bet_bb=bet, hero_range=None, trials=800, ra_trials=0,
+        )
+        score = score_postflop(rec, chosen, None)
+    except Exception:  # noqa: BLE001 — 牌面/范围异常不致命，退回启发式
+        return None
+
+    grade = str(score["grade"])
+    optimal = str(score["recommended"])
+    leak = _classify_leak(chosen, optimal) if grade == "mistake" else None
+    spot = "postflop_defense" if role == "caller" else "postflop_cbet"
+    return {
+        "alias": alias,
+        "is_hero": bool(is_hero),
+        "street": street,
+        "spot": spot,
+        "spot_label": f"翻后{'防守' if role == 'caller' else '主动'} · {street}",
+        "made_label": hand.get("made_label"),
+        "draw_label": hand.get("draw_label"),
+        "tier": hand.get("tier"),
+        "equity": round(float(equity), 3),
+        "actual": chosen,
+        "actual_label": _ACTION_LABELS.get(chosen, chosen),
+        "grade": grade,
+        "grade_label": _GRADE_LABELS.get(grade, grade),
+        "optimal_action": optimal,
+        "optimal_label": _ACTION_LABELS.get(optimal, optimal),
+        "deviation_type": leak,
+        "deviation_label": _LEAK_LABELS.get(leak) if leak else None,
+        "reasons": rec.get("reasons", []),
+        "villain_range_label": villain_label,
+        "grounded": True,
+        "approximate": False,
+        "confidence": round(base_conf * 0.6, 2),
+        "note": f"对手范围按翻前推定（{villain_label}）、底池/下注由动作金额近似；胜率为蒙特卡洛。",
+    }
+
+
+def _postflop_deviations_for_hand(
+    players: List[Dict], board: List[str], base_conf: float,
+    pos_by_idx: Dict[int, str], role_by_idx: Dict[int, str], opener_pos: Optional[str],
+    is_srp: bool,
+) -> Dict[int, List[Dict]]:
+    """仅对「单加注底池 + 翻后单挑（两人）」接地翻后打分；其它情形返回空（退回启发式）。"""
+    if not is_srp:
+        return {}
+    postflop_idx = [
+        i for i, p in enumerate(players)
+        if any(a.get("street") in _STREET_SEQ for a in (p.get("actions") or []))
+    ]
+    if len(postflop_idx) != 2:
+        return {}
+    out: Dict[int, List[Dict]] = {}
+    for idx in postflop_idx:
+        p = players[idx]
+        hole = p.get("hole_cards") or []
+        if len(hole) < 2:
+            continue
+        opp_idx = postflop_idx[0] if postflop_idx[1] == idx else postflop_idx[1]
+        vr, vlabel = _postflop_villain_range(role_by_idx.get(opp_idx), pos_by_idx.get(opp_idx), opener_pos)
+        if not vr:
+            continue
+        actions = p.get("actions") or []
+        opp_actions = players[opp_idx].get("actions") or []
+        # 累计底池（两人翻前+更早街道的下注金额之和）
+        prior = _street_money(actions, "翻前") + _street_money(opp_actions, "翻前")
+        devs: List[Dict] = []
+        for street in _STREET_SEQ:
+            if not any(a.get("street") == street for a in actions):
+                # 该街道无本方动作，但仍要把它计入之后的底池
+                prior += _street_money(actions, street) + _street_money(opp_actions, street)
+                continue
+            dev = _grade_postflop_street(
+                alias=p.get("alias"), is_hero=p.get("is_hero"), hole=hole, board=board,
+                street=street, actions=actions, opp_actions=opp_actions,
+                prior_money=prior, villain_range=vr, villain_label=vlabel, base_conf=base_conf,
+            )
+            if dev:
+                devs.append(dev)
+            prior += _street_money(actions, street) + _street_money(opp_actions, street)
+        if devs:
+            out[idx] = devs
+    return out
+
+
 def analyze_deviations(facts: Dict, reconstruction: Optional[Dict]) -> Dict:
     """重建结果 → 逐人偏离标注（翻前接地 + 翻后启发式）。"""
     fmt = "6max_100bb"
@@ -251,10 +415,13 @@ def analyze_deviations(facts: Dict, reconstruction: Optional[Dict]) -> Dict:
 
     # 每个玩家 idx -> 翻前偏离
     preflop_dev: Dict[int, Dict] = {}
+    pos_by_idx: Dict[int, str] = {}
+    role_by_idx: Dict[int, str] = {}  # opener / caller（供翻后接地推定对手范围）
     raises_before = 0
     limped = False
     opener_pos: Optional[str] = None
     for _, idx, p, pos, pa in pre:
+        pos_by_idx[idx] = pos
         chosen = pa["chosen"]
         hole = p.get("hole_cards") or []
         cls = None
@@ -290,6 +457,12 @@ def analyze_deviations(facts: Dict, reconstruction: Optional[Dict]) -> Dict:
                 )
                 preflop_dev[idx] = dev
 
+        # 记录翻前角色（用于翻后接地推定对手范围）
+        if raises_before == 0 and pa["raw_action"] in _AGGR and not limped:
+            role_by_idx[idx] = "opener"
+        elif raises_before == 1 and pa["raw_action"] == "call":
+            role_by_idx[idx] = "caller"
+
         # 推进池状态
         if pa["raw_action"] == "call" and raises_before == 0:
             limped = True
@@ -297,6 +470,12 @@ def analyze_deviations(facts: Dict, reconstruction: Optional[Dict]) -> Dict:
             if raises_before == 0:
                 opener_pos = pos
             raises_before += 1
+
+    # 单加注底池（恰好一次翻前加注、无跛入）才对翻后接地打分
+    is_srp = (raises_before == 1) and not limped
+    postflop_dev = _postflop_deviations_for_hand(
+        players, board, base_conf, pos_by_idx, role_by_idx, opener_pos, is_srp
+    )
 
     # ---- 组装逐人结果（翻前偏离 + 翻后启发式）----
     out_players: List[Dict] = []
@@ -310,9 +489,17 @@ def analyze_deviations(facts: Dict, reconstruction: Optional[Dict]) -> Dict:
             grounded += 1
             if d["grade"] == "mistake":
                 mistakes += 1
-        note = _postflop_note(p, board, base_conf)
-        if note:
-            devs.append(note)
+        if idx in postflop_dev:
+            for d in postflop_dev[idx]:
+                devs.append(d)
+                graded += 1
+                grounded += 1
+                if d["grade"] == "mistake":
+                    mistakes += 1
+        else:
+            note = _postflop_note(p, board, base_conf)
+            if note:
+                devs.append(note)
         if not devs:
             continue
         out_players.append(
@@ -338,7 +525,12 @@ def analyze_deviations(facts: Dict, reconstruction: Optional[Dict]) -> Dict:
         "players": out_players,
         "counts": {"graded": graded, "grounded": grounded, "mistakes": mistakes},
         "note": (
-            "翻前对照开源近 GTO 范围表（RFI / vs 单次开池）判级；翻后为启发式线路说明（近似，不含 EV）。"
+            "翻前对照开源近 GTO 范围表（RFI / vs 单次开池）判级；"
+            + (
+                "单加注底池的翻后单挑决策接引擎（胜率/纹理/MDF）打分（对手范围按翻前推定，底池/下注由动作金额近似）。"
+                if postflop_dev
+                else "翻后为启发式线路说明（近似，不含 EV）。"
+            )
             + ("" if not notes else " " + " ".join(notes))
         ),
     }

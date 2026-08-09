@@ -22,13 +22,13 @@ def _sample(freqs: Dict[str, float], rng: random.Random) -> str:
     return items[-1][0]
 
 
-def villain_preflop(*, situation: str, cls: str, rng: random.Random) -> str:
+def villain_preflop(*, situation: str, cls: str, opener: str, vs_spot: str, rng: random.Random) -> str:
     """翻前对手动作。situation ∈ {open, defend, vs_3bet}。返回 fold/raise/call。"""
-    if situation == "open":                       # 对手是 BTN，首先行动
-        return _sample(R.btn_open_freqs(cls), rng)   # raise / fold
-    if situation == "defend":                     # 对手是 BB，面对开池
-        return _sample(R.bb_defend_freqs(cls), rng)  # call / raise / fold
-    if situation == "vs_3bet":                    # 对手是 BTN，面对 3-bet
+    if situation == "open":                              # 对手是开池方，首先行动
+        return _sample(R.open_freqs(opener, cls), rng)   # raise / fold
+    if situation == "defend":                            # 对手是防守方，面对开池
+        return _sample(R.defend_freqs(vs_spot, cls), rng)  # call / raise / fold
+    if situation == "vs_3bet":                           # 对手是开池方，面对 3-bet
         return "call" if R.calls_3bet(cls) else "fold"
     return "fold"
 

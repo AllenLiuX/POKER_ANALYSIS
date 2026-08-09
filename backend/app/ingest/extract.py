@@ -5,17 +5,44 @@
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
+import os
 import re
+from collections import OrderedDict
 from typing import Dict, List, Optional
 
 from app.ingest.deviation import analyze_deviations
+from app.ingest.opponent_contrib import hand_contributions
 from app.ingest.reconstruct import reconstruct_hand
-from app.ingest.schemas import SCREENSHOT_TYPES, ObservationFacts
+from app.ingest.schemas import SCREENSHOT_TYPES, STREET_KEYS, ObservationFacts
 from app.llm.provider import get_provider
 
 logger = logging.getLogger(__name__)
+
+# 视觉转写缓存：同一张图（字节 sha256 相同）不重复调模型，省时省钱。
+# 进程内有界 LRU；重复导入/重跑同图直接命中。可用 INGEST_VISION_CACHE=0 关闭。
+_VISION_CACHE_ON = os.getenv("INGEST_VISION_CACHE", "1") not in ("0", "false", "False")
+_VISION_CACHE_MAX = max(0, int(os.getenv("INGEST_VISION_CACHE_MAX", "256")))
+_VISION_CACHE: "OrderedDict[str, Dict]" = OrderedDict()
+
+
+def _cache_get(key: str) -> Optional[Dict]:
+    if not _VISION_CACHE_ON or key not in _VISION_CACHE:
+        return None
+    _VISION_CACHE.move_to_end(key)
+    return copy.deepcopy(_VISION_CACHE[key])
+
+
+def _cache_put(key: str, value: Dict) -> None:
+    if not _VISION_CACHE_ON or _VISION_CACHE_MAX <= 0:
+        return
+    _VISION_CACHE[key] = copy.deepcopy(value)
+    _VISION_CACHE.move_to_end(key)
+    while len(_VISION_CACHE) > _VISION_CACHE_MAX:
+        _VISION_CACHE.popitem(last=False)
 
 _SUIT_GLYPH_TO_LETTER = {"♠": "s", "♥": "h", "♦": "d", "♣": "c", "S": "s", "H": "h", "D": "d", "C": "c"}
 _RANKS = "23456789TJQKA"
@@ -46,10 +73,10 @@ _PROMPT = """请把这张 WePoker 截图转写为观测事实 JSON。只写你**
 - is_hero（是否为截图主人「我」，通常有高亮/视角，拿不准就 false）、
 - hole_cards（仅摊牌可见时）、net（右侧净额，输为负）、made_hand（摊牌牌型文字，如「葫芦」）、
 - actions_raw（把该玩家一行**从左到右的每一个**动作与金额都照抄，用 " → " 连接，如 "加注32 → 下注38 → 跟注188 → Allin941"）、
+- actions_by_street（**把上面这些动作按所属街道分组**，对象，键取 "preflop"/"flop"/"turn"/"river"，值为该街该玩家动作字符串数组，按发生顺序；某街没动作就省略该键。示例：{"preflop":["加注32"],"flop":["下注38"],"turn":["跟注188"],"river":["Allin941"]}。同一街可以有多个动作（如翻前"加注→跟注"、翻后"过牌→加注"），都要列全。街道数不会超过公共牌进度：只有 3 张公共牌就不该有 turn/river）、
 - visible_actions（出现过的动作标签数组，取值：加注/下注/跟注/过牌/弃牌/全下）。
 
-特别注意（否则重建会对不上）：打到摊牌/河牌的玩家通常每条街都有一个动作（翻前/翻牌/转牌/河牌，共 3~4 个），
-务必把这一行里的**每一个**动作和金额都写进 actions_raw，不要只写第一个、也不要漏掉中间的；金额要与净额大致自洽（一个输家的各街投入之和≈其净额的绝对值）。
+特别注意（否则重建会对不上）：微扑克回放里一位玩家的一行是按「翻前→翻牌→转牌→河牌」从左到右排的，但**某街过牌或某街多次动作**都会打乱"第几个动作=第几街"的对应关系，所以**务必用 actions_by_street 明确每个动作属于哪条街**，不要让引擎去猜；同时 actions_raw 也要照抄完整。金额要与净额大致自洽（一个输家的各街投入之和≈其净额的绝对值）。
 
 顶层字段：hand_id、blinds（如 "2/4(1)"）、board（已知公共牌数组）、pot（底池数字）、hero_seat、extraction_confidence（0~1，你对本次转写整体把握）、notes（简短备注，如"结算画面无逐步动作"）。
 
@@ -122,6 +149,23 @@ def _normalize_cards(raw: object) -> List[str]:
     return out
 
 
+def _normalize_actions_by_street(raw: object) -> Optional[Dict[str, List[str]]]:
+    """{preflop/flop/turn/river: [动作字符串...]} 宽松清洗；无有效内容返回 None。"""
+    if not isinstance(raw, dict):
+        return None
+    out: Dict[str, List[str]] = {}
+    for key in STREET_KEYS:
+        vals = raw.get(key)
+        if isinstance(vals, str):
+            vals = [vals]
+        if not isinstance(vals, list):
+            continue
+        items = [str(v).strip() for v in vals if str(v).strip()]
+        if items:
+            out[key] = items
+    return out or None
+
+
 def _coerce_float(v: object) -> Optional[float]:
     if isinstance(v, (int, float)):
         return float(v)
@@ -153,6 +197,7 @@ def _normalize(data: Dict) -> Dict:
                 "net": _coerce_float(p.get("net")),
                 "made_hand": (str(p["made_hand"]).strip() if p.get("made_hand") else None),
                 "actions_raw": (str(p["actions_raw"]).strip() if p.get("actions_raw") else None),
+                "actions_by_street": _normalize_actions_by_street(p.get("actions_by_street")),
                 "visible_actions": [str(a).strip() for a in (p.get("visible_actions") or []) if str(a).strip()],
             }
         )
@@ -207,25 +252,34 @@ def extract_observations(image: bytes, *, mime: Optional[str] = None, log_id: Op
             "LLM 未配置：请在 backend/.env 设置 MODEL_GATEWAY_KEY（网关）或 OPENAI_API_KEY（兜底）。"
         )
 
-    # 首选视觉模型（默认 gemini-flash）；空/非 JSON 时用更稳的 gpt-4o 重试一次。
-    raw = ""
-    data: Optional[Dict] = None
-    try:
-        raw = _vision_once(image, model=None, max_tokens=2000, log_id=log_id)
-        data = _try_parse(raw)
-    except Exception as exc:  # noqa: BLE001 — 首选失败不致命，走重试
-        logger.warning("[ingest] primary vision failed: %s", exc)
-
-    if data is None:
+    # 视觉缓存命中：跳过（昂贵的）模型调用，直接复用转写结果；重建/偏离仍按最新引擎重算。
+    cache_key = hashlib.sha256(image).hexdigest()
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        raw, data = cached.get("raw", ""), cached.get("data")
+        logger.info("[ingest] vision cache hit for %s", log_id)
+    else:
+        # 首选视觉模型（默认 gemini-flash）；空/非 JSON 时用更稳的 gpt-4o 重试一次。
+        raw = ""
+        data = None
         try:
-            raw2 = _vision_once(image, model="gpt-4o", max_tokens=3000, log_id=log_id)
-            parsed2 = _try_parse(raw2)
-            if parsed2 is not None:
-                data, raw = parsed2, raw2
-            elif raw2:
-                raw = raw2
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[ingest] gpt-4o retry failed: %s", exc)
+            raw = _vision_once(image, model=None, max_tokens=2000, log_id=log_id)
+            data = _try_parse(raw)
+        except Exception as exc:  # noqa: BLE001 — 首选失败不致命，走重试
+            logger.warning("[ingest] primary vision failed: %s", exc)
+
+        if data is None:
+            try:
+                raw2 = _vision_once(image, model="gpt-4o", max_tokens=3000, log_id=log_id)
+                parsed2 = _try_parse(raw2)
+                if parsed2 is not None:
+                    data, raw = parsed2, raw2
+                elif raw2:
+                    raw = raw2
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[ingest] gpt-4o retry failed: %s", exc)
+        # 无论识别与否都缓存视觉结果（含 None，代表本图读不出结构化牌局），避免重复扣费。
+        _cache_put(cache_key, {"raw": raw, "data": data})
 
     if data is None:
         return _unrecognized(
@@ -251,12 +305,14 @@ def extract_observations(image: bytes, *, mime: Optional[str] = None, log_id: Op
 
     reconstruction = reconstruct_hand(facts)
     analysis = analyze_deviations(facts, reconstruction)
+    contributions = hand_contributions(facts, reconstruction, analysis)
     return {
         "stage": "observations",
         "recognized": True,
         "facts": facts,
         "reconstruction": reconstruction,
         "analysis": analysis,
+        "contributions": contributions,
         "raw_model_output": raw,
         "note": "多模态模型转写「看得见的事实」，引擎重建下注序列并对照 GTO 范围标注偏离。数字/合法性以引擎为准。",
     }

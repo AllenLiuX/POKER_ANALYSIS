@@ -249,8 +249,11 @@ export interface PostflopScenario {
   role: "pfr" | "caller";
   format: string;
   config: { pfr: string; caller: string };
+  matchup: string;
+  matchup_label: string;
   hero_position: string;
   villain_position: string;
+  hero_ip: boolean;
   hero: string[];
   hero_glyphs: string[];
   hero_class: string;
@@ -327,9 +330,11 @@ export interface PostflopAnswer {
 
 export async function getPostflopNext(params?: {
   role?: string;
+  matchup?: string;
 }): Promise<PostflopScenario> {
   const qs = new URLSearchParams();
   if (params?.role) qs.set("role", params.role);
+  if (params?.matchup) qs.set("matchup", params.matchup);
   const url = `${API_BASE}/api/trainer/postflop/next${qs.toString() ? `?${qs}` : ""}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
@@ -337,6 +342,19 @@ export async function getPostflopNext(params?: {
     throw new Error(detail.detail || `postflop next ${res.status}`);
   }
   return (await res.json()).scenario;
+}
+
+export interface PostflopMatchup {
+  matchup: string;
+  label: string;
+  pfr: string;
+  caller: string;
+}
+
+export async function getPostflopMatchups(): Promise<PostflopMatchup[]> {
+  const res = await fetch(`${API_BASE}/api/trainer/postflop/matchups`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`postflop matchups ${res.status}`);
+  return (await res.json()).matchups;
 }
 
 export async function postPostflopAnswer(body: {
@@ -404,6 +422,7 @@ export interface IngestPlayerObs {
   net: number | null;
   made_hand: string | null;
   actions_raw: string | null;
+  actions_by_street: Record<string, string[]> | null;
   visible_actions: string[];
 }
 
@@ -487,10 +506,13 @@ export interface Deviation {
   deviation_label?: string | null;
   ev_loss_proxy?: number;
   off_tree?: boolean;
-  // 翻后启发式字段
+  // 翻后字段（启发式 note 或接地打分）
   made_label?: string;
   draw_label?: string;
   tier?: string;
+  equity?: number; // 接地翻后：蒙特卡洛胜率
+  reasons?: string[]; // 接地翻后：引擎给出的理由
+  villain_range_label?: string; // 接地翻后：对手范围推定说明
   grounded: boolean;
   approximate: boolean;
   confidence: number;
@@ -514,6 +536,29 @@ export interface Analysis {
   note: string;
 }
 
+// ---------- 阶段⑤：逐对手可加计数器贡献（服务端权威聚合的输入）----------
+export interface Counter { n: number; k: number }
+/** 一手对某玩家的可加计数器贡献（全部数值叶子，便于 DB 端逐字段相加）。 */
+export interface OpponentCounters {
+  vpip: Counter; pfr: Counter; pf_open: Counter;
+  pf_vs_open: { n: number; fold: number; call: number; raise: number };
+  af_post: { aggr: number; passive: number };
+  cbet_flop: Counter; fold_vs_cbet_flop: Counter;
+  saw_flop: { k: number }; wtsd: Counter; won_sd: Counter;
+  graded_pre: { n: number; mistakes: number }; graded_post: { n: number; mistakes: number };
+  leaks_pre: Record<string, number>; leaks_post: Record<string, number>;
+}
+export interface ContribPlayer {
+  alias: string;
+  is_hero: boolean;
+  net: number;
+  counters: OpponentCounters;
+}
+export interface HandContributions {
+  hand_id: string | null;
+  players: ContribPlayer[];
+}
+
 /** 单张截图的处理结果（批量数组里的一项）。 */
 export interface IngestItem {
   filename: string;
@@ -524,6 +569,7 @@ export interface IngestItem {
   facts?: ObservationFacts;
   reconstruction?: Reconstruction | null;
   analysis?: Analysis | null;
+  contributions?: HandContributions | null;
   raw_model_output?: string;
   note?: string;
 }
@@ -578,6 +624,61 @@ export async function postIngestAnalyze(
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail.detail || `ingest analyze ${res.status}`);
+  }
+  return res.json();
+}
+
+/** 用户修正观测事实后，重跑重建 + GTO 偏离（确定性，无 LLM，不重新识图）。 */
+export async function postIngestReanalyze(
+  facts: ObservationFacts | Record<string, unknown>,
+): Promise<{ recognized: boolean; facts: ObservationFacts; reconstruction: Reconstruction; analysis: Analysis; contributions: HandContributions; note: string }> {
+  const res = await fetch(`${API_BASE}/api/ingest/reanalyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ facts }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `ingest reanalyze ${res.status}`);
+  }
+  return res.json();
+}
+
+/** 为已有 facts 派生逐对手可加计数器贡献（回填历史条目用；确定性、无 LLM）。 */
+export async function postIngestContributions(
+  facts: ObservationFacts | Record<string, unknown>,
+  reconstruction?: Reconstruction | null,
+  analysis?: Analysis | null,
+): Promise<{ contributions: HandContributions }> {
+  const res = await fetch(`${API_BASE}/api/ingest/contributions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ facts, reconstruction: reconstruction ?? null, analysis: analysis ?? null }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `ingest contributions ${res.status}`);
+  }
+  return res.json();
+}
+
+/** 逐对手剥削报告（接地于服务端聚合计数器；LLM 只据数字解释）。 */
+export async function postOpponentReport(body: {
+  alias: string;
+  hands: number;
+  net?: number | null;
+  counters: OpponentCounters | Record<string, unknown>;
+  tag?: string | null;
+  note?: string | null;
+}): Promise<{ report: string; lines: string[]; hands: number; net: number | null }> {
+  const res = await fetch(`${API_BASE}/api/ingest/opponent_report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `opponent report ${res.status}`);
   }
   return res.json();
 }
@@ -682,6 +783,52 @@ export async function postTrainerReview(body: ReviewRequestBody): Promise<Review
     throw new Error(detail.detail || `trainer review ${res.status}`);
   }
   return res.json();
+}
+
+/**
+ * 通用「POST → 纯文本流式」读取：onChunk 收到的是**累计到目前为止的全文**（便于直接 setState）。
+ * 返回最终全文。非 2xx 时抛错（尝试解析 JSON detail）。
+ */
+export async function streamText(
+  url: string,
+  body: unknown,
+  onChunk: (full: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as { detail?: string }).detail || `请求失败 ${res.status}`);
+  }
+  if (!res.body) {
+    const t = await res.text();
+    onChunk(t);
+    return t;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    full += decoder.decode(value, { stream: true });
+    onChunk(full);
+  }
+  full += decoder.decode();
+  onChunk(full);
+  return full;
+}
+
+export async function streamTrainerReview(
+  body: ReviewRequestBody,
+  onChunk: (full: string) => void,
+): Promise<string> {
+  return streamText(`${API_BASE}/api/trainer/review/stream`, body, onChunk);
 }
 
 export { API_BASE };

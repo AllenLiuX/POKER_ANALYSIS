@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { Sparkles } from "lucide-react";
 import {
   clearProgress,
   loadAttempts,
@@ -18,10 +19,11 @@ import {
 } from "@/lib/cloud";
 import {
   postTrainerCoach,
-  postTrainerReview,
+  streamTrainerReview,
   type ReviewRequestBody,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import Markdown from "@/components/Markdown";
 
 const PREFLOP_SPOTS = new Set(["RFI", "vs_RFI"]);
 
@@ -99,11 +101,13 @@ export default function ProgressPage() {
     if (!summary || summary.total === 0) return;
     setReview({ text: null, loading: true, error: null });
     try {
-      const res = await postTrainerReview(toReviewBody(summary));
-      if (!res.report || !res.report.trim()) {
+      const full = await streamTrainerReview(toReviewBody(summary), (partial) => {
+        setReview({ text: partial, loading: true, error: null });
+      });
+      if (!full || !full.trim()) {
         setReview({ text: null, loading: false, error: "复盘生成为空，请重试" });
       } else {
-        setReview({ text: res.report, loading: false, error: null });
+        setReview({ text: full, loading: false, error: null });
       }
     } catch (e) {
       setReview({
@@ -248,7 +252,10 @@ export default function ProgressPage() {
           {/* AI 复盘报告 */}
           <section className="mb-6 rounded-2xl border border-violet-800/40 bg-violet-950/20 p-5">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold text-violet-200">🧠 AI 复盘报告</h2>
+              <h2 className="flex items-center gap-1.5 text-sm font-semibold text-violet-200">
+                <Sparkles className="size-4" />
+                AI 复盘报告
+              </h2>
               <span className="text-xs text-neutral-500">
                 基于你近期 {summary.total} 手 · 分析漏洞与倾向，给出训练建议
               </span>
@@ -264,8 +271,8 @@ export default function ProgressPage() {
             </div>
 
             {review.text ? (
-              <div className="whitespace-pre-line rounded-xl bg-neutral-950/60 p-4 text-sm leading-relaxed text-neutral-200">
-                {review.text}
+              <div className="rounded-xl bg-neutral-950/60 p-4">
+                <Markdown>{review.text}</Markdown>
               </div>
             ) : (
               <button
@@ -519,9 +526,16 @@ function MistakeItem({ m }: { m: Attempt }) {
               <button
                 onClick={requestCoach}
                 disabled={coach.loading}
-                className="w-full rounded-lg border border-violet-700/50 bg-violet-950/30 py-2 text-xs font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-violet-700/50 bg-violet-950/30 py-2 text-xs font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
               >
-                {coach.loading ? "AI 教练思考中…" : "🧠 为什么应该这样打？"}
+                {coach.loading ? (
+                  "AI 教练思考中…"
+                ) : (
+                  <>
+                    <Sparkles className="size-3.5" />
+                    为什么应该这样打？
+                  </>
+                )}
               </button>
             )
           ) : (

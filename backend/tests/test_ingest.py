@@ -14,7 +14,7 @@ from app.ingest.extract import (
     extract_observations,
     parse_json_block,
 )
-from app.ingest.reconstruct import parse_actions, reconstruct_hand
+from app.ingest.reconstruct import parse_actions, parse_actions_by_street, reconstruct_hand
 from app.main import app
 
 client = TestClient(app)
@@ -57,6 +57,38 @@ def test_parse_actions_tokens():
     acts = parse_actions("加注32 → 下注38 → 跟注188 → Allin941")
     assert [a["action"] for a in acts] == ["raise", "bet", "call", "allin"]
     assert [a["amount"] for a in acts] == [32, 38, 188, 941]
+
+
+def test_parse_actions_by_street_assigns_correct_streets():
+    acts = parse_actions_by_street(
+        {"preflop": ["加注32"], "flop": ["过牌", "加注38"], "river": ["下注188"]}
+    )
+    assert [(a["action"], a["street"]) for a in acts] == [
+        ("raise", "翻前"),
+        ("check", "翻牌"),
+        ("raise", "翻牌"),  # 同一街多个动作都保留在该街
+        ("bet", "河牌"),
+    ]
+
+
+def test_reconstruct_prefers_actions_by_street_over_positional():
+    # 翻牌先过牌再加注：位置法会把"过牌"错判成翻前；分街分组则正确
+    facts = {
+        "screenshot_type": "hand_replay",
+        "pot": 100,
+        "players": [
+            {
+                "alias": "A",
+                "net": 50,
+                "actions_raw": "过牌 → 加注38",
+                "actions_by_street": {"flop": ["过牌", "加注38"]},
+            },
+            {"alias": "B", "net": -50, "actions_raw": "下注38 → 弃牌", "actions_by_street": {"flop": ["下注38", "弃牌"]}},
+        ],
+    }
+    r = reconstruct_hand(facts)
+    a = next(p for p in r["players"] if p["alias"] == "A")
+    assert [x["street"] for x in a["actions"]] == ["翻牌", "翻牌"]  # 都在翻牌，不再错标翻前
 
 
 def test_reconstruct_net_conservation_validated():
@@ -162,6 +194,23 @@ def test_extract_observations_parses_normalizes_and_reconstructs(monkeypatch):
     assert rec["checks"]["net_ok"] is True  # 1245 + (-1200) = 45 ≤ 2%*2445
     assert rec["players"][0]["parsed_invested"] == 1199
     assert rec["players"][0]["invested"] == 1200  # 赢家：底池−净额
+
+
+def test_extract_vision_cache_hits_same_image(monkeypatch):
+    calls = {"n": 0}
+
+    class Counting(_FakeProvider):
+        def vision(self, prompt, images, **kwargs):
+            calls["n"] += 1
+            return _SAMPLE_OUTPUT
+
+    monkeypatch.setattr(extract_mod, "get_provider", lambda: Counting())
+    img = b"UNIQUE-CACHE-IMG-\x01\x02"  # 唯一字节，避免与其它用例的缓存串扰
+    r1 = extract_observations(img, mime="image/png")
+    r2 = extract_observations(img, mime="image/png")
+    assert r1["recognized"] and r2["recognized"]
+    assert calls["n"] == 1  # 第二次命中视觉缓存，不再调模型
+    assert r2["reconstruction"] is not None  # 重建/偏离仍按最新引擎重算
 
 
 def test_extract_unrecognized_is_graceful(monkeypatch):

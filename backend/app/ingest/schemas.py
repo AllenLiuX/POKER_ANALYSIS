@@ -5,11 +5,14 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 SCREENSHOT_TYPES = ("hand_replay", "result_summary", "unknown")
+
+# actions_by_street 的合法街道键（按顺序）
+STREET_KEYS = ("preflop", "flop", "turn", "river")
 
 
 class PlayerObs(BaseModel):
@@ -22,6 +25,11 @@ class PlayerObs(BaseModel):
     net: Optional[float] = Field(None, description="本手净额（右侧显示，输为负）")
     made_hand: Optional[str] = Field(None, description="摊牌牌型文字（如 葫芦/两对）")
     actions_raw: Optional[str] = Field(None, description='逐街动作原文，如 "加注32 → 下注38 → 跟注188 → Allin941"')
+    # 分街动作：{"preflop": ["加注32"], "flop": ["下注38"], "turn": ["跟注188"], "river": ["Allin941"]}
+    # 由模型按截图回放的分街布局归位；缺失/为空时引擎退回按 actions_raw 的位置推断。
+    actions_by_street: Optional[Dict[str, List[str]]] = Field(
+        None, description="按街分组的动作原文（preflop/flop/turn/river），比 actions_raw 更可靠"
+    )
     visible_actions: List[str] = Field(default_factory=list, description="可见动作标签（加注/跟注/全下/弃牌/过牌）")
 
 

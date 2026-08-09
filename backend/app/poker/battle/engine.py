@@ -18,13 +18,18 @@ from app.poker.battle import policy as P
 from app.poker.battle import ranges as R
 from app.poker.battle.deal import (
     BB,
+    BLIND_POST,
+    DEFAULT_MATCHUP,
+    MATCHUPS,
     OPEN_TO,
     SB,
     START_STACK,
     THREEBET_TO,
     deal,
     full_board,
-    other,
+    matchup_label,
+    matchup_positions,
+    oop_position,
 )
 from app.poker.evaluate import to_eval7
 from app.poker.postflop.heuristics import BET_SIZE_BUCKETS
@@ -46,7 +51,12 @@ def _r1(x: float) -> float:
 @dataclass
 class Battle:
     deal_seed: int
-    hero_pos: str  # BTN / BB
+    hero_pos: str  # 任意 6-max 位置（属于该对位的两个位置之一）
+    matchup: str = DEFAULT_MATCHUP  # vs_RFI 键，如 BB_vs_BTN
+    villain_pos: str = ""  # 对手位置（由对位推出）
+    opener_pos: str = ""   # 开池方位置
+    defender_pos: str = ""  # 防守方位置
+    dead: float = 0.0      # 弃掉的盲注死钱（计入底池）
     d: Dict[str, object] = field(default_factory=dict)  # 发牌结果
     street: str = "preflop"
     invested: Dict[str, float] = field(default_factory=dict)  # {'hero','villain'} 累计投入
@@ -63,8 +73,8 @@ class Battle:
 
     # ---------- 便捷 ----------
     @property
-    def villain_pos(self) -> str:
-        return other(self.hero_pos)
+    def hero_is_opener(self) -> bool:
+        return self.hero_pos == self.opener_pos
 
     def pos_of(self, actor: str) -> str:
         return self.hero_pos if actor == "hero" else self.villain_pos
@@ -73,7 +83,7 @@ class Battle:
         return list(self.d["hero" if actor == "hero" else "villain"])  # type: ignore[index]
 
     def pot(self) -> float:
-        return _r1(self.invested["hero"] + self.invested["villain"])
+        return _r1(self.invested["hero"] + self.invested["villain"] + self.dead)
 
     def max_inv(self) -> float:
         return max(self.invested.values())
@@ -85,9 +95,12 @@ class Battle:
         return _r1(START_STACK - self.invested[actor])
 
     def _first_actor(self, street: str) -> str:
-        btn = "hero" if self.hero_pos == "BTN" else "villain"
-        bb = "hero" if self.hero_pos == "BB" else "villain"
-        return btn if street == "preflop" else bb
+        if street == "preflop":
+            # 折到开池方后，开池方首先行动。
+            return "hero" if self.hero_pos == self.opener_pos else "villain"
+        # 翻后：无位置（行动顺序靠前）的一方先行动。
+        oop = oop_position(self.hero_pos, self.villain_pos)
+        return "hero" if self.hero_pos == oop else "villain"
 
     # ---------- 合法动作 / 尺度 ----------
     def legal_actions(self, actor: str) -> List[str]:
@@ -242,16 +255,16 @@ class Battle:
         self._showdown()
 
     def _assign_postflop_ranges(self) -> None:
-        if self.aggr_this_street_pre() >= 2:  # 走到 3-bet：3bettor=BB，caller=BTN
-            btn_range = R.vs_3bet_call_range_str()
-            bb_range = R.bb_3bet_range_str()
-        else:  # 单加注底池：BTN 开池、BB 跟注
-            btn_range = R.btn_open_range_str()
-            bb_range = R.bb_call_range_str()
-        if self.hero_pos == "BTN":
-            self.hero_range, self.villain_range = btn_range, bb_range
+        if self.aggr_this_street_pre() >= 2:  # 走到 3-bet：防守方 3bet、开池方跟注
+            opener_range = R.vs_3bet_call_range_str()
+            defender_range = R.threebet_range_str(self.matchup)
+        else:  # 单加注底池：开池方开池、防守方跟注
+            opener_range = R.open_range_str(self.opener_pos)
+            defender_range = R.call_range_str(self.matchup)
+        if self.hero_is_opener:
+            self.hero_range, self.villain_range = opener_range, defender_range
         else:
-            self.hero_range, self.villain_range = bb_range, btn_range
+            self.hero_range, self.villain_range = defender_range, opener_range
 
     def aggr_this_street_pre(self) -> int:
         """翻前总加注数（从 history 数，因为进入 flop 后 aggr_this_street 已清零）。"""
@@ -310,10 +323,10 @@ class Battle:
         actor = "hero"
         cls = hand_class(*self.cards(actor))
         if self.street == "preflop":
-            if self.aggr_this_street == 0:  # 开池（BTN）
-                g = G.grade_preflop(cls=cls, freqs=R.btn_open_freqs(cls), spot="RFI", action=action)
-            elif self.aggr_this_street == 1 and self.hero_pos == "BB":  # 防守开池
-                g = G.grade_preflop(cls=cls, freqs=R.bb_defend_freqs(cls), spot="vs_RFI", action=action)
+            if self.aggr_this_street == 0 and self.hero_pos == self.opener_pos:  # 开池
+                g = G.grade_preflop(cls=cls, freqs=R.open_freqs(self.opener_pos, cls), spot="RFI", action=action)
+            elif self.aggr_this_street == 1 and self.hero_pos == self.defender_pos:  # 防守开池
+                g = G.grade_preflop(cls=cls, freqs=R.defend_freqs(self.matchup, cls), spot="vs_RFI", action=action)
             else:  # 面对 3-bet：无范围数据
                 g = G.grade_preflop_ungrounded(cls=cls, spot="vs_3bet", action=action)
         else:
@@ -368,13 +381,15 @@ class Battle:
         cls = hand_class(*self.cards(actor))
         rng = random.Random(_node_seed(self.deal_seed, self.street, len(self.history)))
         if self.street == "preflop":
-            if self.aggr_this_street == 0:
+            if self.aggr_this_street == 0 and self.villain_pos == self.opener_pos:
                 situation = "open"
-            elif self.aggr_this_street == 1 and self.villain_pos == "BB":
+            elif self.aggr_this_street == 1 and self.villain_pos == self.defender_pos:
                 situation = "defend"
             else:
                 situation = "vs_3bet"
-            action = P.villain_preflop(situation=situation, cls=cls, rng=rng)
+            action = P.villain_preflop(
+                situation=situation, cls=cls, opener=self.opener_pos, vs_spot=self.matchup, rng=rng
+            )
             size = None
         else:
             action, size = P.villain_postflop(
@@ -400,8 +415,12 @@ class Battle:
         hero = self.cards("hero")
         return {
             "deal_seed": self.deal_seed,
+            "matchup": self.matchup,
+            "matchup_label": matchup_label(self.matchup),
             "hero_pos": self.hero_pos,
             "villain_pos": self.villain_pos,
+            "opener_pos": self.opener_pos,
+            "defender_pos": self.defender_pos,
             "blinds": {"sb": SB, "bb": BB},
             "start_stack": START_STACK,
             "street": self.street,
@@ -457,31 +476,43 @@ def _node_seed(deal_seed: int, street: str, n: int) -> int:
     return zlib.crc32(f"{deal_seed}|{street}|{n}".encode()) & 0xFFFFFFFF
 
 
-def _fresh(deal_seed: int, hero_pos: str) -> Battle:
+def _fresh(deal_seed: int, matchup: str, hero_pos: str) -> Battle:
+    opener, defender = matchup_positions(matchup)
+    if hero_pos not in (opener, defender):
+        raise ValueError(f"hero_pos {hero_pos} 不属于对位 {matchup}（{opener}/{defender}）")
+    villain_pos = defender if hero_pos == opener else opener
     d = deal(deal_seed)
-    b = Battle(deal_seed=deal_seed, hero_pos=hero_pos, d=d)
-    # 翻前盲注：BTN 投 0.5，BB 投 1.0
-    btn = "hero" if hero_pos == "BTN" else "villain"
-    bb = "hero" if hero_pos == "BB" else "villain"
-    b.invested = {btn: SB, bb: BB}
-    # 统一 key 顺序
-    b.invested = {"hero": b.invested.get("hero", 0.0), "villain": b.invested.get("villain", 0.0)}
+    # 弃掉的盲注为死钱（计入底池）：SB/BB 中未参与本手的一方。
+    dead = sum(v for p, v in BLIND_POST.items() if p not in (hero_pos, villain_pos))
+    b = Battle(
+        deal_seed=deal_seed,
+        hero_pos=hero_pos,
+        matchup=matchup,
+        villain_pos=villain_pos,
+        opener_pos=opener,
+        defender_pos=defender,
+        dead=round(dead, 2),
+        d=d,
+    )
+    # 翻前盲注：各家按自己的位置投入盲注（非盲注位为 0）。
+    b.invested = {
+        "hero": BLIND_POST.get(hero_pos, 0.0),
+        "villain": BLIND_POST.get(villain_pos, 0.0),
+    }
     b.to_act = b._first_actor("preflop")
     return b
 
 
-def new_hand(deal_seed: int, hero_pos: str) -> Battle:
+def new_hand(deal_seed: int, matchup: str, hero_pos: str) -> Battle:
     """开一手新牌，跑对手到轮到英雄行动或结束。"""
-    if hero_pos not in ("BTN", "BB"):
-        raise ValueError("hero_pos 只能是 BTN / BB")
-    b = _fresh(deal_seed, hero_pos)
+    b = _fresh(deal_seed, matchup, hero_pos)
     b.advance_villain()
     return b
 
 
-def replay(deal_seed: int, hero_pos: str, history: List[Dict[str, object]]) -> Battle:
+def replay(deal_seed: int, matchup: str, hero_pos: str, history: List[Dict[str, object]]) -> Battle:
     """从动作序列重放出当前状态（含英雄判分）。history 里的对手动作按记录重放。"""
-    b = _fresh(deal_seed, hero_pos)
+    b = _fresh(deal_seed, matchup, hero_pos)
     for e in history:
         actor = str(e["actor"])
         action = str(e["action"])
@@ -501,9 +532,16 @@ def replay(deal_seed: int, hero_pos: str, history: List[Dict[str, object]]) -> B
     return b
 
 
-def act(deal_seed: int, hero_pos: str, history: List[Dict[str, object]], action: str, size: Optional[str]) -> Battle:
+def act(
+    deal_seed: int,
+    matchup: str,
+    hero_pos: str,
+    history: List[Dict[str, object]],
+    action: str,
+    size: Optional[str],
+) -> Battle:
     """应用英雄动作后跑对手到下一次英雄行动或结束。"""
-    b = replay(deal_seed, hero_pos, history)
+    b = replay(deal_seed, matchup, hero_pos, history)
     if b.result is not None:
         raise ValueError("手牌已结束")
     if b.to_act != "hero":

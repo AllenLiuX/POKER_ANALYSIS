@@ -51,9 +51,26 @@ function persist(list: ImportEntry[]): void {
   }
 }
 
-/** 把新解析的若干条前置到历史（最新在前），返回更新后的列表。 */
+/** 手牌去重签名：优先用 hand_id（可靠）；无 hand_id 则不去重（返回 null）。 */
+export function handSignature(e: ImportEntry): string | null {
+  const hid = e.item?.facts?.hand_id;
+  return hid && hid.trim() ? `hid:${hid.trim()}` : null;
+}
+
+/** 把新解析的若干条前置到历史（最新在前），返回更新后的列表。
+ * 若新导入与历史中某条 hand_id 相同（重复导入同一手），用新的替换旧的，避免统计重复计数。 */
 export function addImportEntries(entries: ImportEntry[]): ImportEntry[] {
-  const next = [...entries, ...loadImportHistory()].slice(0, MAX);
+  const existing = loadImportHistory();
+  const incomingSigs = new Set<string>();
+  for (const e of entries) {
+    const s = handSignature(e);
+    if (s) incomingSigs.add(s);
+  }
+  const kept = existing.filter((e) => {
+    const s = handSignature(e);
+    return !(s && incomingSigs.has(s));
+  });
+  const next = [...entries, ...kept].slice(0, MAX);
   persist(next);
   return next;
 }
@@ -71,6 +88,24 @@ export function patchImportItems(patches: Record<string, IngestItem>): ImportEnt
   return next;
 }
 
+/** 合并外部（云端）导入记录到本地，按 id 去重，返回合并后的最新列表（最新在前）。 */
+export function mergeImportEntries(incoming: ImportEntry[]): ImportEntry[] {
+  const list = loadImportHistory();
+  const seen = new Set(list.map((e) => e.id));
+  let changed = false;
+  for (const e of incoming) {
+    if (e && !seen.has(e.id)) {
+      list.push(e);
+      seen.add(e.id);
+      changed = true;
+    }
+  }
+  list.sort((a, b) => b.ts - a.ts);
+  const capped = list.slice(0, MAX);
+  if (changed) persist(capped);
+  return capped;
+}
+
 export function clearImportHistory(): ImportEntry[] {
   if (isBrowser()) {
     try {
@@ -82,8 +117,9 @@ export function clearImportHistory(): ImportEntry[] {
   return [];
 }
 
-/** 生成降采样缩略图 data URL；失败返回 null（不阻塞主流程）。 */
-export async function makeThumb(file: File, max = 360): Promise<string | null> {
+/** 生成降采样缩略图 data URL；失败返回 null（不阻塞主流程）。
+ * 默认 720px 长边：列表里仍显示很小，但点开放大后手牌回放的文字/动作可读。 */
+export async function makeThumb(file: File, max = 720): Promise<string | null> {
   if (typeof window === "undefined" || typeof createImageBitmap !== "function") return null;
   try {
     const bitmap = await createImageBitmap(file);
@@ -97,10 +133,88 @@ export async function makeThumb(file: File, max = 360): Promise<string | null> {
     if (!ctx) return null;
     ctx.drawImage(bitmap, 0, 0, w, h);
     bitmap.close?.();
-    return canvas.toDataURL("image/jpeg", 0.7);
+    return canvas.toDataURL("image/jpeg", 0.72);
   } catch {
     return null;
   }
+}
+
+// ---------- 导出 ----------
+function csvCell(v: unknown): string {
+  const s = v == null ? "" : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** 完整历史（观测事实 + 重建 + 偏离）导出为 JSON 字符串。 */
+export function exportHistoryJSON(list: ImportEntry[]): string {
+  return JSON.stringify(
+    list.map((e) => ({
+      id: e.id,
+      ts: e.ts,
+      filename: e.filename,
+      facts: e.item?.facts ?? null,
+      reconstruction: e.item?.reconstruction ?? null,
+      analysis: e.item?.analysis ?? null,
+    })),
+    null,
+    2,
+  );
+}
+
+/** 把每手里的每个「接地/近似」决策拍平成一行 CSV（便于导入表格/透视分析）。 */
+export function exportDecisionsCSV(list: ImportEntry[]): string {
+  const header = [
+    "time", "filename", "hand_id", "type", "board", "pot",
+    "player", "is_hero", "position", "street", "spot", "hand_class",
+    "actual", "grade", "optimal", "deviation", "equity", "net",
+  ];
+  const rows: string[][] = [header];
+  for (const e of list) {
+    const it = e.item;
+    if (!it?.ok || !it.analysis?.supported) continue;
+    const f = it.facts;
+    const time = new Date(e.ts).toISOString();
+    const board = (f?.board ?? []).join(" ");
+    for (const pl of it.analysis.players) {
+      for (const d of pl.deviations) {
+        rows.push([
+          time,
+          e.filename,
+          f?.hand_id ?? "",
+          f?.screenshot_type ?? "",
+          board,
+          f?.pot != null ? String(f.pot) : "",
+          pl.alias ?? "",
+          pl.is_hero ? "1" : "0",
+          pl.position ?? d.position ?? "",
+          d.street ?? "",
+          d.spot ?? "",
+          d.hand_class ?? d.made_label ?? "",
+          d.actual_label ?? d.actual ?? "",
+          d.grade_label ?? d.grade ?? "",
+          d.optimal_label ?? d.optimal_action ?? "",
+          d.deviation_label ?? "",
+          typeof d.equity === "number" ? String(Math.round(d.equity * 100) / 100) : "",
+          pl.net != null ? String(pl.net) : "",
+        ].map(csvCell));
+      }
+    }
+  }
+  return rows.map((r) => r.join(",")).join("\n");
+}
+
+/** 触发浏览器下载。 */
+export function downloadText(filename: string, content: string, mime = "text/plain"): void {
+  if (typeof document === "undefined") return;
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function genId(): string {

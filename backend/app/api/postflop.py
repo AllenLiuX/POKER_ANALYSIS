@@ -15,21 +15,43 @@ from app.poker.postflop.analyze import analyze_spot
 from app.poker.postflop.coach import build_feedback
 from app.poker.postflop.coach_llm import POSTFLOP_COACH_SYSTEM, build_postflop_coach_prompt
 from app.poker.postflop.heuristics import size_label
-from app.poker.postflop.scenario import ACTION_LABELS, generate_postflop_scenario
+from app.poker.postflop.scenario import (
+    ACTION_LABELS,
+    CONFIGS,
+    _matchup_label,
+    generate_postflop_scenario,
+)
 from app.poker.postflop.scoring import score_postflop
 from app.poker.preflop.scenario import card_glyph
 
 router = APIRouter(tags=["postflop"])
 
 
+@router.get("/trainer/postflop/matchups")
+def get_postflop_matchups() -> dict:
+    """可选对位列表（不同位置对抗）。"""
+    return {
+        "matchups": [
+            {
+                "matchup": c["vs_spot"],
+                "label": _matchup_label(str(c["pfr"]), str(c["caller"])),
+                "pfr": c["pfr"],
+                "caller": c["caller"],
+            }
+            for c in CONFIGS
+        ]
+    }
+
+
 @router.get("/trainer/postflop/next")
 def get_postflop_next(
     role: Optional[str] = Query(None, pattern="^(pfr|caller)$"),
+    matchup: Optional[str] = Query(None, description="指定对位，如 BB_vs_BTN；缺省随机"),
     seed: Optional[int] = Query(None),
 ) -> dict:
-    """生成一道翻后决策题（HU 单加注底池翻牌）。role 可选 pfr / caller。"""
+    """生成一道翻后决策题（HU 单加注底池翻牌）。role 可选 pfr / caller；matchup 可指定对位。"""
     try:
-        scenario = generate_postflop_scenario(role=role, seed=seed)
+        scenario = generate_postflop_scenario(role=role, matchup=matchup, seed=seed)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"scenario": scenario}

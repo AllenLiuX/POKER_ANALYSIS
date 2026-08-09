@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
-from typing import List, Optional, Sequence, Union
+from typing import Iterator, List, Optional, Sequence, Union
 
 from app.config import get_settings
 
@@ -24,6 +24,25 @@ _VISION_ORDER = ["gemini-flash", "gemini-pro", "gpt-4o"]
 _TEXT_MODEL = "gpt-5.6-sol"
 # 首选文本模型偶发返回空内容（推理模型把内容留在思考里）；空时回退到稳定的 gpt-4o。
 _TEXT_FALLBACK = "gpt-4o"
+
+# 直连 OpenAI 时，GPT-5 家族 / o 系列推理模型的 chat.completions 参数与 gpt-4o 不同：
+#   - 必须用 max_completion_tokens（不再接受 max_tokens）
+#   - 不接受显式 temperature（只支持默认值），故一律不发
+# 且推理会占用 completion 预算，预算太小会只返回空内容，这里给一个较高的下限。
+_OPENAI_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_OPENAI_REASONING_MIN_TOKENS = 4000
+
+
+def _is_openai_reasoning_model(model: str) -> bool:
+    return (model or "").lower().startswith(_OPENAI_REASONING_PREFIXES)
+
+
+def _openai_token_kwargs(model: str, max_tokens: Optional[int], default: int) -> dict:
+    """按模型给出正确的 token 上限参数（名字 + 取值）。"""
+    budget = max_tokens or default
+    if _is_openai_reasoning_model(model):
+        return {"max_completion_tokens": max(budget, _OPENAI_REASONING_MIN_TOKENS)}
+    return {"max_tokens": budget}
 
 
 class LLMProvider:
@@ -81,6 +100,89 @@ class LLMProvider:
                 logger.warning("[llm] gateway text (%s) returned empty, trying next", m)
         return self._openai_text(prompt, system=system, max_tokens=max_tokens)
 
+    # ---------------- 文本（流式）----------------
+    def text_stream(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        log_id: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Iterator[str]:
+        """逐段产出文本增量。流式失败或没吐出任何内容时，退化为一次性 text()（yield 整段）。"""
+        emitted = False
+        try:
+            gen = (
+                self._gateway_text_stream(prompt, system=system, max_tokens=max_tokens, log_id=log_id, model=model)
+                if self.use_gateway
+                else self._openai_text_stream(prompt, system=system, max_tokens=max_tokens, model=model)
+            )
+            for piece in gen:
+                if piece:
+                    emitted = True
+                    yield piece
+            if emitted:
+                return
+        except Exception as exc:  # noqa: BLE001 — 流式不稳定则整段兜底
+            logger.warning("[llm] text stream failed, fallback to non-stream: %s", exc)
+            if emitted:
+                return
+        full = self.text(prompt, system=system, max_tokens=max_tokens, log_id=log_id, model=model)
+        if full:
+            yield full
+
+    @staticmethod
+    def _iter_stream(stream) -> Iterator[str]:
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            piece = getattr(choices[0].delta, "content", None)
+            if piece:
+                yield piece
+
+    def _openai_text_stream(
+        self, prompt: str, *, system: Optional[str], max_tokens: Optional[int], model: Optional[str] = None
+    ) -> Iterator[str]:
+        client = self._openai_client()
+        # 复盘类流式建议传非推理模型（如 gpt-4o）以获得逐字即时输出；缺省用 env 配置。
+        model = model or os.getenv("OPENAI_TEXT_MODEL", "gpt-4o")
+        messages = ([{"role": "system", "content": system}] if system else []) + [
+            {"role": "user", "content": prompt}
+        ]
+        stream = client.chat.completions.create(
+            model=model, messages=messages, stream=True, **_openai_token_kwargs(model, max_tokens, 900)
+        )
+        yield from self._iter_stream(stream)
+
+    def _gateway_text_stream(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str],
+        max_tokens: Optional[int],
+        log_id: Optional[str],
+        model: Optional[str],
+    ) -> Iterator[str]:
+        from app.llm import model_client as mc
+
+        # 推理模型流式偶发只出思考不出内容，网关流式统一走稳定的 gpt-4o。
+        choice = model if (model in mc.MODEL_REGISTRY) else "gpt-4o"
+        cfg = mc.MODEL_REGISTRY[choice]
+        client = mc._ensure_clients(mc._resolve_network(self.settings.model_client_network))[choice]
+        messages = ([{"role": "system", "content": system}] if system else []) + [
+            {"role": "user", "content": prompt}
+        ]
+        stream = client.chat.completions.create(
+            model=cfg["name"],
+            messages=messages,
+            max_tokens=max_tokens or cfg["max_tokens"],
+            stream=True,
+            extra_headers={"X-TT-LOGID": log_id or f"poker-model-{os.getpid()}"},
+        )
+        yield from self._iter_stream(stream)
+
     # ---------------- 视觉 ----------------
     def vision(
         self,
@@ -130,7 +232,7 @@ class LLMProvider:
             {"role": "user", "content": prompt}
         ]
         resp = client.chat.completions.create(
-            model=model, messages=messages, max_tokens=max_tokens or 2000
+            model=model, messages=messages, **_openai_token_kwargs(model, max_tokens, 2000)
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -154,7 +256,7 @@ class LLMProvider:
             {"role": "user", "content": content}
         ]
         resp = client.chat.completions.create(
-            model=model, messages=messages, max_tokens=max_tokens or 2000
+            model=model, messages=messages, **_openai_token_kwargs(model, max_tokens, 2000)
         )
         return (resp.choices[0].message.content or "").strip()
 

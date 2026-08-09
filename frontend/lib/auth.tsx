@@ -12,8 +12,16 @@ import {
 } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseEnabled } from "./supabase";
-import { syncLocalToCloud } from "./cloud";
+import {
+  syncLocalToCloud,
+  syncLocalHandsToCloud,
+  syncLocalImportsToCloud,
+  syncLocalOppNotesToCloud,
+} from "./cloud";
 import { loadAttempts } from "./progress";
+import { loadHands } from "./battle";
+import { loadImportHistory } from "./importHistory";
+import { loadOppNotes } from "./opponents";
 
 interface AuthResult {
   error?: string;
@@ -43,6 +51,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!u || mergedFor.current === u.id) return;
     mergedFor.current = u.id;
     syncLocalToCloud(loadAttempts()).catch(() => {});
+    syncLocalHandsToCloud(loadHands()).catch(() => {});
+    syncLocalImportsToCloud(loadImportHistory()).catch(() => {});
+    syncLocalOppNotesToCloud(loadOppNotes()).catch(() => {});
   }, []);
 
   useEffect(() => {

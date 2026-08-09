@@ -109,11 +109,71 @@ def test_postflop_heuristic_note_for_showdown_value():
     assert "葫芦" in notes[0]["note"]
 
 
+def test_postflop_grounded_cbet_value_hu_srp():
+    # HU 单加注底池：BTN 开池、BB 跟注；翻牌 A K 7，BTN 持 AA 顶set c-bet → 接地打分（价值下注=最优）
+    recon = {
+        "confidence": 0.9,
+        "board": ["As", "Kd", "7c"],
+        "players": [
+            {
+                "alias": "Hero", "position": "BTN", "is_hero": True, "hole_cards": ["Ah", "Ac"], "net": 20,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "bet", "amount": 4, "street": "翻牌"},
+                ],
+            },
+            {
+                "alias": "Villain", "position": "BB", "is_hero": False, "hole_cards": [], "net": -20,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "fold", "amount": None, "street": "翻牌"},
+                ],
+            },
+        ],
+    }
+    a = analyze_deviations({}, recon)
+    hero = next(p for p in a["players"] if p["is_hero"])
+    pf = [d for d in hero["deviations"] if d["spot"].startswith("postflop")]
+    assert pf, "应产生接地的翻后决策打分"
+    fl = next(d for d in pf if d["street"] == "翻牌")
+    assert fl["grounded"] is True and fl["approximate"] is False
+    assert fl["actual"] == "bet" and fl["grade"] in ("optimal", "acceptable")
+    assert 0.0 <= fl["equity"] <= 1.0
+    assert "villain_range_label" in fl
+
+
 def test_no_holecards_not_graded():
     recon = {"confidence": 0.9, "board": [], "players": [_pre("Folder", "BTN", [], "fold")]}
     a = analyze_deviations({}, recon)
     assert a["supported"] is False
     assert a["counts"]["graded"] == 0
+
+
+def test_reanalyze_endpoint_recomputes_from_edited_facts():
+    # 用户修正后的事实（BB 拿 KQo 面对 CO 开池弃牌）→ 重跑得到 too_tight
+    facts = {
+        "screenshot_type": "hand_replay",
+        "board": [],
+        "pot": 8,
+        "players": [
+            {"alias": "Opener", "position": "CO", "hole_cards": ["As", "Ks"], "net": 5,
+             "actions_by_street": {"preflop": ["加注3"]}},
+            {"alias": "Hero", "position": "BB", "is_hero": True, "hole_cards": ["Kd", "Qc"], "net": -1,
+             "actions_by_street": {"preflop": ["弃牌"]}},
+        ],
+    }
+    r = client.post("/api/ingest/reanalyze", json={"facts": facts})
+    assert r.status_code == 200
+    body = r.json()
+    assert "reconstruction" in body and "analysis" in body and "facts" in body
+    hero = next(p for p in body["analysis"]["players"] if p["is_hero"])
+    dev = next(d for d in hero["deviations"] if d["spot"] == "vs_RFI")
+    assert dev["deviation_type"] == "too_tight"
+    # 归一：编辑里若写 10♠ 会被清洗为 Ts
+    facts2 = {**facts, "board": ["10♠", "Kd", "7c"]}
+    r2 = client.post("/api/ingest/reanalyze", json={"facts": facts2})
+    assert r2.status_code == 200
+    assert r2.json()["facts"]["board"][0] == "Ts"
 
 
 def test_analyze_endpoint_ok_and_400():

@@ -1,3 +1,4 @@
+import { Lightbulb, Sparkles } from "lucide-react";
 import type { TrainerAnswer } from "@/lib/api";
 
 const GRADE_STYLE: Record<string, { ring: string; badge: string; text: string }> = {
@@ -76,7 +77,10 @@ export default function FeedbackPanel({
         {feedback.explanation}
       </p>
       {feedback.tip && (
-        <p className="mt-1 text-xs text-neutral-400">💡 {feedback.tip}</p>
+        <p className="mt-1 flex items-start gap-1.5 text-xs text-neutral-400">
+          <Lightbulb className="mt-0.5 size-3.5 shrink-0 text-amber-300/80" />
+          {feedback.tip}
+        </p>
       )}
 
       {/* GTO 频率条 */}
@@ -141,9 +145,16 @@ export default function FeedbackPanel({
           <button
             onClick={onRequestCoach}
             disabled={coach.loading}
-            className="w-full rounded-xl border border-violet-700/60 bg-violet-950/30 py-2.5 text-sm font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-violet-700/60 bg-violet-950/30 py-2.5 text-sm font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
           >
-            {coach.loading ? "AI 教练思考中…" : "🧠 AI 深度讲解：为什么这样打？"}
+            {coach.loading ? (
+              "AI 教练思考中…"
+            ) : (
+              <>
+                <Sparkles className="size-4" />
+                AI 深度讲解：为什么这样打？
+              </>
+            )}
           </button>
         )}
         {coach.error && (

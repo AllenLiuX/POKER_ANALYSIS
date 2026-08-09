@@ -40,9 +40,24 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
 
+    # ---- 知识库联网搜索（Tavily；与 ~/ai_study_platform 同一 provider）----
+    # 留空 = 知识库接地自动关闭，AI 分析退回纯统计接地（不受影响）。
+    tavily_api_key: str = ""
+    tavily_max_results: int = 5
+    tavily_search_depth: str = "basic"  # basic ≈ $0.005/次；advanced ≈ $0.04/次
+    # 知识库（RAG 接地）：检索到的德州策略片段按「概念」持久化到本地 SQLite，TTL 内复用不重复搜索。
+    kb_enabled: bool = True
+    kb_ttl_days: int = 30
+    kb_path: str = "data/poker_kb.sqlite3"  # 相对 backend/ 根；store 会解析为绝对路径
+
     @property
     def cors_origins(self) -> List[str]:
         return [o.strip() for o in self.backend_cors_origins.split(",") if o.strip()]
+
+    @property
+    def kb_ready(self) -> bool:
+        """知识库接地是否可用：已启用且配了 Tavily key。"""
+        return bool(self.kb_enabled) and bool(self.tavily_api_key)
 
 
 @lru_cache

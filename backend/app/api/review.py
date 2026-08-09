@@ -9,9 +9,12 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.llm import get_provider
+
+_STREAM_HEADERS = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
 
 router = APIRouter(tags=["review"])
 
@@ -185,3 +188,22 @@ def post_trainer_review(req: ReviewRequest) -> dict:
         "analyzed": req.total,
         "mistakes_considered": len(req.mistakes),
     }
+
+
+@router.post("/trainer/review/stream")
+def post_trainer_review_stream(req: ReviewRequest) -> StreamingResponse:
+    """与 /trainer/review 相同，但以纯文本流式返回，前端边收边渲染，体感更快。"""
+    if req.total <= 0:
+        raise HTTPException(status_code=400, detail="暂无训练数据，先去练几手吧")
+
+    provider = get_provider()
+    if not (provider.gateway_ready or provider.openai_ready):
+        raise HTTPException(status_code=503, detail="LLM 未配置（见 backend/.env.example）")
+
+    prompt = build_review_prompt(req)
+
+    def gen():
+        # 用非推理的 gpt-4o：逐字即时流出，避免推理模型"先思考后爆发"导致流式体感无提升。
+        yield from provider.text_stream(prompt, system=REVIEW_SYSTEM, max_tokens=900, model="gpt-4o")
+
+    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8", headers=_STREAM_HEADERS)

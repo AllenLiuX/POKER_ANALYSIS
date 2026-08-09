@@ -79,6 +79,16 @@ def test_review_endpoint_ok(monkeypatch):
     assert body["mistakes_considered"] == 1
 
 
+def test_openai_token_kwargs_switches_by_model():
+    from app.llm.provider import _openai_token_kwargs
+
+    # gpt-4o：旧参数名，按请求取值
+    assert _openai_token_kwargs("gpt-4o", 1500, 2000) == {"max_tokens": 1500}
+    # gpt-5.x 推理模型：改用 max_completion_tokens 且有下限，防止只返回空内容
+    assert _openai_token_kwargs("gpt-5.6-terra", 1500, 2000) == {"max_completion_tokens": 4000}
+    assert _openai_token_kwargs("gpt-5.6-terra", 8000, 2000) == {"max_completion_tokens": 8000}
+
+
 def test_provider_text_retries_on_empty(monkeypatch):
     """首选文本模型返回空内容时，应自动回退到稳定模型。"""
     from app.llm import model_client
@@ -93,6 +103,8 @@ def test_provider_text_retries_on_empty(monkeypatch):
     monkeypatch.setattr(model_client, "call_model", fake_call)
     monkeypatch.setattr(prov.LLMProvider, "gateway_ready", property(lambda self: True))
     monkeypatch.setattr(prov.LLMProvider, "openai_ready", property(lambda self: False))
+    # 不受实际 .env 的 LLM_FORCE_OPENAI 影响：本用例专门验证网关重试逻辑。
+    monkeypatch.setattr(prov.LLMProvider, "use_gateway", property(lambda self: True))
 
     out = prov.LLMProvider().text("hi")
     assert out == "真正的复盘内容"

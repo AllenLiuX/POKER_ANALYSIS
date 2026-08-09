@@ -2,16 +2,20 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Lightbulb, Sparkles } from "lucide-react";
 import {
   getPostflopNext,
+  getPostflopMatchups,
   postPostflopAnswer,
   postPostflopCoach,
   type PostflopAnswer,
+  type PostflopMatchup,
   type PostflopScenario,
 } from "@/lib/api";
 import ActionBar from "@/components/ActionBar";
 import { type CoachState } from "@/components/FeedbackPanel";
 import PlayingCard from "@/components/PlayingCard";
+import PokerTable, { type TableView } from "@/components/PokerTable";
 import {
   loadAttempts,
   recordAttempt,
@@ -39,8 +43,45 @@ interface Stats {
   streak: number;
 }
 
+const STREET_CN: Record<string, string> = {
+  flop: "翻牌",
+  turn: "转牌",
+  river: "河牌",
+};
+
+function postflopTableView(scenario: PostflopScenario): TableView {
+  const street = STREET_CN[scenario.street] ?? "翻牌";
+  const bet = scenario.bet_bb ?? 0;
+  return {
+    seats: [
+      {
+        position: scenario.villain_position,
+        status: bet > 0 ? "raiser" : "waiting",
+        slot: "UTG",
+        hideCards: true,
+        isButton: scenario.villain_position === "BTN",
+        label: bet > 0 ? `下注 ${bet}bb` : "已过牌",
+      },
+      {
+        position: scenario.hero_position,
+        status: "hero",
+        slot: "BTN",
+        cards: scenario.hero,
+        isButton: scenario.hero_position === "BTN",
+        label: "YOU",
+      },
+    ],
+    board: scenario.board,
+    potBB: scenario.pot_bb,
+    toCallBB: bet > 0 ? bet : undefined,
+    streetLabel: `${street} · ${scenario.texture.descriptor}`,
+  };
+}
+
 export default function PostflopTrainerPage() {
   const [role, setRole] = useState("");
+  const [matchup, setMatchup] = useState("");
+  const [matchups, setMatchups] = useState<PostflopMatchup[]>([]);
   const [scenario, setScenario] = useState<PostflopScenario | null>(null);
   const [answer, setAnswer] = useState<PostflopAnswer | null>(null);
   const [coach, setCoach] = useState<CoachState>({
@@ -57,6 +98,9 @@ export default function PostflopTrainerPage() {
   useEffect(() => {
     const s = summarize(loadAttempts());
     setLifetime({ total: s.total, accuracy: s.accuracy });
+    getPostflopMatchups()
+      .then(setMatchups)
+      .catch(() => {});
   }, []);
 
   const loadNext = useCallback(async () => {
@@ -65,14 +109,14 @@ export default function PostflopTrainerPage() {
     setAnswer(null);
     setCoach({ text: null, loading: false, error: null });
     try {
-      const scen = await getPostflopNext({ role: role || undefined });
+      const scen = await getPostflopNext({ role: role || undefined, matchup: matchup || undefined });
       setScenario(scen);
     } catch (e) {
       setErr(String(e instanceof Error ? e.message : e));
     } finally {
       setLoading(false);
     }
-  }, [role]);
+  }, [role, matchup]);
 
   useEffect(() => {
     loadNext();
@@ -242,6 +286,23 @@ export default function PostflopTrainerPage() {
               {t.label}
             </button>
           ))}
+          {matchups.length > 0 && (
+            <label className="ml-auto flex items-center gap-2 text-xs text-neutral-500">
+              对位
+              <select
+                value={matchup}
+                onChange={(e) => setMatchup(e.target.value)}
+                className="rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1.5 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none"
+              >
+                <option value="">随机对位</option>
+                {matchups.map((m) => (
+                  <option key={m.matchup} value={m.matchup}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </div>
 
@@ -253,44 +314,24 @@ export default function PostflopTrainerPage() {
 
       {scenario && (
         <>
-          {/* 牌桌信息 */}
-          <div className="rounded-2xl border border-neutral-800 bg-gradient-to-b from-emerald-950/30 to-neutral-950 p-5">
-            <div className="mb-3 flex items-center justify-between text-xs text-neutral-400">
-              <span>
-                {scenario.hero_position} <span className="text-neutral-600">vs</span>{" "}
-                {scenario.villain_position} · 单加注底池
-              </span>
-              <span>
-                底池 <span className="font-semibold text-neutral-200">{scenario.pot_bb}bb</span>
-                {scenario.bet_bb ? (
-                  <>
-                    {" · "}对手下注{" "}
-                    <span className="font-semibold text-red-300">{scenario.bet_bb}bb</span>
-                  </>
-                ) : null}
-              </span>
-            </div>
+          <PokerTable view={postflopTableView(scenario)} />
 
-            {/* 翻牌 */}
-            <div className="mb-1 text-center text-[11px] uppercase tracking-widest text-neutral-500">
-              翻牌 · {scenario.texture.descriptor}
-            </div>
-            <div className="flex justify-center gap-2">
-              {scenario.board.map((c) => (
+          {/* 你的手牌 */}
+          <div className="mt-4 flex flex-col items-center gap-3">
+            <div className="flex items-center gap-3">
+              {scenario.hero.map((c) => (
                 <PlayingCard key={c} card={c} size="lg" />
               ))}
+              <div className="text-left">
+                <div className="text-2xl font-bold text-neutral-100">{scenario.hero_class}</div>
+                <div className="text-xs text-neutral-500">
+                  你在 {scenario.hero_position}{" "}
+                  {scenario.role === "pfr" ? "持续下注" : "防守"} vs {scenario.villain_position}
+                </div>
+              </div>
             </div>
-
-            {/* 英雄手牌 */}
-            <div className="mt-5 flex items-center justify-center gap-3">
-              {scenario.hero.map((c) => (
-                <PlayingCard key={c} card={c} size="md" />
-              ))}
-              <span className="text-sm text-neutral-400">你的手牌</span>
-            </div>
+            <p className="text-center text-sm text-neutral-400">{scenario.prompt}</p>
           </div>
-
-          <p className="mt-4 text-center text-sm text-neutral-400">{scenario.prompt}</p>
 
           <div className="mt-6">
             {!answer ? (
@@ -352,7 +393,12 @@ function PostflopFeedback({
       <p className="mt-3 text-sm leading-relaxed text-neutral-200">
         {feedback.explanation}
       </p>
-      {feedback.tip && <p className="mt-1 text-xs text-neutral-400">💡 {feedback.tip}</p>}
+      {feedback.tip && (
+        <p className="mt-1 flex items-start gap-1.5 text-xs text-neutral-400">
+          <Lightbulb className="mt-0.5 size-3.5 shrink-0 text-amber-300/80" />
+          {feedback.tip}
+        </p>
+      )}
 
       {/* 胜率条 */}
       <div className="mt-4">
@@ -422,9 +468,16 @@ function PostflopFeedback({
           <button
             onClick={onRequestCoach}
             disabled={coach.loading}
-            className="w-full rounded-xl border border-violet-700/60 bg-violet-950/30 py-2.5 text-sm font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-violet-700/60 bg-violet-950/30 py-2.5 text-sm font-medium text-violet-200 transition hover:bg-violet-900/40 disabled:opacity-50"
           >
-            {coach.loading ? "AI 教练思考中…" : "🧠 AI 深度讲解：为什么这样打？"}
+            {coach.loading ? (
+              "AI 教练思考中…"
+            ) : (
+              <>
+                <Sparkles className="size-4" />
+                AI 深度讲解：为什么这样打？
+              </>
+            )}
           </button>
         )}
         {coach.error && (

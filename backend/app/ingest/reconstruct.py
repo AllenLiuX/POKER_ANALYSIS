@@ -28,6 +28,8 @@ _ACTION_LABELS = {
 
 # 回放里每位玩家一行的动作按街从左到右排列：翻前 / 翻牌 / 转牌 / 河牌
 _STREETS = ["翻前", "翻牌", "转牌", "河牌"]
+# actions_by_street 的英文键 → 中文街道标签（下游 deviation 以中文标签判街）
+_STREET_KEY_TO_LABEL = {"preflop": "翻前", "flop": "翻牌", "turn": "转牌", "river": "河牌"}
 
 
 def _street_for_index(i: int) -> str:
@@ -71,6 +73,23 @@ def parse_actions(raw: Optional[str]) -> List[Dict[str, object]]:
     return out
 
 
+def parse_actions_by_street(by_street: Dict) -> List[Dict[str, object]]:
+    """{preflop:[...], flop:[...], ...} → 逐个动作 {action, amount, label, raw, street}（已带准确街道）。
+
+    比按序号推断更可靠：每个动作的街道由模型明确归位，能正确处理"某街过牌 / 一街多动作"。
+    """
+    out: List[Dict[str, object]] = []
+    for key in ("preflop", "flop", "turn", "river"):
+        entries = by_street.get(key)
+        if not isinstance(entries, list):
+            continue
+        label = _STREET_KEY_TO_LABEL[key]
+        for piece in entries:
+            for a in parse_actions(str(piece)):
+                out.append({**a, "street": label})
+    return out
+
+
 def _round(x: float) -> float:
     return round(x, 2)
 
@@ -92,12 +111,19 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
 
     players: List[Dict[str, object]] = []
     for idx, p in enumerate(players_in):
-        raw_actions = parse_actions(p.get("actions_raw"))
-        actions: List[Dict[str, object]] = []
-        for i, a in enumerate(raw_actions):
-            actions.append({**a, "street": _street_for_index(i) if stype == "hand_replay" else None})
+        by_street = p.get("actions_by_street")
+        if isinstance(by_street, dict) and by_street:
+            # 首选：模型已按街分组，直接采用准确街道
+            actions: List[Dict[str, object]] = parse_actions_by_street(by_street)
+        else:
+            # 回退：只有扁平串时按出现序号推断街道（翻前/翻牌/转牌/河牌）
+            raw_actions = parse_actions(p.get("actions_raw"))
+            actions = [
+                {**a, "street": _street_for_index(i) if stype == "hand_replay" else None}
+                for i, a in enumerate(raw_actions)
+            ]
 
-        money = [a["amount"] for a in raw_actions if a["action"] in _MONEY_ACTIONS and a["amount"]]  # type: ignore[misc]
+        money = [a["amount"] for a in actions if a["action"] in _MONEY_ACTIONS and a["amount"]]  # type: ignore[misc]
         parsed_invested = _round(sum(money))  # type: ignore[arg-type]
         has_money = len(money) > 0
 

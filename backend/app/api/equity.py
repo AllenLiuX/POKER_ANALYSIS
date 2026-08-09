@@ -6,7 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.poker.equity import equity_hand_vs_range, ev_call, pot_odds
+from app.poker.equity import ev_call, hero_equity, pot_odds
 
 router = APIRouter(tags=["equity"])
 
@@ -30,7 +30,8 @@ class EquityResponse(BaseModel):
 @router.post("/equity", response_model=EquityResponse)
 def post_equity(req: EquityRequest) -> EquityResponse:
     try:
-        result = equity_hand_vs_range(
+        # 翻后（3~5 张公共牌）走精确加权枚举，翻前退回蒙特卡洛。
+        result = hero_equity(
             hero=req.hero,
             villain_range=req.villain_range,
             board=req.board,

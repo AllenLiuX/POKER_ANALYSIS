@@ -20,6 +20,38 @@ RANK_VAL = {r: i for i, r in enumerate("23456789TJQKA", start=2)}
 _SUITS = "cdhs"
 
 
+def _board_dominated(made: str, hero_ranks: List[int], board_ranks: List[int]) -> bool:
+    """英雄的成对类成手是否**完全由公共牌构成**（底牌没参与关键配对）。
+
+    例：牌面 KK77Q，英雄 J5 —— "两对(KK77)"整段来自公共牌，英雄一张都没用上，
+    实际只能与人平分、打不过任何 Kx/7x/Qx。这类必须降档，不能当价值牌下注。
+    做法：取"英雄+公共牌"组合里构成该成手的关键 rank，若这些 rank 单靠公共牌就已达到所需数量，
+    说明底牌没贡献。
+    """
+    bcount = Counter(board_ranks)
+    ccount = Counter(hero_ranks + board_ranks)
+    if made == "Pair":
+        pr = max((r for r, c in ccount.items() if c >= 2), default=None)
+        return pr is not None and bcount.get(pr, 0) >= 2
+    if made == "Two Pair":
+        pairs = sorted((r for r, c in ccount.items() if c >= 2), reverse=True)[:2]
+        return len(pairs) == 2 and all(bcount.get(r, 0) >= 2 for r in pairs)
+    if made == "Trips":
+        tr = max((r for r, c in ccount.items() if c >= 3), default=None)
+        return tr is not None and bcount.get(tr, 0) >= 3
+    if made == "Quads":
+        q = max((r for r, c in ccount.items() if c >= 4), default=None)
+        return q is not None and bcount.get(q, 0) >= 4
+    if made == "Full House":
+        tr = max((r for r, c in ccount.items() if c >= 3), default=None)
+        pair = max((r for r, c in ccount.items() if c >= 2 and r != tr), default=None)
+        return (
+            tr is not None and pair is not None
+            and bcount.get(tr, 0) >= 3 and bcount.get(pair, 0) >= 2
+        )
+    return False
+
+
 def _straight_outs(ranks: set[int]) -> int:
     """给定一组 rank，返回能补成 5 连的不同"补牌 rank"数量（近似顺子听牌 outs 的 rank 数）。"""
     have = set(ranks)
@@ -92,12 +124,21 @@ def classify_hand(hero: List[str], board: List[str]) -> Dict[str, object]:
         "High Card": "高牌",
     }.get(made, made)
 
-    if made in ("Straight Flush", "Quads", "Full House", "Flush", "Straight", "Trips", "Two Pair"):
+    # 关键校正：英雄的成手是否"完全由公共牌构成"（含河牌打公共牌）。
+    # 是的话不能当作英雄的价值牌——最多平分，打不过任何用到公共牌配对的手。
+    board_dominated = _board_dominated(made, hero_ranks, board_ranks)
+    if len(board) == 5 and eval7.evaluate(hc + bc) == eval7.evaluate(bc):
+        board_dominated = True  # 河牌：英雄最佳五张就是公共牌本身（打公共牌）
+
+    value_made = made in (
+        "Straight Flush", "Quads", "Full House", "Flush", "Straight", "Trips", "Two Pair"
+    )
+    if value_made and not board_dominated:
         tier = "value"
         pair_kind = None
-    elif made == "Pair":
+    elif made == "Pair" and not board_dominated:
         pair_kind, tier = _classify_pair(hero_ranks, board_ranks, top_board)
-    else:  # High Card
+    else:  # 高牌，或成手完全来自公共牌 → 按听牌定档（否则空气）
         pair_kind = None
         if "flush_draw" in draws or "oesd" in draws:
             tier = "draw"
@@ -105,6 +146,9 @@ def classify_hand(hero: List[str], board: List[str]) -> Dict[str, object]:
             tier = "weak"
         else:
             tier = "air"
+
+    if board_dominated and value_made:
+        made_label = f"{made_label}（公共牌构成·仅摊牌无价值）"
 
     # 有强听牌可提升边缘成手的"进攻性"（半诈唬价值）
     if tier in ("medium",) and combo:
@@ -120,6 +164,7 @@ def classify_hand(hero: List[str], board: List[str]) -> Dict[str, object]:
         "draw_label": draw_label,
         "outs": outs,
         "combo_draw": combo,
+        "board_dominated": board_dominated,
     }
 
 

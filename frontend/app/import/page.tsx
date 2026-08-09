@@ -6,25 +6,59 @@ import {
   postExploit,
   postIngestAnalyze,
   postIngestExtract,
+  postIngestReanalyze,
   type Analysis,
   type Deviation,
   type ExploitProfileInput,
   type ExploitResult,
+  type HandContributions,
   type IngestItem,
   type IngestPlayerObs,
   type ObservationFacts,
+  type ReconstructedAction,
   type Reconstruction,
 } from "@/lib/api";
 import {
   addImportEntries,
   buildEntry,
   clearImportHistory,
+  downloadText,
+  exportDecisionsCSV,
+  exportHistoryJSON,
   loadImportHistory,
+  mergeImportEntries,
   patchImportItems,
   removeImportEntry,
   type ImportEntry,
 } from "@/lib/importHistory";
+import {
+  clearCloudImports,
+  deleteCloudImport,
+  fetchCloudImports,
+  syncLocalImportsToCloud,
+  upsertImportEntry,
+} from "@/lib/cloud";
+import { aggKey, removeEntryFromProfiles, syncEntryToProfiles } from "@/lib/opponents";
 import PlayingCard from "@/components/PlayingCard";
+import Markdown from "@/components/Markdown";
+import { Card, SectionLabel } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/cn";
+import {
+  Check as CheckIcon,
+  ChevronRight,
+  Crosshair,
+  Download,
+  ImagePlus,
+  Pencil,
+  Plus,
+  Sparkles,
+  Trash2,
+  Upload,
+  X,
+  ZoomIn,
+} from "lucide-react";
 
 const TYPE_LABEL: Record<string, string> = {
   hand_replay: "手牌回放",
@@ -65,6 +99,7 @@ export default function ImportPage() {
   const [err, setErr] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [ingestEnabled, setIngestEnabled] = useState<boolean | null>(null);
+  const [zoom, setZoom] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -73,10 +108,29 @@ export default function ImportPage() {
       .catch(() => setIngestEnabled(null));
   }, []);
 
-  // 刷新后从本地恢复历史
+  // 刷新后从本地恢复历史，并与云端合并（未登录/未启用则静默 no-op）
   useEffect(() => {
     setHistory(loadImportHistory());
+    (async () => {
+      try {
+        await syncLocalImportsToCloud(loadImportHistory());
+        const cloud = await fetchCloudImports();
+        if (cloud.length) setHistory(mergeImportEntries(cloud));
+      } catch {
+        /* ignore */
+      }
+    })();
   }, []);
+
+  // Esc 关闭放大预览
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setZoom(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoom]);
 
   // 卸载时释放所有预览 URL
   useEffect(() => {
@@ -146,7 +200,13 @@ export default function ImportPage() {
           return buildEntry(item, files[idx] ?? null);
         }),
       );
-      if (entries.length) setHistory(addImportEntries(entries));
+      if (entries.length) {
+        setHistory(addImportEntries(entries));
+        // 默认上传到云端（未登录/未启用则静默跳过）
+        entries.forEach((e) => upsertImportEntry(e).catch(() => {}));
+        // 增量并入服务端权威对手聚合（幂等；未登录则静默跳过）
+        entries.forEach((e) => syncEntryToProfiles(e).catch(() => {}));
+      }
       setRunErrors(failed);
       // 已入历史，重置上传区
       setPicked((prev) => {
@@ -162,11 +222,28 @@ export default function ImportPage() {
   }, [picked]);
 
   const deleteEntry = useCallback((id: string) => {
+    const ent = loadImportHistory().find((x) => x.id === id);
     setHistory(removeImportEntry(id));
+    deleteCloudImport(id).catch(() => {});
+    if (ent) removeEntryFromProfiles(ent).catch(() => {});
   }, []);
 
   const clearHistory = useCallback(() => {
     setHistory(clearImportHistory());
+    clearCloudImports().catch(() => {});
+  }, []);
+
+  // 编辑并重算后更新单条历史（本地 + 云端 + 对手聚合幂等重算）
+  const updateEntry = useCallback((id: string, item: IngestItem) => {
+    const prev = loadImportHistory().find((x) => x.id === id);
+    const prevKey = prev ? aggKey(prev) : undefined;
+    const updated = patchImportItems({ [id]: item });
+    setHistory(updated);
+    const ent = updated.find((x) => x.id === id);
+    if (ent) {
+      upsertImportEntry(ent).catch(() => {});
+      syncEntryToProfiles(ent, prevKey).catch(() => {});
+    }
   }, []);
 
   const [exploit, setExploit] = useState<{
@@ -195,7 +272,14 @@ export default function ImportPage() {
             }
           }),
         );
-        if (Object.keys(patches).length) setHistory(patchImportItems(patches));
+        if (Object.keys(patches).length) {
+          const updated = patchImportItems(patches);
+          setHistory(updated);
+          // 回填的偏离标注同步到云端
+          updated
+            .filter((e) => patches[e.id])
+            .forEach((e) => upsertImportEntry(e).catch(() => {}));
+        }
       }
 
       const { opponents, hero, groundedTotal } = buildExploitInputs(loadImportHistory());
@@ -222,10 +306,8 @@ export default function ImportPage() {
       />
       <main className="mx-auto max-w-5xl px-6 py-8">
         <header className="mb-8 mt-2">
-          <div className="mb-2 flex items-center gap-2 text-xs">
-            <span className="rounded-full bg-emerald-900/60 px-2 py-0.5 text-emerald-300">
-              Beta
-            </span>
+          <div className="mb-2.5">
+            <Badge variant="success" size="sm">Beta</Badge>
           </div>
           <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
             WePoker 截图 →{" "}
@@ -258,11 +340,12 @@ export default function ImportPage() {
               setDragging(false);
               addFiles(e.dataTransfer.files);
             }}
-            className={`flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 transition ${
+            className={cn(
+              "flex min-h-[176px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 transition",
               dragging
                 ? "border-emerald-500 bg-emerald-950/30"
-                : "border-neutral-800 bg-neutral-900/40 hover:border-neutral-700"
-            }`}
+                : "border-white/10 bg-neutral-900/40 hover:border-white/20 hover:bg-neutral-900/60",
+            )}
           >
             <input
               ref={inputRef}
@@ -273,8 +356,17 @@ export default function ImportPage() {
               onChange={(e) => addFiles(e.target.files)}
             />
             <div className="px-6 text-center">
-              <div className="text-3xl">📸</div>
-              <p className="mt-2 text-sm font-medium text-neutral-300">
+              <span
+                className={cn(
+                  "mx-auto flex size-12 items-center justify-center rounded-2xl ring-1 transition",
+                  dragging
+                    ? "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40"
+                    : "bg-white/[0.04] text-neutral-400 ring-white/10",
+                )}
+              >
+                <ImagePlus className="size-6" />
+              </span>
+              <p className="mt-3 text-sm font-medium text-neutral-200">
                 点击选择 或 拖拽多张截图到这里
               </p>
               <p className="mt-1 text-xs text-neutral-500">
@@ -297,10 +389,10 @@ export default function ImportPage() {
                       e.preventDefault();
                       removeAt(i);
                     }}
-                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-xs text-neutral-200 opacity-0 transition group-hover:opacity-100"
+                    className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-black/70 text-neutral-200 opacity-0 transition hover:bg-black/90 group-hover:opacity-100"
                     title="移除"
                   >
-                    ✕
+                    <X className="size-3" />
                   </button>
                   <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[9px] text-neutral-300">
                     {p.file.name}
@@ -311,25 +403,18 @@ export default function ImportPage() {
           )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              onClick={run}
-              disabled={picked.length === 0 || loading}
-              className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 disabled:opacity-40"
-            >
+            <Button onClick={run} disabled={picked.length === 0 || loading} size="lg">
+              <Upload />
               {loading
                 ? "解析中…"
                 : picked.length > 1
                   ? `解析 ${picked.length} 张`
                   : "解析截图"}
-            </button>
+            </Button>
             {picked.length > 0 && (
-              <button
-                onClick={clearAll}
-                disabled={loading}
-                className="rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-40"
-              >
+              <Button onClick={clearAll} disabled={loading} variant="secondary" size="lg">
                 清空
-              </button>
+              </Button>
             )}
             {picked.length > 0 && (
               <span className="ml-auto text-xs text-neutral-500">已选 {picked.length} 张</span>
@@ -370,17 +455,52 @@ export default function ImportPage() {
                 历史记录
                 <span className="ml-1.5 text-neutral-500">（{history.length}）</span>
               </h2>
-              <button
-                onClick={clearHistory}
-                className="ml-auto rounded-lg border border-neutral-800 px-2.5 py-1 text-xs text-neutral-400 transition hover:border-red-800/60 hover:text-red-300"
+              <Button
+                onClick={() =>
+                  downloadText(
+                    `poker-import-${Date.now()}.json`,
+                    exportHistoryJSON(history),
+                    "application/json",
+                  )
+                }
+                variant="ghost"
+                size="sm"
+                className="ml-auto"
+                title="导出完整数据（事实+重建+偏离）"
               >
+                <Download />
+                JSON
+              </Button>
+              <Button
+                onClick={() =>
+                  downloadText(
+                    `poker-decisions-${Date.now()}.csv`,
+                    exportDecisionsCSV(history),
+                    "text/csv",
+                  )
+                }
+                variant="ghost"
+                size="sm"
+                title="导出逐决策明细表"
+              >
+                <Download />
+                CSV
+              </Button>
+              <Button onClick={clearHistory} variant="ghost" size="sm" className="hover:text-red-300">
+                <Trash2 />
                 清空历史
-              </button>
+              </Button>
             </div>
           )}
 
           {history.map((e) => (
-            <HistoryItem key={e.id} entry={e} onDelete={() => deleteEntry(e.id)} />
+            <HistoryItem
+              key={e.id}
+              entry={e}
+              onDelete={() => deleteEntry(e.id)}
+              onZoom={setZoom}
+              onUpdate={(item) => updateEntry(e.id, item)}
+            />
           ))}
 
           {!loading && history.length === 0 && runErrors.length === 0 && picked.length === 0 && (
@@ -390,6 +510,31 @@ export default function ImportPage() {
           )}
         </section>
       </main>
+
+      {/* 截图放大预览 */}
+      {zoom && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setZoom(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={zoom}
+            alt="放大预览"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[92vh] max-w-full rounded-lg object-contain shadow-2xl ring-1 ring-white/10"
+          />
+          <button
+            onClick={() => setZoom(null)}
+            className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-full bg-black/60 text-neutral-200 transition hover:bg-black/80"
+            title="关闭（Esc）"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -418,13 +563,25 @@ function statusBadge(item: IngestItem): { label: string; cls: string } {
 }
 
 /** 历史条目：默认折叠，只显示轻量摘要；点开时才渲染完整详情（事实 + 重建）。 */
-function HistoryItem({ entry, onDelete }: { entry: ImportEntry; onDelete: () => void }) {
+function HistoryItem({
+  entry,
+  onDelete,
+  onZoom,
+  onUpdate,
+}: {
+  entry: ImportEntry;
+  onDelete: () => void;
+  onZoom?: (src: string) => void;
+  onUpdate?: (item: IngestItem) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const { item, ts, thumb, filename } = entry;
   const badge = statusBadge(item);
   const time = fmtTime(ts);
+  const canEdit = Boolean(item.ok && item.recognized !== false && item.facts && onUpdate);
   return (
-    <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/50">
+    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-neutral-900/50 shadow-sm shadow-black/20">
       <div
         role="button"
         tabIndex={0}
@@ -435,21 +592,28 @@ function HistoryItem({ entry, onDelete }: { entry: ImportEntry; onDelete: () => 
             setOpen((v) => !v);
           }
         }}
-        className="flex cursor-pointer items-center gap-3 p-3 transition hover:bg-neutral-900/70"
+        className="flex cursor-pointer items-center gap-3 p-3 transition hover:bg-white/[0.02]"
       >
-        <span
-          className={`shrink-0 text-neutral-500 transition-transform ${open ? "rotate-90" : ""}`}
+        <ChevronRight
+          className={cn("size-4 shrink-0 text-neutral-500 transition-transform", open && "rotate-90")}
           aria-hidden
-        >
-          ▸
-        </span>
+        />
         {thumb && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={thumb}
-            alt={filename}
-            className="h-10 w-10 shrink-0 rounded-md border border-neutral-800 object-cover"
-          />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onZoom?.(thumb);
+            }}
+            className="group/thumb relative size-10 shrink-0 overflow-hidden rounded-md border border-white/10"
+            title="点击放大"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={thumb} alt={filename} className="h-full w-full object-cover" />
+            <span className="absolute inset-0 flex items-center justify-center bg-black/0 text-transparent transition group-hover/thumb:bg-black/50 group-hover/thumb:text-white">
+              <ZoomIn className="size-4" />
+            </span>
+          </button>
         )}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-neutral-200">{filename}</div>
@@ -458,20 +622,45 @@ function HistoryItem({ entry, onDelete }: { entry: ImportEntry; onDelete: () => 
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${badge.cls}`}>
           {badge.label}
         </span>
+        {canEdit && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing(true);
+              setOpen(true);
+            }}
+            className="flex shrink-0 items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-neutral-400 transition hover:border-sky-700/60 hover:text-sky-300"
+            title="修正识别结果并重算"
+          >
+            <Pencil className="size-3" />
+            编辑
+          </button>
+        )}
         <button
           onClick={(e) => {
             e.stopPropagation();
             onDelete();
           }}
-          className="shrink-0 rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-800/60 hover:text-red-300"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-white/10 text-neutral-500 transition hover:border-red-800/60 hover:text-red-300"
           title="从历史中删除"
         >
-          删除
+          <Trash2 className="size-3.5" />
         </button>
       </div>
       {open && (
-        <div className="border-t border-neutral-800 p-4 sm:p-5">
-          <ResultDetail item={item} />
+        <div className="border-t border-white/[0.07] p-4 sm:p-5">
+          {editing && item.facts ? (
+            <FactsEditor
+              facts={item.facts}
+              onCancel={() => setEditing(false)}
+              onSaved={({ facts, reconstruction, analysis, contributions }) => {
+                onUpdate?.({ ...item, facts, reconstruction, analysis, contributions, recognized: true });
+                setEditing(false);
+              }}
+            />
+          ) : (
+            <ResultDetail item={item} />
+          )}
         </div>
       )}
     </div>
@@ -569,14 +758,21 @@ function DeviationRow({ d }: { d: Deviation }) {
     );
   }
   const gradeCls = GRADE_STYLE[d.grade ?? "mistake"] ?? GRADE_STYLE.mistake;
+  const isPostflop = d.spot.startsWith("postflop");
+  const classChip = d.hand_class ?? d.made_label;
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-xs">
       <span className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[10px] text-neutral-300">
         {d.spot_label}
       </span>
-      {d.hand_class && (
+      {classChip && (
         <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] font-medium text-neutral-200">
-          {d.hand_class}
+          {classChip}
+        </span>
+      )}
+      {isPostflop && typeof d.equity === "number" && (
+        <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-300" title="蒙特卡洛胜率（对手范围按翻前推定）">
+          胜率 {Math.round(d.equity * 100)}%
         </span>
       )}
       <span className="text-neutral-400">
@@ -601,6 +797,9 @@ function DeviationRow({ d }: { d: Deviation }) {
         </span>
       )}
       {d.note && <span className="w-full text-[10px] leading-relaxed text-neutral-500">{d.note}</span>}
+      {isPostflop && !d.note && d.reasons && d.reasons.length > 0 && (
+        <span className="w-full text-[10px] leading-relaxed text-neutral-500">{d.reasons[0]}</span>
+      )}
     </div>
   );
 }
@@ -679,19 +878,16 @@ function ExploitPanel({
 }) {
   const { loading, data, error } = state;
   return (
-    <div className="rounded-2xl border border-fuchsia-800/40 bg-gradient-to-b from-fuchsia-950/20 to-neutral-900/40 p-5">
+    <Card accent="fuchsia" className="p-5">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-bold text-neutral-100">🎯 剥削分析</h2>
-        <span className="rounded-full bg-fuchsia-900/50 px-2 py-0.5 text-[11px] text-fuchsia-200">
-          逐对手 · 基于偏离标注
-        </span>
-        <button
-          onClick={onRun}
-          disabled={loading || disabled}
-          className="ml-auto rounded-lg bg-fuchsia-500 px-3.5 py-1.5 text-sm font-semibold text-fuchsia-950 transition hover:bg-fuchsia-400 disabled:opacity-40"
-        >
+        <h2 className="flex items-center gap-2 text-base font-bold text-neutral-100">
+          <Crosshair className="size-4 text-fuchsia-300" />
+          剥削分析
+        </h2>
+        <Badge variant="accent">逐对手 · 基于偏离标注</Badge>
+        <Button onClick={onRun} disabled={loading || disabled} variant="accent" size="sm" className="ml-auto">
           {loading ? "分析中…" : data ? "重新生成" : "生成剥削分析"}
-        </button>
+        </Button>
       </div>
       <p className="mt-1.5 text-xs leading-relaxed text-neutral-400">
         汇总你导入过的所有手牌里、每个对手（及你自己）相对 GTO 的偏离，给出针对性剥削建议。
@@ -715,16 +911,16 @@ function ExploitPanel({
                 <ProfileCard key={s.alias} s={s} />
               ))}
           </div>
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/50 p-4">
-            <div className="mb-1.5 text-[11px] uppercase tracking-wider text-fuchsia-300/80">
+          <div className="rounded-xl border border-white/[0.07] bg-neutral-950/50 p-4">
+            <SectionLabel icon={<Sparkles className="size-3 text-fuchsia-300/80" />} className="mb-2 text-fuchsia-300/80">
               剥削建议（AI · 接地于上方统计）
-            </div>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">{data.report}</p>
+            </SectionLabel>
+            <Markdown>{data.report}</Markdown>
           </div>
           <p className="text-[11px] leading-relaxed text-neutral-600">{data.note}</p>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -989,13 +1185,78 @@ function FactsView({
 function Check({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs ${
-        ok ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"
-      }`}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs",
+        ok ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300",
+      )}
     >
-      <span>{ok ? "✓" : "✗"}</span>
+      {ok ? <CheckIcon className="size-3" /> : <X className="size-3" />}
       {label}
     </span>
+  );
+}
+
+const STREET_ORDER = ["翻前", "翻牌", "转牌", "河牌"];
+const STREET_STYLE: Record<string, string> = {
+  翻前: "text-sky-300",
+  翻牌: "text-emerald-300",
+  转牌: "text-amber-300",
+  河牌: "text-rose-300",
+};
+
+/** 把玩家动作按街分组，横向排成 翻前 / 翻牌 / 转牌 / 河牌 的清晰时间线。 */
+function StreetTimeline({ actions }: { actions: ReconstructedAction[] }) {
+  const groups = new Map<string, ReconstructedAction[]>();
+  const other: ReconstructedAction[] = [];
+  for (const a of actions) {
+    if (a.street && STREET_ORDER.includes(a.street)) {
+      const arr = groups.get(a.street) ?? [];
+      arr.push(a);
+      groups.set(a.street, arr);
+    } else {
+      other.push(a);
+    }
+  }
+  const ordered = STREET_ORDER.filter((s) => groups.has(s));
+  if (ordered.length === 0) {
+    // 无街道信息（如结算画面）：退回平铺
+    return (
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {actions.map((a, j) => (
+          <span key={j} className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-300">
+            {a.label}
+            {a.amount != null ? ` ${a.amount}` : ""}
+          </span>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {ordered.map((street) => (
+        <div
+          key={street}
+          className="flex items-center gap-1 rounded-md bg-neutral-950/60 px-1.5 py-1 ring-1 ring-neutral-800"
+        >
+          <span className={`text-[10px] font-semibold ${STREET_STYLE[street] ?? "text-neutral-400"}`}>
+            {street}
+          </span>
+          {(groups.get(street) ?? []).map((a, j) => (
+            <span key={j} className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-200">
+              {a.label}
+              {a.amount != null ? ` ${a.amount}` : ""}
+            </span>
+          ))}
+        </div>
+      ))}
+      {other.length > 0 &&
+        other.map((a, j) => (
+          <span key={`o-${j}`} className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-300">
+            {a.label}
+            {a.amount != null ? ` ${a.amount}` : ""}
+          </span>
+        ))}
+    </div>
   );
 }
 
@@ -1078,20 +1339,7 @@ function ReconstructionView({ recon }: { recon: Reconstruction }) {
                 )}
               </span>
             </div>
-            {p.actions.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {p.actions.map((a, j) => (
-                  <span
-                    key={j}
-                    className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-300"
-                  >
-                    {a.street && <span className="text-neutral-500">{a.street}·</span>}
-                    {a.label}
-                    {a.amount != null ? ` ${a.amount}` : ""}
-                  </span>
-                ))}
-              </div>
-            )}
+            {p.actions.length > 0 && <StreetTimeline actions={p.actions} />}
             {p.uncertain && (
               <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/80">
                 逐街动作之和 {p.parsed_invested}，按净额应约 {p.invested}——可能有一街动作未被识别，已按净额校正投入。
@@ -1153,7 +1401,301 @@ function PlayerRow({ p }: { p: IngestPlayerObs }) {
           </span>
         )}
       </div>
-      {p.actions_raw && <p className="mt-1 text-xs text-neutral-400">{p.actions_raw}</p>}
+      {p.actions_by_street && Object.keys(p.actions_by_street).length > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {STREET_ORDER.filter((s) => obsStreet(p.actions_by_street!, s).length > 0).map((zh) => (
+            <div key={zh} className="flex items-center gap-1">
+              <span className={`text-[10px] font-semibold ${STREET_STYLE[zh] ?? "text-neutral-400"}`}>
+                {zh}
+              </span>
+              {obsStreet(p.actions_by_street!, zh).map((a, j) => (
+                <span key={j} className="rounded bg-neutral-800/70 px-1.5 py-0.5 text-[11px] text-neutral-300">
+                  {a}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : (
+        p.actions_raw && <p className="mt-1 text-xs text-neutral-400">{p.actions_raw}</p>
+      )}
+    </div>
+  );
+}
+
+// 中文街道标签 → actions_by_street 的英文键，取该街动作数组
+const ZH_TO_STREET_KEY: Record<string, string> = {
+  翻前: "preflop",
+  翻牌: "flop",
+  转牌: "turn",
+  河牌: "river",
+};
+function obsStreet(byStreet: Record<string, string[]>, zh: string): string[] {
+  return byStreet[ZH_TO_STREET_KEY[zh]] ?? [];
+}
+
+// ---------- 编辑态：修正识别结果后一键重算 ----------
+const POSITIONS = ["", "UTG", "MP", "CO", "BTN", "SB", "BB"];
+const STREET_KEYS = ["preflop", "flop", "turn", "river"] as const;
+const STREET_KEY_ZH: Record<string, string> = { preflop: "翻前", flop: "翻牌", turn: "转牌", river: "河牌" };
+
+function splitList(s: string): string[] {
+  return s
+    .split(/[,，、]+|\s*→\s*|\s{2,}/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+function joinStreet(arr?: string[]): string {
+  return (arr ?? []).join(" → ");
+}
+
+interface EditPlayer {
+  alias: string;
+  position: string;
+  is_hero: boolean;
+  hole: string; // 空格分隔
+  net: string;
+  made_hand: string;
+  streets: Record<string, string>; // preflop/flop/turn/river → " → " 连接的动作串
+}
+
+function factsToEdit(facts: ObservationFacts): {
+  board: string;
+  pot: string;
+  blinds: string;
+  players: EditPlayer[];
+} {
+  return {
+    board: facts.board.join(" "),
+    pot: facts.pot != null ? String(facts.pot) : "",
+    blinds: facts.blinds ?? "",
+    players: facts.players.map((p) => ({
+      alias: p.alias ?? "",
+      position: (p.position ?? "").toUpperCase(),
+      is_hero: p.is_hero,
+      hole: p.hole_cards.join(" "),
+      net: p.net != null ? String(p.net) : "",
+      made_hand: p.made_hand ?? "",
+      streets: Object.fromEntries(
+        STREET_KEYS.map((k) => [k, joinStreet(p.actions_by_street?.[k])]),
+      ),
+    })),
+  };
+}
+
+function editToFacts(
+  base: ObservationFacts,
+  ed: { board: string; pot: string; blinds: string; players: EditPlayer[] },
+): Record<string, unknown> {
+  return {
+    screenshot_type: base.screenshot_type,
+    hand_id: base.hand_id,
+    hero_seat: base.hero_seat,
+    blinds: ed.blinds.trim() || null,
+    board: splitList(ed.board.replace(/\s+/g, " ")),
+    pot: ed.pot.trim() === "" ? null : Number(ed.pot),
+    players: ed.players.map((p) => {
+      const abs: Record<string, string[]> = {};
+      for (const k of STREET_KEYS) {
+        const items = splitList(p.streets[k] ?? "");
+        if (items.length) abs[k] = items;
+      }
+      return {
+        alias: p.alias.trim() || null,
+        position: p.position.trim() || null,
+        is_hero: p.is_hero,
+        hole_cards: splitList(p.hole.replace(/\s+/g, " ")),
+        net: p.net.trim() === "" ? null : Number(p.net),
+        made_hand: p.made_hand.trim() || null,
+        actions_by_street: Object.keys(abs).length ? abs : null,
+        actions_raw: null,
+      };
+    }),
+  };
+}
+
+function FactsEditor({
+  facts,
+  onCancel,
+  onSaved,
+}: {
+  facts: ObservationFacts;
+  onCancel: () => void;
+  onSaved: (item: {
+    facts: ObservationFacts;
+    reconstruction: Reconstruction;
+    analysis: Analysis;
+    contributions: HandContributions;
+  }) => void;
+}) {
+  const [ed, setEd] = useState(() => factsToEdit(facts));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const setPlayer = (i: number, patch: Partial<EditPlayer>) =>
+    setEd((s) => ({ ...s, players: s.players.map((p, j) => (j === i ? { ...p, ...patch } : p)) }));
+  const setStreet = (i: number, k: string, v: string) =>
+    setEd((s) => ({
+      ...s,
+      players: s.players.map((p, j) => (j === i ? { ...p, streets: { ...p.streets, [k]: v } } : p)),
+    }));
+  const addPlayer = () =>
+    setEd((s) => ({
+      ...s,
+      players: [
+        ...s.players,
+        { alias: "", position: "", is_hero: false, hole: "", net: "", made_hand: "", streets: {} },
+      ],
+    }));
+  const removePlayer = (i: number) =>
+    setEd((s) => ({ ...s, players: s.players.filter((_, j) => j !== i) }));
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = editToFacts(facts, ed);
+      const res = await postIngestReanalyze(payload);
+      onSaved({
+        facts: res.facts,
+        reconstruction: res.reconstruction,
+        analysis: res.analysis,
+        contributions: res.contributions,
+      });
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputCls =
+    "rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-emerald-600 focus:outline-none";
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-sky-800/40 bg-sky-950/20 px-3 py-2 text-[11px] leading-relaxed text-sky-200/90">
+        修正识别结果后点「保存并重算」：牌面用空格分隔（10♠ 会自动转 Ts），每街动作用 →、逗号或顿号分隔（如「加注3 → 跟注3」）。
+        重算完全由引擎确定性完成，不会重新识图。
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <label className="flex flex-col gap-1 text-[11px] text-neutral-400">
+          公共牌（空格分隔）
+          <input
+            className={inputCls}
+            value={ed.board}
+            placeholder="As Kd 7c"
+            onChange={(e) => setEd((s) => ({ ...s, board: e.target.value }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-neutral-400">
+          底池
+          <input
+            className={inputCls}
+            value={ed.pot}
+            inputMode="decimal"
+            onChange={(e) => setEd((s) => ({ ...s, pot: e.target.value }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-neutral-400">
+          盲注
+          <input
+            className={inputCls}
+            value={ed.blinds}
+            placeholder="2/4(1)"
+            onChange={(e) => setEd((s) => ({ ...s, blinds: e.target.value }))}
+          />
+        </label>
+      </div>
+
+      <div className="space-y-2">
+        {ed.players.map((p, i) => (
+          <div key={i} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <input
+                className={`${inputCls} w-28`}
+                value={p.alias}
+                placeholder="昵称"
+                onChange={(e) => setPlayer(i, { alias: e.target.value })}
+              />
+              <select
+                className={inputCls}
+                value={p.position}
+                onChange={(e) => setPlayer(i, { position: e.target.value })}
+              >
+                {POSITIONS.map((pos) => (
+                  <option key={pos} value={pos}>
+                    {pos || "位置?"}
+                  </option>
+                ))}
+              </select>
+              <label className="flex items-center gap-1 text-[11px] text-neutral-400">
+                <input
+                  type="checkbox"
+                  checked={p.is_hero}
+                  onChange={(e) => setPlayer(i, { is_hero: e.target.checked })}
+                />
+                我
+              </label>
+              <input
+                className={`${inputCls} w-24`}
+                value={p.hole}
+                placeholder="底牌 Ah Kh"
+                onChange={(e) => setPlayer(i, { hole: e.target.value })}
+              />
+              <input
+                className={`${inputCls} w-20`}
+                value={p.net}
+                inputMode="decimal"
+                placeholder="净额"
+                onChange={(e) => setPlayer(i, { net: e.target.value })}
+              />
+              <button
+                onClick={() => removePlayer(i)}
+                className="ml-auto rounded-md border border-neutral-800 px-2 py-1 text-[11px] text-neutral-500 transition hover:border-red-800/60 hover:text-red-300"
+              >
+                删除
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-4">
+              {STREET_KEYS.map((k) => (
+                <label key={k} className="flex flex-col gap-1 text-[10px] text-neutral-500">
+                  {STREET_KEY_ZH[k]}
+                  <input
+                    className={inputCls}
+                    value={p.streets[k] ?? ""}
+                    placeholder="—"
+                    onChange={(e) => setStreet(i, k, e.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+        <button
+          onClick={addPlayer}
+          className="flex items-center gap-1 rounded-lg border border-dashed border-white/15 px-3 py-1.5 text-xs text-neutral-400 transition hover:border-white/30 hover:text-neutral-200"
+        >
+          <Plus className="size-3.5" />
+          添加玩家
+        </button>
+      </div>
+
+      {error && (
+        <p className="rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+          {error}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Button onClick={save} disabled={saving}>
+          {saving ? "重算中…" : "保存并重算"}
+        </Button>
+        <Button onClick={onCancel} disabled={saving} variant="secondary">
+          取消
+        </Button>
+      </div>
     </div>
   );
 }
