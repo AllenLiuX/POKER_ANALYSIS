@@ -2,11 +2,20 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Search, Sparkles, Users } from "lucide-react";
+import { ArrowRight, RefreshCw, Search, Sparkles, Users } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import Markdown from "@/components/Markdown";
+import ReportSources from "@/components/ReportSources";
+import {
+  CHART_COLORS,
+  ChartCard,
+  Donut,
+  Legend,
+  NetBars,
+  type DonutSlice,
+} from "@/components/charts/Charts";
 import { postOpponentReport } from "@/lib/api";
 import { loadImportHistory, mergeImportEntries } from "@/lib/importHistory";
 import {
@@ -24,6 +33,7 @@ import {
 import {
   buildOpponentProfiles,
   deriveCloudProfile,
+  effectiveTag,
   loadOppNotes,
   mergeOppNotes,
   OPP_TAGS,
@@ -140,9 +150,10 @@ export default function OpponentsPage() {
         model: "gpt-4o",
         basedOnHandCount: p.hands,
         createdAt: new Date().toISOString(),
+        sources: res.sources,
       };
       setReports((r) => ({ ...r, [p.opponentId]: row }));
-      upsertOpponentReport(p.opponentId, res.report, "gpt-4o", p.hands, p.counters).catch(() => {});
+      upsertOpponentReport(p.opponentId, res.report, "gpt-4o", p.hands, p.counters, res.sources).catch(() => {});
     },
     [notes],
   );
@@ -158,6 +169,15 @@ export default function OpponentsPage() {
 
   const total = isCloud && cloudProfiles.length ? cloudProfiles.length : localProfiles.length;
   const canBackfill = isCloud && localProfiles.length > 0;
+
+  // 仪表盘用的通用画像视图（云端优先，否则本地）。
+  const dashProfiles = useMemo<DashProfile[]>(() => {
+    const src =
+      isCloud && cloudProfiles.length
+        ? cloudProfiles.map((p) => ({ alias: p.alias, archetype: p.archetype, net: p.net, hands: p.hands }))
+        : localProfiles.map((p) => ({ alias: p.alias, archetype: p.archetype, net: p.net, hands: p.hands }));
+    return src;
+  }, [isCloud, cloudProfiles, localProfiles]);
 
   return (
     <div className="relative min-h-screen overflow-hidden">
@@ -226,6 +246,8 @@ export default function OpponentsPage() {
           </div>
         )}
 
+        {total > 0 && <OverviewDashboard profiles={dashProfiles} />}
+
         {total === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-neutral-800 bg-neutral-900/20 px-6 py-12 text-center text-sm text-neutral-500">
             还没有对手档案。先到
@@ -236,32 +258,121 @@ export default function OpponentsPage() {
           </div>
         ) : isCloud && cloudProfiles.length ? (
           <div className="grid grid-cols-1 gap-3">
-            {shownCloud.map((p) => (
-              <CloudProfileCard
-                key={p.opponentId}
-                p={p}
-                report={reports[p.opponentId]}
-                note={notes[p.alias]?.note ?? ""}
-                tag={notes[p.alias]?.tag ?? ""}
-                onSave={(patch) => onSaveNote(p.alias, patch)}
-                onGenReport={() => genReport(p)}
-              />
-            ))}
+            {shownCloud.map((p) => {
+              const et = effectiveTag(notes[p.alias]?.tag ?? "", p);
+              return (
+                <CloudProfileCard
+                  key={p.opponentId}
+                  p={p}
+                  report={reports[p.opponentId]}
+                  note={notes[p.alias]?.note ?? ""}
+                  tag={et.tag}
+                  tagAuto={et.auto}
+                  onSave={(patch) => onSaveNote(p.alias, patch)}
+                  onGenReport={() => genReport(p)}
+                />
+              );
+            })}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {shownLocal.map((p) => (
-              <LocalProfileCard
-                key={p.alias}
-                p={p}
-                note={notes[p.alias]?.note ?? ""}
-                tag={notes[p.alias]?.tag ?? ""}
-                onSave={(patch) => onSaveNote(p.alias, patch)}
-              />
-            ))}
+            {shownLocal.map((p) => {
+              const et = effectiveTag(notes[p.alias]?.tag ?? "", p);
+              return (
+                <LocalProfileCard
+                  key={p.alias}
+                  p={p}
+                  note={notes[p.alias]?.note ?? ""}
+                  tag={et.tag}
+                  tagAuto={et.auto}
+                  onSave={(patch) => onSaveNote(p.alias, patch)}
+                />
+              );
+            })}
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+// ---------- 概览仪表盘：画像分布 + 净额对比 ----------
+interface DashProfile {
+  alias: string;
+  archetype: string;
+  net: number;
+  hands: number;
+}
+
+const ARCHETYPE_HEX: Record<string, string> = {
+  "跟注站 · 过松": CHART_COLORS.amber,
+  "过紧 · 怕事": CHART_COLORS.sky,
+  被动: CHART_COLORS.neutral,
+  "激进 · 爱诈唬": CHART_COLORS.red,
+  "线路混乱": CHART_COLORS.fuchsia,
+  "翻牌易弃 · 可多偷": "#fb923c",
+  "爱看摊牌 · 黏": CHART_COLORS.violet,
+  "接近均衡（样本内）": CHART_COLORS.emerald,
+  样本不足: "#3f3f46",
+};
+const PALETTE = [CHART_COLORS.fuchsia, CHART_COLORS.sky, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.emerald, CHART_COLORS.red];
+
+function OverviewDashboard({ profiles }: { profiles: DashProfile[] }) {
+  const totalHands = profiles.reduce((s, p) => s + p.hands, 0);
+  const profiled = profiles.filter((p) => p.archetype !== "样本不足").length;
+
+  const arch = useMemo<DonutSlice[]>(() => {
+    const counts = new Map<string, number>();
+    for (const p of profiles) counts.set(p.archetype, (counts.get(p.archetype) ?? 0) + 1);
+    let pi = 0;
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, value]) => ({
+        name,
+        value,
+        color: ARCHETYPE_HEX[name] ?? PALETTE[pi++ % PALETTE.length],
+      }));
+  }, [profiles]);
+
+  const netBars = useMemo(
+    () =>
+      profiles
+        .filter((p) => Math.round(p.net) !== 0)
+        .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
+        .slice(0, 12)
+        .map((p) => ({ label: p.alias.length > 6 ? p.alias.slice(0, 6) + "…" : p.alias, value: Math.round(p.net) }))
+        .reverse(),
+    [profiles],
+  );
+
+  return (
+    <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <ChartCard title="对手画像分布" className="lg:col-span-1">
+        <Donut data={arch} height={168} centerTop={String(profiles.length)} centerSub="位对手" />
+        <div className="mt-3">
+          <Legend items={arch.slice(0, 6).map((a) => ({ label: `${a.name}·${a.value}`, color: a.color }))} />
+        </div>
+      </ChartCard>
+
+      <ChartCard
+        title="净额对比（对手视角，前 12）"
+        className="lg:col-span-2"
+        right={
+          <div className="flex gap-3 text-[11px]">
+            <span className="text-neutral-500">
+              观测 <span className="font-semibold text-neutral-300">{totalHands}</span> 手
+            </span>
+            <span className="text-neutral-500">
+              已画像 <span className="font-semibold text-neutral-300">{profiled}</span>/{profiles.length}
+            </span>
+          </div>
+        }
+      >
+        <NetBars data={netBars} height={188} />
+        <p className="mt-1 text-[10px] text-neutral-600">
+          正=对手赢（我方在其身上净输），负=对手输。样本偏向摊牌手，仅供参考。
+        </p>
+      </ChartCard>
     </div>
   );
 }
@@ -291,6 +402,7 @@ function CloudProfileCard({
   report,
   note,
   tag,
+  tagAuto,
   onSave,
   onGenReport,
 }: {
@@ -298,6 +410,7 @@ function CloudProfileCard({
   report?: OpponentReportRow;
   note: string;
   tag: string;
+  tagAuto: boolean;
   onSave: (patch: { note?: string; tag?: string }) => void;
   onGenReport: () => Promise<void>;
 }) {
@@ -319,10 +432,20 @@ function CloudProfileCard({
   return (
     <Card className="p-4">
       <div className="flex items-center gap-2">
-        <span className="truncate text-base font-bold text-neutral-100">{p.alias}</span>
+        <Link
+          href={`/opponents/${encodeURIComponent(p.opponentId)}`}
+          className="truncate text-base font-bold text-neutral-100 hover:text-fuchsia-300"
+        >
+          {p.alias}
+        </Link>
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${archCls(p.archetype)}`}>
           {p.archetype}
         </span>
+        {tag && (
+          <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-300" title={tagAuto ? "AI 智能标签" : "手动标签"}>
+            {tag}
+          </span>
+        )}
         <span className="ml-auto text-xs text-neutral-500">{p.hands} 手</span>
         {p.net !== 0 && (
           <span className={`text-sm font-semibold ${p.net > 0 ? "text-emerald-400" : "text-red-400"}`}>
@@ -330,6 +453,13 @@ function CloudProfileCard({
             {Math.round(p.net)}
           </span>
         )}
+        <Link
+          href={`/opponents/${encodeURIComponent(p.opponentId)}`}
+          className="flex items-center gap-0.5 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-neutral-300 transition hover:border-fuchsia-600/50 hover:text-fuchsia-300"
+        >
+          深度分析
+          <ArrowRight className="size-3" />
+        </Link>
       </div>
 
       {/* HUD 统计格 */}
@@ -386,11 +516,12 @@ function CloudProfileCard({
         {report && (
           <div className="mt-2 border-t border-white/[0.06] pt-2 text-sm">
             <Markdown>{report.report}</Markdown>
+            <ReportSources sources={report.sources} />
           </div>
         )}
       </div>
 
-      <NotesEditor note={note} tag={tag} onSave={onSave} />
+      <NotesEditor note={note} tag={tag} tagAuto={tagAuto} onSave={onSave} />
     </Card>
   );
 }
@@ -399,21 +530,31 @@ function LocalProfileCard({
   p,
   note,
   tag,
+  tagAuto,
   onSave,
 }: {
   p: OpponentProfile;
   note: string;
   tag: string;
+  tagAuto: boolean;
   onSave: (patch: { note?: string; tag?: string }) => void;
 }) {
   const leaks = Object.entries(p.leaks).sort((a, b) => b[1] - a[1]);
+  const href = `/opponents/${encodeURIComponent(`alias:${p.alias}`)}`;
   return (
     <Card className="p-4">
       <div className="flex items-center gap-2">
-        <span className="truncate text-base font-bold text-neutral-100">{p.alias}</span>
+        <Link href={href} className="truncate text-base font-bold text-neutral-100 hover:text-fuchsia-300">
+          {p.alias}
+        </Link>
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${archCls(p.archetype)}`}>
           {p.archetype}
         </span>
+        {tag && (
+          <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-300" title={tagAuto ? "AI 智能标签" : "手动标签"}>
+            {tag}
+          </span>
+        )}
         {p.net !== 0 && (
           <span className={`ml-auto text-sm font-semibold ${p.net > 0 ? "text-emerald-400" : "text-red-400"}`}>
             净 {p.net > 0 ? "+" : ""}
@@ -449,7 +590,14 @@ function LocalProfileCard({
           ))}
         </div>
       )}
-      <NotesEditor note={note} tag={tag} onSave={onSave} />
+      <Link
+        href={href}
+        className="mt-2 inline-flex items-center gap-0.5 text-xs text-fuchsia-300 hover:text-fuchsia-200"
+      >
+        深度分析（图表 + AI）
+        <ArrowRight className="size-3" />
+      </Link>
+      <NotesEditor note={note} tag={tag} tagAuto={tagAuto} onSave={onSave} />
     </Card>
   );
 }
@@ -457,10 +605,12 @@ function LocalProfileCard({
 function NotesEditor({
   note,
   tag,
+  tagAuto,
   onSave,
 }: {
   note: string;
   tag: string;
+  tagAuto?: boolean;
   onSave: (patch: { note?: string; tag?: string }) => void;
 }) {
   const [draft, setDraft] = useState(note);
@@ -474,6 +624,11 @@ function NotesEditor({
     <div className="mt-3 border-t border-white/[0.07] pt-3">
       <div className="mb-1.5 flex items-center gap-2">
         <span className="text-[11px] text-neutral-500">标签</span>
+        {tagAuto && tag && (
+          <span className="rounded bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] text-fuchsia-300" title="根据聚合统计自动推断，可手动覆盖">
+            AI 智能
+          </span>
+        )}
         <select
           value={tag}
           onChange={(e) => onSave({ tag: e.target.value })}

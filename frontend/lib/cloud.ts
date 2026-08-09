@@ -3,7 +3,7 @@
 import { getSupabase } from "./supabase";
 import type { Attempt } from "./progress";
 import type { RecordedHand } from "./battle";
-import type { ContribPlayer, IngestItem, OpponentCounters } from "./api";
+import type { ContribPlayer, IngestItem, KbSource, OpponentCounters } from "./api";
 import type { ImportEntry } from "./importHistory";
 import type { OppNote, OppNotes } from "./opponents";
 
@@ -409,6 +409,7 @@ export interface OpponentReportRow {
   model: string | null;
   basedOnHandCount: number;
   createdAt: string;
+  sources?: KbSource[]; // 报告接地的知识库来源（存于 stats_snapshot.sources）
 }
 
 /** 拉取当前用户的所有对手报告（opponent_id → report）。 */
@@ -421,26 +422,30 @@ export async function fetchOpponentReports(): Promise<Record<string, OpponentRep
   if (error || !data) return {};
   const out: Record<string, OpponentReportRow> = {};
   for (const r of data as {
-    opponent_id: string; report: string; model: string | null; based_on_hand_count: number; created_at: string;
+    opponent_id: string; report: string; model: string | null; based_on_hand_count: number;
+    created_at: string; stats_snapshot: { sources?: KbSource[] } | null;
   }[]) {
+    const snap = r.stats_snapshot;
     out[r.opponent_id] = {
       opponentId: r.opponent_id,
       report: r.report,
       model: r.model,
       basedOnHandCount: Number(r.based_on_hand_count) || 0,
       createdAt: r.created_at,
+      sources: snap && Array.isArray(snap.sources) ? snap.sources : undefined,
     };
   }
   return out;
 }
 
-/** 写入/更新单个对手的剥削报告（按样本量记录，供显著性门控）。 */
+/** 写入/更新单个对手的剥削报告（按样本量记录，供显著性门控）。sources 一并落库供复现。 */
 export async function upsertOpponentReport(
   opponentId: string,
   report: string,
   model: string,
   basedOnHandCount: number,
-  statsSnapshot?: unknown,
+  counters?: unknown,
+  sources?: KbSource[],
 ): Promise<void> {
   const sb = getSupabase();
   if (!sb) return;
@@ -453,7 +458,7 @@ export async function upsertOpponentReport(
       report,
       model,
       based_on_hand_count: basedOnHandCount,
-      stats_snapshot: statsSnapshot ?? null,
+      stats_snapshot: { counters: counters ?? null, sources: sources ?? [] },
     },
     { onConflict: "user_id,opponent_id" },
   );

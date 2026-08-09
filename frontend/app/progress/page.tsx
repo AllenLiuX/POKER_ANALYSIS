@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Markdown from "@/components/Markdown";
+import { CHART_COLORS, ChartCard, Donut, Legend, TrendArea, type DonutSlice } from "@/components/charts/Charts";
 
 const PREFLOP_SPOTS = new Set(["RFI", "vs_RFI"]);
 
@@ -86,9 +87,26 @@ function accColor(a: number): string {
   return "text-red-400";
 }
 
+/** 累计正确率序列（下采样到 ~40 点，避免过多刻度）。 */
+function accuracySeries(attempts: Attempt[]): { x: string; y: number }[] {
+  const n = attempts.length;
+  if (n === 0) return [];
+  const step = Math.max(1, Math.ceil(n / 40));
+  const out: { x: string; y: number }[] = [];
+  let correct = 0;
+  for (let i = 0; i < n; i++) {
+    if (attempts[i].correct) correct += 1;
+    if ((i + 1) % step === 0 || i === n - 1) {
+      out.push({ x: String(i + 1), y: Math.round((correct / (i + 1)) * 100) });
+    }
+  }
+  return out;
+}
+
 export default function ProgressPage() {
   const { enabled, user, signOut } = useAuth();
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [busy, setBusy] = useState(false);
   const [review, setReview] = useState<{
     text: string | null;
@@ -120,13 +138,16 @@ export default function ProgressPage() {
 
   const refresh = useCallback(async () => {
     setReview({ text: null, loading: false, error: null });
+    let list: Attempt[];
     if (cloud) {
       // 打开进度页时自动对账：补传任何本地有、云端还没有的手牌（含离线时写失败的）。
       await syncLocalToCloud(loadAttempts());
-      setSummary(summarize(await fetchCloudAttempts()));
+      list = await fetchCloudAttempts();
     } else {
-      setSummary(summarize(loadAttempts()));
+      list = loadAttempts();
     }
+    setAttempts(list);
+    setSummary(summarize(list));
   }, [cloud]);
 
   useEffect(() => {
@@ -229,11 +250,35 @@ export default function ProgressPage() {
             <BigStat label="最佳连对" value={String(summary.bestStreak)} />
           </section>
 
-          {/* 评级分布 */}
-          <section className="mb-6 rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5">
-            <h2 className="mb-3 text-sm font-semibold text-neutral-300">评级分布</h2>
-            <GradeBar summary={summary} />
-          </section>
+          {/* 图表：评级分布 + 正确率趋势 */}
+          <div className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <ChartCard title="评级分布">
+              <Donut
+                data={gradeDonut(summary)}
+                height={168}
+                centerTop={pct(summary.accuracy)}
+                centerSub="正确率"
+              />
+              <div className="mt-3">
+                <Legend
+                  items={gradeDonut(summary).map((g) => ({ label: `${g.name} ${g.value}`, color: g.color }))}
+                />
+              </div>
+            </ChartCard>
+            <ChartCard title="正确率趋势（累计）">
+              <TrendArea
+                data={accuracySeries(attempts)}
+                color={CHART_COLORS.emerald}
+                height={168}
+                yDomain={[0, 100]}
+                yTickFormatter={(v) => `${v}%`}
+                refY={Math.round(summary.accuracy * 100)}
+              />
+              <p className="mt-1 text-[10px] text-neutral-600">
+                横轴为累计手数；虚线为当前总正确率 {pct(summary.accuracy)}。
+              </p>
+            </ChartCard>
+          </div>
 
           {/* 分训练类型 / 位置 */}
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -346,41 +391,13 @@ function BigStat({
   );
 }
 
-function GradeBar({ summary }: { summary: Summary }) {
-  const { byGrade, total } = summary;
-  const segs: { key: string; label: string; color: string; n: number }[] = [
-    { key: "optimal", label: "最优", color: "#10b981", n: byGrade.optimal },
-    { key: "acceptable", label: "可接受", color: "#f59e0b", n: byGrade.acceptable },
-    { key: "mistake", label: "偏离", color: "#dc2626", n: byGrade.mistake },
-  ];
-  return (
-    <>
-      <div className="flex h-4 w-full overflow-hidden rounded-full bg-neutral-800">
-        {segs.map((s) =>
-          s.n > 0 ? (
-            <div
-              key={s.key}
-              style={{ width: `${(s.n / total) * 100}%`, backgroundColor: s.color }}
-              title={`${s.label} ${s.n}`}
-            />
-          ) : null,
-        )}
-      </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        {segs.map((s) => (
-          <span key={s.key} className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: s.color }}
-            />
-            <span className="text-neutral-300">
-              {s.label} {s.n}（{total ? pct(s.n / total) : "0%"}）
-            </span>
-          </span>
-        ))}
-      </div>
-    </>
-  );
+function gradeDonut(summary: Summary): DonutSlice[] {
+  const { byGrade } = summary;
+  return [
+    { name: "最优", value: byGrade.optimal, color: CHART_COLORS.emerald },
+    { name: "可接受", value: byGrade.acceptable, color: CHART_COLORS.amber },
+    { name: "偏离", value: byGrade.mistake, color: CHART_COLORS.red },
+  ].filter((s) => s.value > 0);
 }
 
 function BucketTable({

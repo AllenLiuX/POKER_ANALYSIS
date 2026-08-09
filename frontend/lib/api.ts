@@ -662,6 +662,14 @@ export async function postIngestContributions(
   return res.json();
 }
 
+/** 知识库来源（AI 报告接地的德州策略参考资料）。 */
+export interface KbSource {
+  n: string;
+  title: string;
+  url: string;
+  concept: string;
+}
+
 /** 逐对手剥削报告（接地于服务端聚合计数器；LLM 只据数字解释）。 */
 export async function postOpponentReport(body: {
   alias: string;
@@ -670,7 +678,14 @@ export async function postOpponentReport(body: {
   counters: OpponentCounters | Record<string, unknown>;
   tag?: string | null;
   note?: string | null;
-}): Promise<{ report: string; lines: string[]; hands: number; net: number | null }> {
+}): Promise<{
+  report: string;
+  lines: string[];
+  hands: number;
+  net: number | null;
+  concepts?: string[];
+  sources?: KbSource[];
+}> {
   const res = await fetch(`${API_BASE}/api/ingest/opponent_report`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

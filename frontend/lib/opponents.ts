@@ -159,7 +159,7 @@ export interface StatCell {
 }
 
 // 群体基线先验（用于小样本收缩，非精确 GTO，仅防止早期估计乱跳）
-const BASE = {
+export const BASE = {
   foldVsOpen: 0.5, callVsOpen: 0.32, threebet: 0.1,
   pfOpen: 0.4, afPost: 0.45, cbet: 0.55, foldVsCbet: 0.45, wtsd: 0.28, wonSd: 0.5,
 };
@@ -261,6 +261,137 @@ function classifyCloud(p: CloudProfile): string {
 
 function afTotalOK(p: CloudProfile): boolean {
   return p.afPost.n >= 6;
+}
+
+// ---- 雷达图 / 频率条派生（对手详情页用） ----
+
+/** 雷达图数据：每个维度以「基线=50」归一，>50 表示高于群体基线。 */
+export interface RadarStat {
+  stat: string;
+  value: number; // 0..100（相对基线，50=基线）
+  baseline: number; // 恒为 50
+  raw: number | null; // 收缩后原始频率
+  base: number; // 群体基线频率
+  n: number;
+}
+
+export function radarStats(p: CloudProfile): RadarStat[] {
+  const norm = (shrunk: number | null, base: number): number =>
+    shrunk == null ? 50 : Math.max(4, Math.min(100, (shrunk / base) * 50));
+  const mk = (stat: string, cell: StatCell, base: number): RadarStat => ({
+    stat,
+    value: norm(cell.shrunk, base),
+    baseline: 50,
+    raw: cell.shrunk,
+    base,
+    n: cell.n,
+  });
+  return [
+    mk("弃vs开池", p.vsOpen.fold, BASE.foldVsOpen),
+    mk("3bet", p.vsOpen.threebet, BASE.threebet),
+    mk("c-bet", p.cbet, BASE.cbet),
+    mk("弃vsC-bet", p.foldVsCbet, BASE.foldVsCbet),
+    mk("翻后激进", p.afPost, BASE.afPost),
+    mk("看摊牌", p.wtsd, BASE.wtsd),
+  ];
+}
+
+/** 频率条数据：展示收缩后频率、群体基线、样本量与偏离方向。 */
+export interface FreqRow {
+  label: string;
+  cell: StatCell;
+  base: number;
+  hint?: string;
+}
+
+export function freqRows(p: CloudProfile): FreqRow[] {
+  return [
+    { label: "首入池开池 (open)", cell: p.pfOpen, base: BASE.pfOpen, hint: "越高越松" },
+    { label: "面对开池 · 弃牌", cell: p.vsOpen.fold, base: BASE.foldVsOpen, hint: "越高越可偷" },
+    { label: "面对开池 · 跟注", cell: p.vsOpen.call, base: BASE.callVsOpen, hint: "越高越黏" },
+    { label: "面对开池 · 3bet", cell: p.vsOpen.threebet, base: BASE.threebet, hint: "越高越激进" },
+    { label: "翻牌 c-bet", cell: p.cbet, base: BASE.cbet },
+    { label: "面对 c-bet 弃牌", cell: p.foldVsCbet, base: BASE.foldVsCbet, hint: "越高越可诈唬" },
+    { label: "翻后激进度 (AF)", cell: p.afPost, base: BASE.afPost },
+    { label: "看到摊牌 (WTSD)", cell: p.wtsd, base: BASE.wtsd, hint: "越高越少弃牌" },
+  ];
+}
+
+// ---------- 智能标签（根据聚合信息自动推断）----------
+
+/** 由画像 + 净额 + 手数自动推断一个粗粒度标签（对应 OPP_TAGS 之一）。样本不足则返回空。 */
+export function autoTag(p: {
+  archetype: string;
+  net?: number;
+  hands?: number;
+  leaks?: Record<string, number>;
+}): string {
+  const hands = p.hands ?? 0;
+  const net = p.net ?? 0;
+  const a = p.archetype || "";
+  if (hands < 3 || a === "样本不足") return "";
+  if (a.includes("过松") || a.includes("跟注站") || a.includes("黏"))
+    return net <= -1500 ? "鱼/娱乐" : "跟注站";
+  if (a.includes("激进")) return "激进/疯";
+  if (a.includes("过紧") || a.includes("被动") || a.includes("易弃")) return "紧弱";
+  if (a.includes("线路混乱")) return "鱼/娱乐";
+  if (a.includes("均衡")) return net >= 1500 ? "危险/强" : "常规";
+  return "常规";
+}
+
+/** 用户手设标签优先；否则用智能标签（auto=true 表示是自动推断的）。 */
+export function effectiveTag(
+  userTag: string,
+  p: { archetype: string; net?: number; hands?: number; leaks?: Record<string, number> },
+): { tag: string; auto: boolean } {
+  if (userTag) return { tag: userTag, auto: false };
+  const t = autoTag(p);
+  return { tag: t, auto: !!t };
+}
+
+// ---------- 本地画像（无云端聚合时，用导入历史里内嵌的贡献计数器现算）----------
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function deepAdd(acc: Record<string, unknown>, add: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(add)) {
+    if (typeof v === "number") {
+      acc[k] = (typeof acc[k] === "number" ? (acc[k] as number) : 0) + v;
+    } else if (isPlainObject(v)) {
+      if (!isPlainObject(acc[k])) acc[k] = {};
+      deepAdd(acc[k] as Record<string, unknown>, v);
+    }
+  }
+}
+
+/** 从导入历史里为某 alias 现算一个 CloudProfile（求和内嵌 contributions）。无匹配手返回 null。 */
+export function buildLocalCloudProfile(history: ImportEntry[], alias: string): CloudProfile | null {
+  const counters: Record<string, unknown> = {};
+  let net = 0;
+  let hands = 0;
+  let ts = 0;
+  for (const e of history) {
+    const it = e.item;
+    if (!it?.ok || !it.analysis?.supported) continue;
+    const ap = it.analysis.players.find((p) => !p.is_hero && (p.alias || "").trim() === alias);
+    if (!ap) continue;
+    hands += 1;
+    ts = Math.max(ts, e.ts);
+    if (typeof ap.net === "number") net += ap.net;
+    const cp = it.contributions?.players?.find((p) => !p.is_hero && (p.alias || "").trim() === alias);
+    if (cp?.counters) deepAdd(counters, cp.counters as unknown as Record<string, unknown>);
+  }
+  if (hands === 0) return null;
+  return deriveCloudProfile({
+    opponentId: `alias:${alias}`,
+    alias,
+    handCount: hands,
+    net,
+    counters: counters as unknown as OpponentCounters,
+    updatedAt: ts || Date.now(),
+  });
 }
 
 // ---------- 备注 / 标签（本地持久化）----------
