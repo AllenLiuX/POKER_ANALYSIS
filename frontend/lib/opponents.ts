@@ -263,6 +263,90 @@ function afTotalOK(p: CloudProfile): boolean {
   return p.afPost.n >= 6;
 }
 
+// ---- GTO 偏移标签：由收缩后频率 vs 群体基线派生，带样本门控，一眼看出偏离方向 ----
+
+export type DevCat = "tight" | "loose" | "aggro"; // 偏紧/被动 · 偏松/黏 · 偏凶
+export interface DevFlag {
+  key: string;
+  label: string;
+  cat: DevCat;
+  severity: number; // 相对基线的偏离幅度（排序用）
+  hint: string; // 剥削建议（tooltip）
+}
+
+interface DevRule {
+  key: string;
+  get: (p: CloudProfile) => StatCell;
+  base: number;
+  gate: number; // 触发所需的最小原始样本 n
+  high?: { t: number; label: string; cat: DevCat; hint: string };
+  low?: { t: number; label: string; cat: DevCat; hint: string };
+}
+
+const DEV_RULES: DevRule[] = [
+  {
+    key: "pfOpen", get: (p) => p.pfOpen, base: BASE.pfOpen, gate: 6,
+    high: { t: 0.55, label: "开池过松", cat: "loose", hint: "他开池太宽——收紧跟注、放心 3bet 施压。" },
+    low: { t: 0.25, label: "开池过紧", cat: "tight", hint: "他只开强牌——尊重其加注，别轻易反抗。" },
+  },
+  {
+    key: "foldVsOpen", get: (p) => p.vsOpen.fold, base: BASE.foldVsOpen, gate: 6,
+    high: { t: 0.66, label: "面对开池过度弃牌", cat: "tight", hint: "他面对开池弃太多——扩大偷盲/开池范围。" },
+    low: { t: 0.34, label: "面对开池防守过宽", cat: "loose", hint: "他很少弃牌——减少诈唬，价值下注更薄更多。" },
+  },
+  {
+    key: "callVsOpen", get: (p) => p.vsOpen.call, base: BASE.callVsOpen, gate: 6,
+    high: { t: 0.46, label: "冷跟过多", cat: "loose", hint: "他跟注过宽——加大价值下注、少诈唬。" },
+  },
+  {
+    key: "threebet", get: (p) => p.vsOpen.threebet, base: BASE.threebet, gate: 8,
+    high: { t: 0.17, label: "3bet 过频", cat: "aggro", hint: "他 3bet 太多——用更强范围 4bet/跟注反击。" },
+    low: { t: 0.035, label: "几乎不 3bet", cat: "tight", hint: "他几乎不 3bet——放心开池偷盲。" },
+  },
+  {
+    key: "cbet", get: (p) => p.cbet, base: BASE.cbet, gate: 5,
+    high: { t: 0.74, label: "c-bet 过多", cat: "aggro", hint: "他翻牌乱开火——多 check-raise/浮动惩罚。" },
+    low: { t: 0.38, label: "c-bet 过少", cat: "tight", hint: "他常放弃主动权——他过牌时多偷。" },
+  },
+  {
+    key: "foldVsCbet", get: (p) => p.foldVsCbet, base: BASE.foldVsCbet, gate: 4,
+    high: { t: 0.62, label: "面对 c-bet 过度弃牌", cat: "tight", hint: "他面对 c-bet 弃太多——高频小注诈唬。" },
+    low: { t: 0.28, label: "面对 c-bet 很少弃(黏)", cat: "loose", hint: "他很黏——减少诈唬、纯价值加注。" },
+  },
+  {
+    key: "afPost", get: (p) => p.afPost, base: BASE.afPost, gate: 6,
+    high: { t: 0.62, label: "翻后过度激进", cat: "aggro", hint: "他翻后过凶——多抓诈/轻跟。" },
+    low: { t: 0.30, label: "翻后过于被动", cat: "tight", hint: "他翻后被动——多价值下注，遇加注多让路。" },
+  },
+  {
+    key: "wtsd", get: (p) => p.wtsd, base: BASE.wtsd, gate: 6,
+    high: { t: 0.40, label: "看摊牌过多(黏)", cat: "loose", hint: "他爱看摊牌——价值下注更薄、少诈唬。" },
+    low: { t: 0.17, label: "看摊牌过少(易弃)", cat: "tight", hint: "他常弃到河牌——多桶诈唬。" },
+  },
+  {
+    key: "wonSd", get: (p) => p.wonSd, base: BASE.wonSd, gate: 6,
+    low: { t: 0.42, label: "摊牌胜率偏低(跟太宽)", cat: "loose", hint: "他到摊牌常输——加大价值下注的频率与厚度。" },
+  },
+];
+
+/** 由收缩后频率派生 GTO 偏移标签（按偏离幅度排序，最多 6 个）。 */
+export function deviationTags(p: CloudProfile): DevFlag[] {
+  const out: DevFlag[] = [];
+  for (const r of DEV_RULES) {
+    const cell = r.get(p);
+    if (cell.n < r.gate || cell.shrunk == null) continue;
+    const v = cell.shrunk;
+    const denom = Math.max(0.05, r.base);
+    if (r.high && v >= r.high.t) {
+      out.push({ key: r.key, label: r.high.label, cat: r.high.cat, hint: r.high.hint, severity: (v - r.base) / denom });
+    } else if (r.low && v <= r.low.t) {
+      out.push({ key: r.key, label: r.low.label, cat: r.low.cat, hint: r.low.hint, severity: (r.base - v) / denom });
+    }
+  }
+  out.sort((a, b) => b.severity - a.severity);
+  return out.slice(0, 6);
+}
+
 // ---- 雷达图 / 频率条派生（对手详情页用） ----
 
 /** 雷达图数据：每个维度以「基线=50」归一，>50 表示高于群体基线。 */

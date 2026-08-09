@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import Markdown from "@/components/Markdown";
 import ReportSources from "@/components/ReportSources";
+import DeviationFlags from "@/components/DeviationFlags";
 import {
   CHART_COLORS,
   ChartCard,
@@ -17,7 +18,7 @@ import {
   type DonutSlice,
 } from "@/components/charts/Charts";
 import { postOpponentReport } from "@/lib/api";
-import { loadImportHistory, mergeImportEntries } from "@/lib/importHistory";
+import { loadImportHistory, mergeImportEntries, type ImportEntry } from "@/lib/importHistory";
 import {
   cloudReady,
   fetchCloudImports,
@@ -31,8 +32,10 @@ import {
   type OpponentReportRow,
 } from "@/lib/cloud";
 import {
+  buildLocalCloudProfile,
   buildOpponentProfiles,
   deriveCloudProfile,
+  deviationTags,
   effectiveTag,
   loadOppNotes,
   mergeOppNotes,
@@ -40,6 +43,7 @@ import {
   saveOppNote,
   syncEntryToProfiles,
   type CloudProfile,
+  type DevFlag,
   type OppNotes,
   type OpponentProfile,
   type StatCell,
@@ -67,6 +71,7 @@ const REPORT_STALE_AFTER = 8;
 export default function OpponentsPage() {
   const [cloudProfiles, setCloudProfiles] = useState<CloudProfile[]>([]);
   const [localProfiles, setLocalProfiles] = useState<OpponentProfile[]>([]);
+  const [history, setHistory] = useState<ImportEntry[]>([]);
   const [reports, setReports] = useState<Record<string, OpponentReportRow>>({});
   const [notes, setNotes] = useState<OppNotes>({});
   const [query, setQuery] = useState("");
@@ -82,6 +87,7 @@ export default function OpponentsPage() {
   }, []);
 
   useEffect(() => {
+    setHistory(loadImportHistory());
     setLocalProfiles(buildOpponentProfiles(loadImportHistory()));
     setNotes(loadOppNotes());
     (async () => {
@@ -98,6 +104,7 @@ export default function OpponentsPage() {
         await syncLocalImportsToCloud(loadImportHistory());
         const cloud = await fetchCloudImports();
         const merged = cloud.length ? mergeImportEntries(cloud) : loadImportHistory();
+        setHistory(merged);
         setLocalProfiles(buildOpponentProfiles(merged));
       } catch {
         /* ignore */
@@ -169,6 +176,16 @@ export default function OpponentsPage() {
 
   const total = isCloud && cloudProfiles.length ? cloudProfiles.length : localProfiles.length;
   const canBackfill = isCloud && localProfiles.length > 0;
+
+  // 本地模式下，用导入历史现算每个 alias 的收缩频率 → GTO 偏移标签。
+  const localFlags = useMemo<Record<string, DevFlag[]>>(() => {
+    const out: Record<string, DevFlag[]> = {};
+    for (const p of localProfiles) {
+      const cp = buildLocalCloudProfile(history, p.alias);
+      if (cp) out[p.alias] = deviationTags(cp);
+    }
+    return out;
+  }, [localProfiles, history]);
 
   // 仪表盘用的通用画像视图（云端优先，否则本地）。
   const dashProfiles = useMemo<DashProfile[]>(() => {
@@ -282,6 +299,7 @@ export default function OpponentsPage() {
                 <LocalProfileCard
                   key={p.alias}
                   p={p}
+                  flags={localFlags[p.alias] ?? []}
                   note={notes[p.alias]?.note ?? ""}
                   tag={et.tag}
                   tagAuto={et.auto}
@@ -415,6 +433,7 @@ function CloudProfileCard({
   onGenReport: () => Promise<void>;
 }) {
   const [gen, setGen] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
+  const flags = deviationTags(p);
   const leaks = Object.entries(p.leaks).sort((a, b) => b[1] - a[1]);
   const stale = !report || p.hands - report.basedOnHandCount >= REPORT_STALE_AFTER;
   const preAcc = p.gradedPre.n > 0 ? Math.round(((p.gradedPre.n - p.gradedPre.mistakes) / p.gradedPre.n) * 100) : null;
@@ -474,6 +493,13 @@ function CloudProfileCard({
         <Stat label="看摊牌" cell={p.wtsd} />
       </div>
 
+      {flags.length > 0 && (
+        <div className="mt-2.5">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">GTO 偏移</div>
+          <DeviationFlags flags={flags} />
+        </div>
+      )}
+
       {(leaks.length > 0 || preAcc != null) && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {preAcc != null && (
@@ -528,12 +554,14 @@ function CloudProfileCard({
 
 function LocalProfileCard({
   p,
+  flags,
   note,
   tag,
   tagAuto,
   onSave,
 }: {
   p: OpponentProfile;
+  flags: DevFlag[];
   note: string;
   tag: string;
   tagAuto: boolean;
@@ -581,6 +609,12 @@ function LocalProfileCard({
           </span>
         )}
       </div>
+      {flags.length > 0 && (
+        <div className="mt-2.5">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">GTO 偏移</div>
+          <DeviationFlags flags={flags} />
+        </div>
+      )}
       {leaks.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {leaks.map(([k, v]) => (

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import Markdown from "@/components/Markdown";
 import ReportSources from "@/components/ReportSources";
+import DeviationFlags from "@/components/DeviationFlags";
 import { CHART_COLORS, ChartCard, TendencyRadar, TrendArea } from "@/components/charts/Charts";
 import { postOpponentReport } from "@/lib/api";
 import { loadImportHistory, mergeImportEntries, type ImportEntry } from "@/lib/importHistory";
@@ -23,6 +24,7 @@ import {
 import {
   buildLocalCloudProfile,
   deriveCloudProfile,
+  deviationTags,
   effectiveTag,
   freqRows,
   loadOppNotes,
@@ -158,6 +160,7 @@ export default function OpponentDetailPage() {
     );
 
   const et = effectiveTag(tag, profile);
+  const flags = deviationTags(profile);
   const radar = radarStats(profile);
   const rows = freqRows(profile);
   const leaks = Object.entries(profile.leaks).sort((a, b) => b[1] - a[1]);
@@ -206,6 +209,21 @@ export default function OpponentDetailPage() {
           <Kpi label="看摊牌" value={cellPct(profile.wtsd.shrunk)} sub={`n${profile.wtsd.n}`} />
           <Kpi label="翻后激进" value={cellPct(profile.afPost.shrunk)} sub={`n${profile.afPost.n}`} />
         </section>
+
+        {/* GTO 偏移一览 */}
+        {flags.length > 0 && (
+          <section className="mb-4 rounded-2xl border border-white/[0.07] bg-neutral-900/50 p-4">
+            <h2 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+              GTO 偏移一览 · 悬停看剥削建议
+            </h2>
+            <DeviationFlags flags={flags} />
+            <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-neutral-600">
+              <span className="flex items-center gap-1"><span className="size-1.5 rounded-full bg-sky-400" />偏紧/被动</span>
+              <span className="flex items-center gap-1"><span className="size-1.5 rounded-full bg-amber-400" />偏松/黏</span>
+              <span className="flex items-center gap-1"><span className="size-1.5 rounded-full bg-red-400" />偏凶</span>
+            </div>
+          </section>
+        )}
 
         {/* 雷达 + 频率条 */}
         <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
