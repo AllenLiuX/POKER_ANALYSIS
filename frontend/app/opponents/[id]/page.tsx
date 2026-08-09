@@ -37,7 +37,8 @@ const LEAK_LABEL: Record<string, string> = {
   too_tight: "过紧", too_loose: "过松", too_passive: "太被动",
   too_aggressive: "太激进", line_error: "线路偏差",
 };
-const STREET_LABEL: Record<string, string> = { preflop: "翻前", flop: "翻牌", turn: "转牌", river: "河牌" };
+// 重建/偏离里的 street 已是中文街道标签（翻前/翻牌/转牌/河牌）。
+const STREET_ORDER = ["翻前", "翻牌", "转牌", "河牌"];
 
 interface HandRow {
   ts: number;
@@ -62,8 +63,8 @@ export default function OpponentDetailPage() {
   useEffect(() => {
     (async () => {
       try {
-        // 手牌历史（云端+本地合并）——同时用于本地画像现算与相关手牌清单。
-        const hist = mergeImportEntries(await fetchCloudImports().catch(() => loadImportHistory()));
+        // 手牌历史（云端+本地合并 → 按手去重）——同时用于本地画像现算与相关手牌清单。
+        const hist = dedupByHand(mergeImportEntries(await fetchCloudImports().catch(() => loadImportHistory())));
         const [aggs, reps] = await Promise.all([
           fetchOpponentAggregates().catch(() => []),
           fetchOpponentReports().catch(() => ({}) as Record<string, OpponentReportRow>),
@@ -396,6 +397,43 @@ function HandItem({ h }: { h: HandRow }) {
   );
 }
 
+/** 把 {街道, 标签} 列表按街聚合成一行可读行动线（街道已是中文标签）。 */
+function streetLine(items: { street: string | null; label: string }[]): string {
+  const clean = items.filter((it) => it.label);
+  if (!clean.length) return "";
+  const byStreet = new Map<string, string[]>();
+  for (const it of clean) {
+    const st = it.street || "翻前";
+    if (!byStreet.has(st)) byStreet.set(st, []);
+    byStreet.get(st)!.push(it.label);
+  }
+  const known = STREET_ORDER.filter((s) => byStreet.has(s));
+  const extra = [...byStreet.keys()].filter((s) => !STREET_ORDER.includes(s));
+  return [...known, ...extra].map((s) => `${s}: ${byStreet.get(s)!.join("·")}`).join("  |  ");
+}
+
+/** 稳定手牌键：优先 hand_id，否则用 board+底池的签名（用于跨云端/本地去重）。 */
+function handKey(e: ImportEntry): string {
+  const hid = e.item?.facts?.hand_id?.trim();
+  if (hid) return `hid:${hid}`;
+  const board = (e.item?.reconstruction?.board ?? e.item?.facts?.board ?? []).join("");
+  const pot = e.item?.facts?.pot ?? "";
+  return `sig:${board}|${pot}`;
+}
+
+/** 合并后的历史里，同一手可能同时来自云端与本地（id 不同）。按手去重，保留信息更全的一条。 */
+function dedupByHand(history: ImportEntry[]): ImportEntry[] {
+  const richness = (e: ImportEntry): number =>
+    (e.item?.reconstruction?.players?.some((p) => p.actions?.length) ? 2 : 0) + (e.thumb ? 1 : 0);
+  const map = new Map<string, ImportEntry>();
+  for (const e of history) {
+    const key = handKey(e);
+    const prev = map.get(key);
+    if (!prev || richness(e) > richness(prev)) map.set(key, e);
+  }
+  return [...map.values()];
+}
+
 /** 从导入历史里抽取某对手参与的手牌（board + 该对手的行动线 + 净额）。 */
 function collectHands(history: ImportEntry[], alias: string): HandRow[] {
   const out: HandRow[] = [];
@@ -405,20 +443,15 @@ function collectHands(history: ImportEntry[], alias: string): HandRow[] {
     const ap = it.analysis.players.find((p) => !p.is_hero && (p.alias || "").trim() === alias);
     if (!ap) continue;
     const board = it.reconstruction?.board ?? it.facts?.board ?? [];
-    // 行动线：从重建里找同 alias 的玩家，按街聚合标签
-    let line = "";
+    // 行动线：优先重建里的逐街动作，缺失则退回偏离标注里的动作。
     const rp = it.reconstruction?.players.find((p) => (p.alias || "").trim() === alias);
-    if (rp && rp.actions.length) {
-      const byStreet = new Map<string, string[]>();
-      for (const a of rp.actions) {
-        const st = a.street ?? "preflop";
-        if (!byStreet.has(st)) byStreet.set(st, []);
-        byStreet.get(st)!.push(a.label || a.action);
-      }
-      line = ["preflop", "flop", "turn", "river"]
-        .filter((st) => byStreet.has(st))
-        .map((st) => `${STREET_LABEL[st] ?? st}: ${byStreet.get(st)!.join("·")}`)
-        .join("  |  ");
+    let line = rp
+      ? streetLine(rp.actions.map((a) => ({ street: a.street, label: a.label || a.action })))
+      : "";
+    if (!line && ap.deviations?.length) {
+      line = streetLine(
+        ap.deviations.map((d) => ({ street: d.street || null, label: d.actual_label || d.actual || "" })),
+      );
     }
     out.push({ ts: e.ts, board, net: ap.net, line, thumb: e.thumb });
   }
