@@ -152,3 +152,35 @@ def test_opponent_report_grounds_with_kb(kb_env, monkeypatch):
     assert body["sources"], "应返回参考资料来源"
     assert body["concepts"], "应返回命中的概念标签"
     assert "策略参考资料" in captured["prompt"]  # 参考资料确实注入了 prompt
+
+
+def test_opponent_report_thin_sample_still_reports(kb_env, monkeypatch):
+    """一手数据也应能生成（初步、低置信）剥削报告，且注入逐手观测。"""
+    monkeypatch.setattr(retrieve.search, "search", lambda q, **kw: _fake_docs(1))
+    from app.api import exploit as exploit_mod
+
+    captured = {}
+
+    class FakeProvider:
+        gateway_ready = True
+        openai_ready = True
+
+        def text(self, prompt, system=None, max_tokens=None, model=None):
+            captured["prompt"] = prompt
+            return "- 【低置信】初步读牌：对手是娱乐鱼，默认扩大价值下注。"
+
+    monkeypatch.setattr(exploit_mod, "get_provider", lambda: FakeProvider())
+    payload = {
+        "alias": "Whale",
+        "hands": 1,
+        "net": -260,
+        "counters": {},  # 无可量化聚合频率
+        "hand_notes": ["#1 板[Ah Kd 7s]｜BTN｜翻前:加注 翻牌:c-bet｜净-260｜摊牌:9h9c"],
+    }
+    r = client.post("/api/ingest/opponent_report", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["report"].strip()
+    assert "逐手观测" in captured["prompt"]
+    assert "初步" in captured["prompt"]  # 走的是薄样本 → 初步读牌指令
+    assert "9h9c" in captured["prompt"]  # 具体一手确实进了 prompt

@@ -8,6 +8,7 @@ import {
   Camera,
   Club,
   Crosshair,
+  Gift,
   LayoutGrid,
   Spade,
   TrendingUp,
@@ -83,6 +84,33 @@ export default function Home() {
       />
 
       <main className="mx-auto max-w-6xl px-6 py-8">
+        {/* 限免公告 */}
+        <div className="mb-8 mt-2 flex flex-col gap-3 overflow-hidden rounded-2xl border border-amber-500/30 bg-gradient-to-r from-amber-500/[0.10] via-amber-500/[0.04] to-transparent p-4 sm:flex-row sm:items-center sm:gap-4 sm:p-5">
+          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-400/15 text-amber-300 ring-1 ring-amber-400/30">
+            <Gift className="size-6" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-amber-400/20 px-2.5 py-0.5 text-xs font-bold tracking-wide text-amber-200 ring-1 ring-amber-400/30">
+                限时免费
+              </span>
+              <h2 className="text-base font-bold text-neutral-100 sm:text-lg">
+                全部功能现正限时免费开放
+              </h2>
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-neutral-400">
+              翻前 / 翻后训练、截图导入、对手档案、AI 剥削分析等全部功能，限免期间不收取任何费用。
+              预计 <span className="font-semibold text-amber-200">2026 年 9 月</span> 起转为付费——现在开练，抢先占位。
+            </p>
+          </div>
+          <Link
+            href="/trainer"
+            className="shrink-0 rounded-xl bg-amber-400 px-4 py-2.5 text-center text-sm font-semibold text-amber-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-300"
+          >
+            立即免费体验
+          </Link>
+        </div>
+
         {/* Hero */}
         <section className="mb-16 mt-6">
           <div className="inline-flex items-center gap-2 rounded-full border border-emerald-800/50 bg-emerald-950/30 px-3 py-1 text-xs text-emerald-300">

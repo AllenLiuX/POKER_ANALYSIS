@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Info, Sparkles } from "lucide-react";
+import { ArrowLeft, Info, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -11,25 +11,37 @@ import Markdown from "@/components/Markdown";
 import ReportSources from "@/components/ReportSources";
 import DeviationFlags from "@/components/DeviationFlags";
 import { CHART_COLORS, ChartCard, TendencyRadar, TrendArea } from "@/components/charts/Charts";
+import { HandLine } from "@/components/HandView";
 import { postOpponentReport } from "@/lib/api";
-import { loadImportHistory, mergeImportEntries, type ImportEntry } from "@/lib/importHistory";
+import {
+  loadImportHistory,
+  mergeImportEntries,
+  patchImportItems,
+  type ImportEntry,
+} from "@/lib/importHistory";
 import {
   fetchCloudImports,
   fetchOpponentAggregates,
   fetchOpponentReports,
+  upsertImportEntry,
   upsertOpponentNote,
   upsertOpponentReport,
   type OpponentReportRow,
 } from "@/lib/cloud";
 import {
   buildLocalCloudProfile,
+  dedupByHand,
   deriveCloudProfile,
   deviationTags,
   effectiveTag,
+  ensureContributions,
   freqRows,
+  loadLocalReport,
   loadOppNotes,
   OPP_TAGS,
+  opponentHandNotes,
   radarStats,
+  saveLocalReport,
   saveOppNote,
   type CloudProfile,
   type FreqRow,
@@ -46,7 +58,7 @@ interface HandRow {
   ts: number;
   board: string[];
   net: number | null;
-  line: string;
+  lines: { street: string; text: string }[];
   thumb: string | null;
 }
 
@@ -57,43 +69,93 @@ export default function OpponentDetailPage() {
   const [profile, setProfile] = useState<CloudProfile | null>(null);
   const [report, setReport] = useState<OpponentReportRow | undefined>();
   const [hands, setHands] = useState<HandRow[]>([]);
+  const [rawHist, setRawHist] = useState<ImportEntry[]>([]);
   const [note, setNote] = useState("");
   const [tag, setTag] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "notfound">("loading");
   const [gen, setGen] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
+  const [zoom, setZoom] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setZoom(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoom]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // 用一份画像 + 历史即时渲染（首屏不阻塞在云端/回填上）。
+    const apply = (prof: CloudProfile, hist: ImportEntry[], reps: Record<string, OpponentReportRow>) => {
+      if (cancelled) return;
+      setRawHist(hist);
+      setProfile(prof);
+      const cloudRep = reps[prof.opponentId] ?? reps[rawId];
+      const localRep = loadLocalReport(prof.alias);
+      setReport(cloudRep ?? (localRep ? { opponentId: prof.opponentId, ...localRep } : undefined));
+      const n = loadOppNotes()[prof.alias];
+      setNote(n?.note ?? "");
+      setTag(n?.tag ?? "");
+      setHands(collectHands(hist, prof.alias));
+      setStatus("ready");
+    };
+
+    // 1) 本地即时兜底：alias 链接可直接现算，先出画像（避免长时间「加载中」）。
+    if (aliasHint) {
+      const localHist = dedupByHand(loadImportHistory());
+      const p0 = buildLocalCloudProfile(localHist, aliasHint);
+      if (p0) apply(p0, localHist, {});
+    }
+
+    // 2) 云端补全 + 后台回填 contributions，完成后刷新画像。
     (async () => {
       try {
-        // 手牌历史（云端+本地合并 → 按手去重）——同时用于本地画像现算与相关手牌清单。
-        const hist = dedupByHand(mergeImportEntries(await fetchCloudImports().catch(() => loadImportHistory())));
+        const cloud = await fetchCloudImports().catch(() => [] as ImportEntry[]);
+        const local = loadImportHistory();
+        if (cloud.length) { try { mergeImportEntries(cloud); } catch { /* ignore */ } }
+        const hist = dedupByHand([...local, ...cloud]);
         const [aggs, reps] = await Promise.all([
           fetchOpponentAggregates().catch(() => []),
           fetchOpponentReports().catch(() => ({}) as Record<string, OpponentReportRow>),
         ]);
-        // 优先云端权威聚合；无则用 alias 从导入历史现算本地画像。
-        let prof: CloudProfile | null = null;
-        if (!aliasHint) {
+        let alias = aliasHint;
+        if (!alias) {
+          const row = aggs.find((a) => a.opponentId === rawId);
+          alias = row?.alias ?? rawId;
+        }
+        let prof: CloudProfile | null = buildLocalCloudProfile(hist, alias);
+        if (!prof && !aliasHint) {
           const row = aggs.find((a) => a.opponentId === rawId);
           if (row) prof = deriveCloudProfile(row);
         }
-        const alias = prof?.alias ?? aliasHint ?? rawId;
-        if (!prof) prof = buildLocalCloudProfile(hist, alias);
         if (!prof) {
-          setStatus("notfound");
+          // 本地也没渲染过才判定 notfound（已 ready 则保留）。
+          if (!cancelled) setStatus((s) => (s === "ready" ? s : "notfound"));
           return;
         }
-        setProfile(prof);
-        setReport(reps[prof.opponentId]);
-        const n = loadOppNotes()[prof.alias];
-        setNote(n?.note ?? "");
-        setTag(n?.tag ?? "");
-        setHands(collectHands(hist, prof.alias));
-        setStatus("ready");
+        apply(prof, hist, reps);
+
+        // 后台补齐缺失 contributions（不阻塞首屏），完成后刷新画像并写回。
+        const { entries: enriched, patches } = await ensureContributions(hist);
+        if (cancelled || Object.keys(patches).length === 0) return;
+        try { patchImportItems(patches); } catch { /* ignore */ }
+        for (const id of Object.keys(patches)) {
+          const e = enriched.find((x) => x.id === id);
+          if (e) upsertImportEntry(e).catch(() => {});
+        }
+        const prof2 = buildLocalCloudProfile(enriched, alias);
+        if (prof2) apply({ ...prof2, isHero: prof.isHero || prof2.isHero }, enriched, reps);
       } catch {
-        setStatus("notfound");
+        if (!cancelled) setStatus((s) => (s === "ready" ? s : "notfound"));
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [rawId, aliasHint]);
 
   const onSaveNote = (patch: { note?: string; tag?: string }) => {
@@ -115,6 +177,7 @@ export default function OpponentDetailPage() {
         counters: profile.counters,
         tag: tag || null,
         note: note || null,
+        hand_notes: opponentHandNotes(rawHist, profile.alias),
       });
       const row: OpponentReportRow = {
         opponentId: profile.opponentId,
@@ -125,12 +188,17 @@ export default function OpponentDetailPage() {
         sources: res.sources,
       };
       setReport(row);
+      // 本地缓存（即时、离线可用）+ 云端持久化（Supabase 权威，跨设备）。
+      saveLocalReport(profile.alias, {
+        report: res.report, model: "gpt-4o", basedOnHandCount: profile.hands,
+        createdAt: row.createdAt, sources: res.sources,
+      });
       upsertOpponentReport(profile.opponentId, res.report, "gpt-4o", profile.hands, profile.counters, res.sources).catch(() => {});
       setGen({ loading: false, error: null });
     } catch (e) {
       setGen({ loading: false, error: String(e instanceof Error ? e.message : e) });
     }
-  }, [profile, tag, note]);
+  }, [profile, tag, note, rawHist]);
 
   const netTrend = useMemo(() => {
     let cum = 0;
@@ -184,7 +252,8 @@ export default function OpponentDetailPage() {
         {/* 头部 */}
         <header className="mb-5 flex flex-wrap items-center gap-3">
           <h1 className="text-3xl font-black tracking-tight text-neutral-100">{profile.alias}</h1>
-          <Badge variant="accent" size="sm">{profile.archetype}</Badge>
+          {profile.isHero && <Badge variant="success" size="sm">我</Badge>}
+          {profile.archetype && <Badge variant="accent" size="sm">{profile.archetype}</Badge>}
           {et.tag && (
             <Badge variant="neutral" size="sm">
               {et.tag}{et.auto ? " · AI" : ""}
@@ -247,7 +316,14 @@ export default function OpponentDetailPage() {
         <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
           <ChartCard title="对手累计净额趋势" className="lg:col-span-2">
             {netTrend.length >= 2 ? (
-              <TrendArea data={netTrend} color={CHART_COLORS.fuchsia} height={180} refY={0} />
+              <TrendArea
+                data={netTrend}
+                color={CHART_COLORS.fuchsia}
+                height={180}
+                refY={0}
+                seriesName="累计净额"
+                valueFormatter={(v) => `${v > 0 ? "+" : ""}${Math.round(v)}`}
+              />
             ) : (
               <div className="flex h-[180px] items-center justify-center text-xs text-neutral-600">
                 该对手可用净额样本不足（需 ≥2 手）
@@ -335,12 +411,37 @@ export default function OpponentDetailPage() {
                 .slice()
                 .sort((a, b) => b.ts - a.ts)
                 .map((h, i) => (
-                  <HandItem key={`${h.ts}-${i}`} h={h} />
+                  <HandItem key={`${h.ts}-${i}`} h={h} onZoom={setZoom} />
                 ))}
             </ul>
           )}
         </Card>
       </main>
+
+      {/* 截图放大预览 */}
+      {zoom && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setZoom(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={zoom}
+            alt="放大预览"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[92vh] max-w-full rounded-lg object-contain shadow-2xl ring-1 ring-white/10"
+          />
+          <button
+            onClick={() => setZoom(null)}
+            className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-full bg-black/60 text-neutral-200 transition hover:bg-black/80"
+            title="关闭（Esc）"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -393,32 +494,20 @@ function FreqBar({ row }: { row: FreqRow }) {
   );
 }
 
-function HandItem({ h }: { h: HandRow }) {
+function HandItem({ h, onZoom }: { h: HandRow; onZoom?: (src: string) => void }) {
   return (
-    <li className="flex items-center gap-3 py-2 text-sm">
-      {h.thumb ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={h.thumb} alt="" className="h-9 w-14 shrink-0 rounded object-cover ring-1 ring-white/10" />
-      ) : (
-        <div className="h-9 w-14 shrink-0 rounded bg-neutral-800" />
-      )}
-      <span className="w-28 shrink-0 font-mono text-xs text-neutral-300">
-        {h.board.length ? h.board.join(" ") : "—"}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-xs text-neutral-400">{h.line || "（无行动线）"}</span>
-      {h.net != null && (
-        <span className={`w-16 shrink-0 text-right text-xs font-semibold ${h.net > 0 ? "text-emerald-400" : h.net < 0 ? "text-red-400" : "text-neutral-500"}`}>
-          {h.net > 0 ? "+" : ""}{Math.round(h.net)}
-        </span>
-      )}
+    <li>
+      <HandLine board={h.board} lines={h.lines} net={h.net} thumb={h.thumb} onZoom={onZoom} />
     </li>
   );
 }
 
 /** 把 {街道, 标签} 列表按街聚合成一行可读行动线（街道已是中文标签）。 */
-function streetLine(items: { street: string | null; label: string }[]): string {
+function streetLinesFrom(
+  items: { street: string | null; label: string }[],
+): { street: string; text: string }[] {
   const clean = items.filter((it) => it.label);
-  if (!clean.length) return "";
+  if (!clean.length) return [];
   const byStreet = new Map<string, string[]>();
   for (const it of clean) {
     const st = it.street || "翻前";
@@ -427,51 +516,34 @@ function streetLine(items: { street: string | null; label: string }[]): string {
   }
   const known = STREET_ORDER.filter((s) => byStreet.has(s));
   const extra = [...byStreet.keys()].filter((s) => !STREET_ORDER.includes(s));
-  return [...known, ...extra].map((s) => `${s}: ${byStreet.get(s)!.join("·")}`).join("  |  ");
+  return [...known, ...extra].map((s) => ({ street: s, text: byStreet.get(s)!.join("·") }));
 }
 
-/** 稳定手牌键：优先 hand_id，否则用 board+底池的签名（用于跨云端/本地去重）。 */
-function handKey(e: ImportEntry): string {
-  const hid = e.item?.facts?.hand_id?.trim();
-  if (hid) return `hid:${hid}`;
-  const board = (e.item?.reconstruction?.board ?? e.item?.facts?.board ?? []).join("");
-  const pot = e.item?.facts?.pot ?? "";
-  return `sig:${board}|${pot}`;
-}
-
-/** 合并后的历史里，同一手可能同时来自云端与本地（id 不同）。按手去重，保留信息更全的一条。 */
-function dedupByHand(history: ImportEntry[]): ImportEntry[] {
-  const richness = (e: ImportEntry): number =>
-    (e.item?.reconstruction?.players?.some((p) => p.actions?.length) ? 2 : 0) + (e.thumb ? 1 : 0);
-  const map = new Map<string, ImportEntry>();
-  for (const e of history) {
-    const key = handKey(e);
-    const prev = map.get(key);
-    if (!prev || richness(e) > richness(prev)) map.set(key, e);
-  }
-  return [...map.values()];
-}
-
-/** 从导入历史里抽取某对手参与的手牌（board + 该对手的行动线 + 净额）。 */
+/** 从导入历史里抽取某对手参与的手牌（board + 该对手的行动线 + 净额）。
+ * 先按 hand_id 去重（同一手多次导入只显示一条），且不受 analysis.supported 限制——
+ * 只要该对手作为非英雄玩家出现在重建/贡献里就纳入，避免漏手。 */
 function collectHands(history: ImportEntry[], alias: string): HandRow[] {
   const out: HandRow[] = [];
-  for (const e of history) {
+  for (const e of dedupByHand(history)) {
     const it = e.item;
-    if (!it?.ok || !it.analysis?.supported) continue;
-    const ap = it.analysis.players.find((p) => !p.is_hero && (p.alias || "").trim() === alias);
-    if (!ap) continue;
+    if (!it?.ok || it.recognized === false) continue;
+    // 不排除英雄：只要该玩家在这手出现（任何座位、含待复核/未摊牌）就纳入。
+    const rp = it.reconstruction?.players?.find((p) => (p.alias || "").trim() === alias);
+    const ap = it.analysis?.players?.find((p) => (p.alias || "").trim() === alias);
+    const cp = it.contributions?.players?.find((p) => (p.alias || "").trim() === alias);
+    if (!rp && !ap && !cp) continue;
     const board = it.reconstruction?.board ?? it.facts?.board ?? [];
     // 行动线：优先重建里的逐街动作，缺失则退回偏离标注里的动作。
-    const rp = it.reconstruction?.players.find((p) => (p.alias || "").trim() === alias);
-    let line = rp
-      ? streetLine(rp.actions.map((a) => ({ street: a.street, label: a.label || a.action })))
-      : "";
-    if (!line && ap.deviations?.length) {
-      line = streetLine(
+    let lines = rp
+      ? streetLinesFrom(rp.actions.map((a) => ({ street: a.street, label: a.label || a.action })))
+      : [];
+    if (!lines.length && ap?.deviations?.length) {
+      lines = streetLinesFrom(
         ap.deviations.map((d) => ({ street: d.street || null, label: d.actual_label || d.actual || "" })),
       );
     }
-    out.push({ ts: e.ts, board, net: ap.net, line, thumb: e.thumb });
+    const net = ap?.net ?? cp?.net ?? rp?.net ?? null;
+    out.push({ ts: e.ts, board, net, lines, thumb: e.thumb });
   }
   return out;
 }

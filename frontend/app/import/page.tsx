@@ -13,9 +13,7 @@ import {
   type ExploitResult,
   type HandContributions,
   type IngestItem,
-  type IngestPlayerObs,
   type ObservationFacts,
-  type ReconstructedAction,
   type Reconstruction,
 } from "@/lib/api";
 import {
@@ -39,7 +37,7 @@ import {
   upsertImportEntry,
 } from "@/lib/cloud";
 import { aggKey, removeEntryFromProfiles, syncEntryToProfiles } from "@/lib/opponents";
-import PlayingCard from "@/components/PlayingCard";
+import { HandView, handFromIngest } from "@/components/HandView";
 import Markdown from "@/components/Markdown";
 import { Card, SectionLabel } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -53,6 +51,8 @@ import {
   ImagePlus,
   Pencil,
   Plus,
+  RefreshCw,
+  ShieldCheck,
   Sparkles,
   Trash2,
   Upload,
@@ -85,6 +85,18 @@ const GRADE_STYLE: Record<string, string> = {
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 12;
+
+/** data URL（缩略图）→ File，用于把已存的截图重新送进识图接口。 */
+async function dataUrlToFile(dataUrl: string, name: string): Promise<File> {
+  const blob = await (await fetch(dataUrl)).blob();
+  return new File([blob], name, { type: blob.type || "image/jpeg" });
+}
+
+/** 稳定手牌键：同一手多次导入共享（优先 hand_id）。 */
+function handKeyOf(e: ImportEntry): string {
+  const hid = e.item?.facts?.hand_id?.trim();
+  return hid ? `hid:${hid}` : `id:${e.id}`;
+}
 
 interface Picked {
   file: File;
@@ -231,6 +243,71 @@ export default function ImportPage() {
   const clearHistory = useCallback(() => {
     setHistory(clearImportHistory());
     clearCloudImports().catch(() => {});
+  }, []);
+
+  // 重新识别：用已存缩略图重跑识图（新提示词会读「保险」并标出英雄），修正净额对账。
+  // 按手去重，只对唯一手各识别一次，再把结果套用到该手的全部副本；同步本地/云端/对手聚合。
+  const [recog, setRecog] = useState<{ loading: boolean; done: number; total: number; msg: string | null }>({
+    loading: false, done: 0, total: 0, msg: null,
+  });
+
+  const reRecognizeAll = useCallback(async () => {
+    const all = loadImportHistory();
+    const groups = new Map<string, ImportEntry[]>();
+    for (const e of all) {
+      const k = handKeyOf(e);
+      (groups.get(k) ?? groups.set(k, []).get(k)!).push(e);
+    }
+    // 每组挑一个有缩略图的代表去识图（缩略图约 720px，能读净额/保险；原图重传更准）。
+    const reps = [...groups.values()]
+      .map((list) => ({ list, rep: list.find((x) => x.thumb) }))
+      .filter((g): g is { list: ImportEntry[]; rep: ImportEntry } => Boolean(g.rep));
+    if (!reps.length) {
+      setRecog({ loading: false, done: 0, total: 0, msg: "没有可复用的缩略图，请重新上传原图后再识别。" });
+      return;
+    }
+    setRecog({ loading: true, done: 0, total: reps.length, msg: null });
+    const patches: Record<string, IngestItem> = {};
+    let done = 0;
+    const CHUNK = 6;
+    try {
+      for (let i = 0; i < reps.length; i += CHUNK) {
+        const slice = reps.slice(i, i + CHUNK);
+        const files = await Promise.all(slice.map((g) => dataUrlToFile(g.rep.thumb!, `${g.rep.id}.jpg`)));
+        const res = await postIngestExtract(files);
+        for (const g of slice) {
+          done += 1;
+          const r = res.results.find((x) => x.filename === `${g.rep.id}.jpg`);
+          if (!r || !r.ok) continue;
+          // 若重识别丢了 hand_id，沿用原值，避免打乱按手去重。
+          const item: IngestItem = { ...r };
+          const origHid = g.rep.item?.facts?.hand_id ?? null;
+          if (item.facts && !item.facts.hand_id && origHid) {
+            item.facts = { ...item.facts, hand_id: origHid };
+          }
+          for (const e of g.list) patches[e.id] = item; // 套用到该手所有副本
+        }
+        setRecog((s) => ({ ...s, done }));
+      }
+      const changed = Object.keys(patches).length;
+      if (changed) {
+        const updated = patchImportItems(patches);
+        setHistory(updated);
+        for (const id of Object.keys(patches)) {
+          const ent = updated.find((x) => x.id === id);
+          if (ent) {
+            upsertImportEntry(ent).catch(() => {});
+            syncEntryToProfiles(ent).catch(() => {}); // aggKey 稳定，retract+apply 幂等
+          }
+        }
+      }
+      setRecog({
+        loading: false, done, total: reps.length,
+        msg: `已重新识别 ${reps.length} 手${changed ? `（更新 ${changed} 条记录）` : ""}，净额已按「保险」重新对账。`,
+      });
+    } catch (e) {
+      setRecog({ loading: false, done, total: reps.length, msg: `重新识别失败：${String(e instanceof Error ? e.message : e)}` });
+    }
   }, []);
 
   // 编辑并重算后更新单条历史（本地 + 云端 + 对手聚合幂等重算）
@@ -486,10 +563,26 @@ export default function ImportPage() {
                 <Download />
                 CSV
               </Button>
+              <Button
+                onClick={reRecognizeAll}
+                variant="ghost"
+                size="sm"
+                disabled={recog.loading || loading}
+                title="用已存缩略图重跑识图：读取「保险」修正净额对账、标出英雄座位。原图重传更准。"
+              >
+                <RefreshCw className={recog.loading ? "animate-spin" : ""} />
+                {recog.loading ? `重新识别 ${recog.done}/${recog.total}` : "重新识别"}
+              </Button>
               <Button onClick={clearHistory} variant="ghost" size="sm" className="hover:text-red-300">
                 <Trash2 />
                 清空历史
               </Button>
+            </div>
+          )}
+
+          {recog.msg && (
+            <div className="rounded-lg border border-white/10 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-400">
+              {recog.msg}
             </div>
           )}
 
@@ -694,11 +787,63 @@ function ResultDetail({ item }: { item: IngestItem }) {
   }
   return (
     <>
-      {item.facts && (
-        <FactsView facts={item.facts} note={item.note ?? ""} raw={item.raw_model_output ?? ""} />
+      <HandView hand={handFromIngest(item)} checks={<ReconChecks item={item} />}>
+        {item.analysis && item.analysis.supported && <DeviationView analysis={item.analysis} />}
+      </HandView>
+      <HandExtras item={item} />
+    </>
+  );
+}
+
+/** 重建校验行（净额守恒 / 动作与净额一致）。 */
+function ReconChecks({ item }: { item: IngestItem }) {
+  const recon = item.reconstruction;
+  if (!recon) return null;
+  const c = recon.checks;
+  return (
+    <>
+      <Check ok={c.net_ok} label={`净额守恒${c.net_sum != null ? `（Σ=${c.net_sum}）` : ""}`} />
+      <Check
+        ok={c.rows_consistent}
+        label={
+          c.rows_consistent
+            ? "动作与净额一致"
+            : `${c.uncertain_count} 行动作与净额对不上（可能未完整识别）`
+        }
+      />
+      {c.insurance_total != null && (
+        <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/10 px-2 py-0.5 text-xs text-sky-300">
+          <ShieldCheck className="size-3" />
+          已计入保险 {c.insurance_total > 0 ? "+" : ""}
+          {c.insurance_total}
+        </span>
       )}
-      {item.reconstruction && <ReconstructionView recon={item.reconstruction} />}
-      {item.analysis && item.analysis.supported && <DeviationView analysis={item.analysis} />}
+    </>
+  );
+}
+
+/** 手牌级备注 + 模型原始输出（折叠）。 */
+function HandExtras({ item }: { item: IngestItem }) {
+  const notes = item.facts?.notes;
+  const raw = item.raw_model_output;
+  const note = item.note;
+  if (!notes && !raw && !note) return null;
+  return (
+    <>
+      {notes && (
+        <p className="mt-4 rounded-lg bg-neutral-800/50 px-3 py-2 text-xs text-neutral-400">备注：{notes}</p>
+      )}
+      {note && <p className="mt-3 text-[11px] leading-relaxed text-neutral-600">{note}</p>}
+      {raw && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs text-neutral-500 hover:text-neutral-300">
+            查看模型原始输出
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-neutral-950 p-3 text-[11px] leading-relaxed text-neutral-400">
+            {raw}
+          </pre>
+        </details>
+      )}
     </>
   );
 }
@@ -1081,103 +1226,8 @@ function ResultCard({
   return (
     <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-5">
       <CardHeader item={item} ts={ts} thumb={thumb} onDelete={onDelete} />
-      {item.facts && (
-        <FactsView facts={item.facts} note={item.note ?? ""} raw={item.raw_model_output ?? ""} />
-      )}
-      {item.reconstruction && <ReconstructionView recon={item.reconstruction} />}
-    </div>
-  );
-}
-
-function FactsView({
-  facts,
-  note,
-  raw,
-}: {
-  facts: ObservationFacts;
-  note: string;
-  raw: string;
-}) {
-  const conf = Math.round((facts.extraction_confidence || 0) * 100);
-  return (
-    <div>
-      <div className="flex flex-wrap items-center gap-2">
-        <span
-          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ${
-            TYPE_STYLE[facts.screenshot_type] ?? TYPE_STYLE.unknown
-          }`}
-        >
-          {TYPE_LABEL[facts.screenshot_type] ?? facts.screenshot_type}
-        </span>
-        {facts.blinds && (
-          <span className="rounded-md bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
-            盲注 {facts.blinds}
-          </span>
-        )}
-        {facts.pot != null && (
-          <span className="rounded-md bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
-            底池 {facts.pot}
-          </span>
-        )}
-        {facts.hand_id && (
-          <span className="rounded-md bg-neutral-800 px-2 py-0.5 text-xs text-neutral-500">
-            #{facts.hand_id}
-          </span>
-        )}
-        <span className="ml-auto flex items-center gap-2 text-xs text-neutral-500">
-          置信度
-          <span className="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-neutral-800 align-middle">
-            <span className="block h-full bg-emerald-500" style={{ width: `${conf}%` }} />
-          </span>
-          {conf}%
-        </span>
-      </div>
-
-      {facts.board.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">
-            公共牌
-          </div>
-          <div className="flex gap-1.5">
-            {facts.board.map((c) => (
-              <PlayingCard key={c} card={c} size="sm" />
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="mt-4">
-        <div className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">
-          玩家（{facts.players.length}）
-        </div>
-        <div className="space-y-2">
-          {facts.players.map((p, i) => (
-            <PlayerRow key={i} p={p} />
-          ))}
-          {facts.players.length === 0 && (
-            <p className="text-sm text-neutral-600">未识别到玩家行。</p>
-          )}
-        </div>
-      </div>
-
-      {facts.notes && (
-        <p className="mt-4 rounded-lg bg-neutral-800/50 px-3 py-2 text-xs text-neutral-400">
-          备注：{facts.notes}
-        </p>
-      )}
-
-      {note && <p className="mt-3 text-[11px] leading-relaxed text-neutral-600">{note}</p>}
-
-      {raw && (
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs text-neutral-500 hover:text-neutral-300">
-            查看模型原始输出
-          </summary>
-          <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-neutral-950 p-3 text-[11px] leading-relaxed text-neutral-400">
-            {raw}
-          </pre>
-        </details>
-      )}
+      <HandView hand={handFromIngest(item)} checks={<ReconChecks item={item} />} />
+      <HandExtras item={item} />
     </div>
   );
 }
@@ -1194,244 +1244,6 @@ function Check({ ok, label }: { ok: boolean; label: string }) {
       {label}
     </span>
   );
-}
-
-const STREET_ORDER = ["翻前", "翻牌", "转牌", "河牌"];
-const STREET_STYLE: Record<string, string> = {
-  翻前: "text-sky-300",
-  翻牌: "text-emerald-300",
-  转牌: "text-amber-300",
-  河牌: "text-rose-300",
-};
-
-/** 把玩家动作按街分组，横向排成 翻前 / 翻牌 / 转牌 / 河牌 的清晰时间线。 */
-function StreetTimeline({ actions }: { actions: ReconstructedAction[] }) {
-  const groups = new Map<string, ReconstructedAction[]>();
-  const other: ReconstructedAction[] = [];
-  for (const a of actions) {
-    if (a.street && STREET_ORDER.includes(a.street)) {
-      const arr = groups.get(a.street) ?? [];
-      arr.push(a);
-      groups.set(a.street, arr);
-    } else {
-      other.push(a);
-    }
-  }
-  const ordered = STREET_ORDER.filter((s) => groups.has(s));
-  if (ordered.length === 0) {
-    // 无街道信息（如结算画面）：退回平铺
-    return (
-      <div className="mt-1.5 flex flex-wrap gap-1">
-        {actions.map((a, j) => (
-          <span key={j} className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-300">
-            {a.label}
-            {a.amount != null ? ` ${a.amount}` : ""}
-          </span>
-        ))}
-      </div>
-    );
-  }
-  return (
-    <div className="mt-2 flex flex-wrap gap-1.5">
-      {ordered.map((street) => (
-        <div
-          key={street}
-          className="flex items-center gap-1 rounded-md bg-neutral-950/60 px-1.5 py-1 ring-1 ring-neutral-800"
-        >
-          <span className={`text-[10px] font-semibold ${STREET_STYLE[street] ?? "text-neutral-400"}`}>
-            {street}
-          </span>
-          {(groups.get(street) ?? []).map((a, j) => (
-            <span key={j} className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-200">
-              {a.label}
-              {a.amount != null ? ` ${a.amount}` : ""}
-            </span>
-          ))}
-        </div>
-      ))}
-      {other.length > 0 &&
-        other.map((a, j) => (
-          <span key={`o-${j}`} className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-[11px] text-neutral-300">
-            {a.label}
-            {a.amount != null ? ` ${a.amount}` : ""}
-          </span>
-        ))}
-    </div>
-  );
-}
-
-function ReconstructionView({ recon }: { recon: Reconstruction }) {
-  const st = RECON_STATUS[recon.status] ?? RECON_STATUS.needs_user;
-  const c = recon.checks;
-  return (
-    <div className="mt-5 border-t border-neutral-800 pt-4">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wider text-neutral-500">下注序列重建</span>
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${st.cls}`}>
-          {st.label}
-        </span>
-        <span className="text-xs text-neutral-500">
-          置信度 {Math.round(recon.confidence * 100)}%
-        </span>
-      </div>
-
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <Check
-          ok={c.net_ok}
-          label={`净额守恒${c.net_sum != null ? `（Σ=${c.net_sum}）` : ""}`}
-        />
-        <Check
-          ok={c.rows_consistent}
-          label={
-            c.rows_consistent
-              ? "动作与净额一致"
-              : `${c.uncertain_count} 行动作与净额对不上（可能未完整识别）`
-          }
-        />
-      </div>
-
-      <div className="space-y-1.5">
-        {recon.players.map((p, i) => (
-          <div
-            key={i}
-            className={`rounded-lg border px-3 py-2 text-sm ${
-              p.is_hero
-                ? "border-emerald-600/40 bg-emerald-950/20"
-                : "border-neutral-800 bg-neutral-900/40"
-            }`}
-          >
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium text-neutral-100">{p.alias ?? "（未知）"}</span>
-              {p.is_hero && (
-                <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">
-                  我
-                </span>
-              )}
-              {p.is_winner && (
-                <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
-                  赢家
-                </span>
-              )}
-              {p.position && (
-                <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-300">
-                  {p.position}
-                </span>
-              )}
-              {p.uncertain && (
-                <span
-                  className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300 ring-1 ring-amber-500/30"
-                  title="逐街动作金额之和与净额对不上，可能有动作未被识别"
-                >
-                  动作待复核
-                </span>
-              )}
-              <span className="ml-auto text-xs text-neutral-500">
-                投入 {p.invested}
-                {p.net != null && (
-                  <span
-                    className={`ml-2 font-semibold ${
-                      p.net > 0 ? "text-emerald-400" : p.net < 0 ? "text-red-400" : "text-neutral-400"
-                    }`}
-                  >
-                    净 {p.net > 0 ? "+" : ""}
-                    {p.net}
-                  </span>
-                )}
-              </span>
-            </div>
-            {p.actions.length > 0 && <StreetTimeline actions={p.actions} />}
-            {p.uncertain && (
-              <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/80">
-                逐街动作之和 {p.parsed_invested}，按净额应约 {p.invested}——可能有一街动作未被识别，已按净额校正投入。
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
-
-      <p className="mt-3 text-[11px] leading-relaxed text-neutral-600">{recon.note}</p>
-    </div>
-  );
-}
-
-function PlayerRow({ p }: { p: IngestPlayerObs }) {
-  const net = p.net;
-  return (
-    <div
-      className={`rounded-xl border px-3 py-2.5 ${
-        p.is_hero
-          ? "border-emerald-600/50 bg-emerald-950/20"
-          : "border-neutral-800 bg-neutral-900/40"
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <span className="truncate font-semibold text-neutral-100">
-          {p.alias ?? "（未知）"}
-        </span>
-        {p.is_hero && (
-          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
-            我
-          </span>
-        )}
-        {p.position && (
-          <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-300">
-            {p.position}
-          </span>
-        )}
-        {p.hole_cards.length > 0 && (
-          <span className="flex gap-1">
-            {p.hole_cards.map((c) => (
-              <PlayingCard key={c} card={c} size="sm" />
-            ))}
-          </span>
-        )}
-        {p.made_hand && (
-          <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-amber-300">
-            {p.made_hand}
-          </span>
-        )}
-        {net != null && (
-          <span
-            className={`ml-auto text-sm font-semibold ${
-              net > 0 ? "text-emerald-400" : net < 0 ? "text-red-400" : "text-neutral-400"
-            }`}
-          >
-            {net > 0 ? "+" : ""}
-            {net}
-          </span>
-        )}
-      </div>
-      {p.actions_by_street && Object.keys(p.actions_by_street).length > 0 ? (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {STREET_ORDER.filter((s) => obsStreet(p.actions_by_street!, s).length > 0).map((zh) => (
-            <div key={zh} className="flex items-center gap-1">
-              <span className={`text-[10px] font-semibold ${STREET_STYLE[zh] ?? "text-neutral-400"}`}>
-                {zh}
-              </span>
-              {obsStreet(p.actions_by_street!, zh).map((a, j) => (
-                <span key={j} className="rounded bg-neutral-800/70 px-1.5 py-0.5 text-[11px] text-neutral-300">
-                  {a}
-                </span>
-              ))}
-            </div>
-          ))}
-        </div>
-      ) : (
-        p.actions_raw && <p className="mt-1 text-xs text-neutral-400">{p.actions_raw}</p>
-      )}
-    </div>
-  );
-}
-
-// 中文街道标签 → actions_by_street 的英文键，取该街动作数组
-const ZH_TO_STREET_KEY: Record<string, string> = {
-  翻前: "preflop",
-  翻牌: "flop",
-  转牌: "turn",
-  河牌: "river",
-};
-function obsStreet(byStreet: Record<string, string[]>, zh: string): string[] {
-  return byStreet[ZH_TO_STREET_KEY[zh]] ?? [];
 }
 
 // ---------- 编辑态：修正识别结果后一键重算 ----------
@@ -1455,6 +1267,7 @@ interface EditPlayer {
   is_hero: boolean;
   hole: string; // 空格分隔
   net: string;
+  insurance: string; // 保险净额（赔付为正/保费为负），可空
   made_hand: string;
   streets: Record<string, string>; // preflop/flop/turn/river → " → " 连接的动作串
 }
@@ -1475,6 +1288,7 @@ function factsToEdit(facts: ObservationFacts): {
       is_hero: p.is_hero,
       hole: p.hole_cards.join(" "),
       net: p.net != null ? String(p.net) : "",
+      insurance: p.insurance != null ? String(p.insurance) : "",
       made_hand: p.made_hand ?? "",
       streets: Object.fromEntries(
         STREET_KEYS.map((k) => [k, joinStreet(p.actions_by_street?.[k])]),
@@ -1506,6 +1320,7 @@ function editToFacts(
         is_hero: p.is_hero,
         hole_cards: splitList(p.hole.replace(/\s+/g, " ")),
         net: p.net.trim() === "" ? null : Number(p.net),
+        insurance: p.insurance.trim() === "" ? null : Number(p.insurance),
         made_hand: p.made_hand.trim() || null,
         actions_by_street: Object.keys(abs).length ? abs : null,
         actions_raw: null,
@@ -1544,7 +1359,7 @@ function FactsEditor({
       ...s,
       players: [
         ...s.players,
-        { alias: "", position: "", is_hero: false, hole: "", net: "", made_hand: "", streets: {} },
+        { alias: "", position: "", is_hero: false, hole: "", net: "", insurance: "", made_hand: "", streets: {} },
       ],
     }));
   const removePlayer = (i: number) =>
@@ -1650,6 +1465,14 @@ function FactsEditor({
                 inputMode="decimal"
                 placeholder="净额"
                 onChange={(e) => setPlayer(i, { net: e.target.value })}
+              />
+              <input
+                className={`${inputCls} w-20`}
+                value={p.insurance}
+                inputMode="decimal"
+                placeholder="保险"
+                title="保险净额：获得赔付为正、支付保费为负。用于把净额还原为纯桌面结果对账。"
+                onChange={(e) => setPlayer(i, { insurance: e.target.value })}
               />
               <button
                 onClick={() => removePlayer(i)}

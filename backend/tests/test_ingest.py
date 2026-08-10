@@ -121,6 +121,52 @@ def test_reconstruct_net_conservation_validated():
     assert dv["invested"] == 1200  # |net|
 
 
+def test_reconstruct_insurance_reconciles_net_sum():
+    # 有人买保险：右侧净额已含保险盈亏 → 直接相加对不上（1000-600=400≠0）；
+    # 剥离保险后的桌面净额应守恒（1000-1000=0），且投入对得上、不再误标待复核。
+    facts = {
+        "screenshot_type": "hand_replay",
+        "pot": 2000,
+        "players": [
+            {"alias": "Hero", "net": 1000, "is_hero": True, "actions_raw": "Allin1000"},
+            # 桌面输 1000，但保险净赚 400 → 展示净额 -600
+            {"alias": "Fish", "net": -600, "insurance": 400, "actions_raw": "Allin1000"},
+        ],
+    }
+    r = reconstruct_hand(facts)
+    assert r["checks"]["net_ok"] is True  # 桌面净额 1000-1000=0
+    assert r["checks"]["net_sum"] == 0
+    assert r["checks"]["insurance_total"] == 400
+    assert r["checks"]["rows_consistent"] is True
+    assert r["status"] == "validated"
+    hero = next(p for p in r["players"] if p["alias"] == "Hero")
+    fish = next(p for p in r["players"] if p["alias"] == "Fish")
+    assert hero["is_winner"] is True  # 赢家按桌面净额判定
+    assert fish["is_winner"] is False
+    assert fish["net"] == -600  # 展示仍为真实净额（含保险）
+    assert fish["table_net"] == -1000  # 剥离保险后的桌面净额
+    assert fish["invested"] == 1000  # 以桌面净额推算，投入对得上
+    assert fish["uncertain"] is False
+
+
+def test_reconstruct_without_insurance_unchanged():
+    # 无保险字段时 table_net==net，行为与旧逻辑一致（不引入回归）。
+    facts = {
+        "screenshot_type": "hand_replay",
+        "pot": 2000,
+        "players": [
+            {"alias": "W", "net": 1000, "actions_raw": "Allin1000"},
+            {"alias": "L", "net": -1000, "actions_raw": "Allin1000"},
+        ],
+    }
+    r = reconstruct_hand(facts)
+    assert r["checks"]["net_ok"] is True
+    assert r["checks"]["insurance_total"] is None
+    lo = next(p for p in r["players"] if p["alias"] == "L")
+    assert lo["table_net"] == -1000
+    assert lo["insurance"] is None
+
+
 def test_reconstruct_flags_uncertain_when_actions_drop():
     # DV999 一行动作被漏读成只有"下注32"，但净额显示输了 1245 → 应标记待复核
     facts = {

@@ -28,11 +28,14 @@ export default function DeviationFlags({
       {flags.map((f) => (
         <span
           key={f.key}
-          title={f.hint}
-          className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ${CAT_CLS[f.cat]}`}
+          title={f.conf === "low" ? `${f.hint}（初判 · 样本少）` : f.hint}
+          className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ${CAT_CLS[f.cat]} ${
+            f.conf === "low" ? "opacity-70" : ""
+          }`}
         >
           <span className={`inline-block size-1.5 rounded-full ${CAT_DOT[f.cat]}`} />
           {f.label}
+          {f.conf === "low" && <span className="text-[8px] opacity-70">初</span>}
         </span>
       ))}
     </div>

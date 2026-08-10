@@ -420,6 +420,7 @@ export interface IngestPlayerObs {
   hole_cards: string[];
   stack_end: number | null;
   net: number | null;
+  insurance?: number | null; // 保险净额（赔付为正/保费为负；无则 null）
   made_hand: string | null;
   actions_raw: string | null;
   actions_by_street: Record<string, string[]> | null;
@@ -454,6 +455,8 @@ export interface ReconstructedPlayer {
   is_winner: boolean;
   hole_cards: string[];
   net: number | null;
+  insurance?: number | null; // 保险净额（无则 null）
+  table_net?: number | null; // 桌面净额 = net − insurance（对账/投入推算用）
   invested: number;
   parsed_invested: number;
   actions: ReconstructedAction[];
@@ -467,6 +470,7 @@ export interface ReconstructionChecks {
   pot: number | null;
   uncertain_count: number;
   rows_consistent: boolean;
+  insurance_total?: number | null; // 全桌保险净额（null=本手无保险）
 }
 
 export interface Reconstruction {
@@ -678,6 +682,7 @@ export async function postOpponentReport(body: {
   counters: OpponentCounters | Record<string, unknown>;
   tag?: string | null;
   note?: string | null;
+  hand_notes?: string[];
 }): Promise<{
   report: string;
   lines: string[];

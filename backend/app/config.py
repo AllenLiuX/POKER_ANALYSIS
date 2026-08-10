@@ -37,8 +37,11 @@ class Settings(BaseSettings):
 
     # ---- Supabase（Phase 4 接入）----
     supabase_url: str = ""
-    supabase_anon_key: str = ""
-    supabase_service_role_key: str = ""
+    supabase_anon_key: str = ""          # 客户端 publishable/anon key（前端登录 + RLS 下的读写）
+    supabase_service_role_key: str = ""  # 服务端 service_role 密钥（绕过 RLS；仅后端脚本用，未提供可留空）
+    # Postgres 直连串（pooler，session 模式 5432 适合迁移/DDL）。用于 psql 跑 supabase/migrations。
+    # 密码含特殊字符需按 URL 百分号编码（# -> %23，! -> %21）。
+    supabase_db_url: str = ""
 
     # ---- 知识库联网搜索（Tavily；与 ~/ai_study_platform 同一 provider）----
     # 留空 = 知识库接地自动关闭，AI 分析退回纯统计接地（不受影响）。

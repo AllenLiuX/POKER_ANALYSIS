@@ -7,6 +7,7 @@ import ActionBar from "@/components/ActionBar";
 import PlayingCard from "@/components/PlayingCard";
 import PokerTable, { type TableView } from "@/components/PokerTable";
 import Markdown from "@/components/Markdown";
+import { StreetLines } from "@/components/HandView";
 import {
   streamAnalyzeProblemHands,
   streamExplainHand,
@@ -847,16 +848,7 @@ function HandsPanel({
                   </span>
                 </div>
 
-                {actionLines.length > 0 && (
-                  <div className="mt-1.5 space-y-0.5">
-                    {actionLines.map((ln) => (
-                      <div key={ln.street} className="flex gap-2 text-[11px] leading-relaxed">
-                        <span className="shrink-0 text-neutral-600">{ln.street}</span>
-                        <span className="text-neutral-400">{ln.text}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {actionLines.length > 0 && <StreetLines lines={actionLines} className="mt-1.5" />}
 
                 <div className="mt-1.5 flex items-center justify-between gap-2">
                   <span className="text-neutral-500">

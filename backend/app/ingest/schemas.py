@@ -22,7 +22,11 @@ class PlayerObs(BaseModel):
     is_hero: bool = Field(False, description="是否为截图主人（我）")
     hole_cards: List[str] = Field(default_factory=list, description="底牌（摊牌可见，否则空）")
     stack_end: Optional[float] = Field(None, description="本手结束后的筹码")
-    net: Optional[float] = Field(None, description="本手净额（右侧显示，输为负）")
+    net: Optional[float] = Field(None, description="本手净额（右侧显示，输为负；通常已含保险盈亏）")
+    insurance: Optional[float] = Field(
+        None,
+        description="保险净额（该玩家买保险/得赔付带来的净额：赔付为正、保费为负）。用于把净额还原为纯桌面结果对账。",
+    )
     made_hand: Optional[str] = Field(None, description="摊牌牌型文字（如 葫芦/两对）")
     actions_raw: Optional[str] = Field(None, description='逐街动作原文，如 "加注32 → 下注38 → 跟注188 → Allin941"')
     # 分街动作：{"preflop": ["加注32"], "flop": ["下注38"], "turn": ["跟注188"], "river": ["Allin941"]}

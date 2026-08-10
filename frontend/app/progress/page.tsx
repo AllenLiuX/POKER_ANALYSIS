@@ -258,6 +258,7 @@ export default function ProgressPage() {
                 height={168}
                 centerTop={pct(summary.accuracy)}
                 centerSub="正确率"
+                valueFormatter={(v) => `${Math.round(v)} 手`}
               />
               <div className="mt-3">
                 <Legend
@@ -272,6 +273,7 @@ export default function ProgressPage() {
                 height={168}
                 yDomain={[0, 100]}
                 yTickFormatter={(v) => `${v}%`}
+                seriesName="正确率"
                 refY={Math.round(summary.accuracy * 100)}
               />
               <p className="mt-1 text-[10px] text-neutral-600">

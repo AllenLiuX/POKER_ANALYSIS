@@ -8,6 +8,10 @@
 多模态模型偶尔会漏读中间某一街。因此每位玩家的**总投入以 net 推算**（输家=|net|，
 含盲注/前注；赢家=底池−net），再与「逐街动作金额之和」交叉核对：若两者对不上，
 说明该行动作很可能没被完整识别，标记为待复核，避免展示"投入 32 却净输 1200"这类自相矛盾。
+
+保险对账：微扑克里若有人买保险，其净额通常已含保险盈亏，导致全桌净额之和不为 0（保险的
+钱来自/流向系统而非牌桌）。因此这里用「桌面净额」table_net = net − insurance 还原纯牌桌
+结果：赢家判定、投入推算、全桌净额守恒都以 table_net 为准；展示仍保留玩家真实净额 net。
 """
 from __future__ import annotations
 
@@ -101,13 +105,23 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
     pot = facts.get("pot")
     pot_val = float(pot) if isinstance(pot, (int, float)) else None
 
-    # 赢家 = net 最大且为正者（简化：不处理边池/多赢家平分）
+    # 桌面净额 table_net = net − 保险净额：把保险盈亏从右侧净额里剥离，还原纯牌桌结果。
+    # 没有保险（insurance 缺省）时 table_net == net，行为与旧逻辑完全一致。
+    def _table_net(p: Dict) -> Optional[float]:
+        n = p.get("net")
+        if not isinstance(n, (int, float)):
+            return None
+        ins = p.get("insurance")
+        ins_val = float(ins) if isinstance(ins, (int, float)) else 0.0
+        return float(n) - ins_val
+
+    # 赢家 = 桌面净额最大且为正者（简化：不处理边池/多赢家平分）
     winner_idx: Optional[int] = None
     best_net = 0.0
     for i, p in enumerate(players_in):
-        n = p.get("net")
-        if isinstance(n, (int, float)) and n > best_net:
-            best_net, winner_idx = float(n), i
+        tn = _table_net(p)
+        if tn is not None and tn > best_net:
+            best_net, winner_idx = tn, i
 
     players: List[Dict[str, object]] = []
     for idx, p in enumerate(players_in):
@@ -129,18 +143,21 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
 
         net = p.get("net")
         net_val = float(net) if isinstance(net, (int, float)) else None
+        ins = p.get("insurance")
+        ins_val = float(ins) if isinstance(ins, (int, float)) else None
+        table_net = _table_net(p)  # net − 保险（用于对账/投入推算）
 
-        # 用净额推算总投入（含盲注/前注）：赢家=底池−net；其余=|net|
-        if net_val is not None and idx == winner_idx and pot_val is not None:
-            contributed = _round(pot_val - net_val)
-        elif net_val is not None and idx != winner_idx:
-            contributed = _round(max(0.0, -net_val))
+        # 用桌面净额推算总投入（含盲注/前注）：赢家=底池−table_net；其余=|table_net|
+        if table_net is not None and idx == winner_idx and pot_val is not None:
+            contributed = _round(pot_val - table_net)
+        elif table_net is not None and idx != winner_idx:
+            contributed = _round(max(0.0, -table_net))
         else:
             contributed = parsed_invested
 
-        # 交叉核对：仅当该玩家有下注类动作、且能从 net 得到期望投入时才校验
+        # 交叉核对：仅当该玩家有下注类动作、且能从桌面净额得到期望投入时才校验
         uncertain = False
-        if has_money and net_val is not None and (idx != winner_idx or pot_val is not None):
+        if has_money and table_net is not None and (idx != winner_idx or pot_val is not None):
             tol = max(4.0, 0.1 * abs(contributed))  # 容许盲注/前注带来的小差
             if abs(parsed_invested - contributed) > tol:
                 uncertain = True
@@ -152,18 +169,23 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
                 "is_hero": bool(p.get("is_hero")),
                 "is_winner": idx == winner_idx,
                 "hole_cards": p.get("hole_cards") or [],
-                "net": net,
-                "invested": contributed,  # 以净额推算为准（权威、含盲注/前注）
+                "net": net,  # 玩家真实净额（含保险盈亏，用于展示）
+                "insurance": ins_val,  # 保险净额（赔付为正/保费为负；无则 None）
+                "table_net": table_net if table_net is None else _round(table_net),  # 纯桌面净额
+                "invested": contributed,  # 以桌面净额推算为准（权威、含盲注/前注）
                 "parsed_invested": parsed_invested,  # 逐街动作金额之和（供核对）
                 "actions": actions,
                 "uncertain": uncertain,
             }
         )
 
-    net_list = [float(p["net"]) for p in players if isinstance(p["net"], (int, float))]  # type: ignore[arg-type]
-    net_sum = _round(sum(net_list)) if net_list else None
-    abs_scale = sum(abs(n) for n in net_list) if net_list else 0.0
+    # 全桌净额守恒以「桌面净额」判定：剥离保险后各家应约和为 0。
+    tnet_list = [float(p["table_net"]) for p in players if isinstance(p["table_net"], (int, float))]  # type: ignore[arg-type]
+    net_sum = _round(sum(tnet_list)) if tnet_list else None
+    abs_scale = sum(abs(n) for n in tnet_list) if tnet_list else 0.0
     net_ok = net_sum is not None and abs(net_sum) <= max(2.0, 0.02 * abs_scale)
+    ins_list = [float(p["insurance"]) for p in players if isinstance(p["insurance"], (int, float))]  # type: ignore[arg-type]
+    insurance_total = _round(sum(ins_list)) if ins_list else None
 
     invested_sum = _round(sum(float(p["invested"]) for p in players))  # type: ignore[arg-type]
     uncertain_count = sum(1 for p in players if p["uncertain"])
@@ -189,15 +211,16 @@ def reconstruct_hand(facts: Dict) -> Dict[str, object]:
         "board": facts.get("board") or [],
         "players": players,
         "checks": {
-            "net_sum": net_sum,
+            "net_sum": net_sum,  # 桌面净额（已剥离保险）之和，应约等于 0
             "net_ok": bool(net_ok),
             "invested_sum": invested_sum,
             "pot": pot,
             "uncertain_count": uncertain_count,
             "rows_consistent": bool(rows_consistent),
+            "insurance_total": insurance_total,  # 全桌保险净额（None=本手无保险）
         },
         "note": (
-            "每位玩家投入以净额推算（含盲注/前注），并与逐街动作交叉核对；"
-            "标记「待复核」的行，其动作可能未被完整识别。"
+            "每位玩家投入以桌面净额（净额−保险）推算（含盲注/前注），并与逐街动作交叉核对；"
+            "标记「待复核」的行，其动作可能未被完整识别。若有人买保险，净额之和用剥离保险后的桌面净额对账。"
         ),
     }

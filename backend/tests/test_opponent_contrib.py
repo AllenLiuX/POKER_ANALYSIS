@@ -50,6 +50,36 @@ def test_hu_srp_open_call_cbet_fold_counters():
     assert res["players"][1]["net"] == -10.0
 
 
+def test_contributions_include_hero_player():
+    # 英雄本人也要产出贡献（一手可进多个玩家档案，英雄不例外）。
+    res = hand_contributions({}, _hu_srp_cbet_fold())
+    m = _by_alias(res)
+    assert "Hero" in m and m["Hero"]["is_hero"] is True
+    assert "Villain" in m and m["Villain"]["is_hero"] is False
+    # 每位有昵称的玩家都在（含英雄）→ 同一手会计入两个档案
+    assert len(res["players"]) == 2
+
+
+def test_contributions_generated_for_needs_review_hand():
+    # 「行动作与净额对不上」的待复核手（动作被漏读）也应产出贡献并计入。
+    from app.ingest.reconstruct import reconstruct_hand
+
+    facts = {
+        "screenshot_type": "hand_replay",
+        "pot": 2490,
+        "players": [
+            {"alias": "W", "net": 1245, "is_hero": True, "actions_by_street": {"preflop": ["Allin1245"]}},
+            {"alias": "L", "net": -1245, "actions_by_street": {"preflop": ["下注32"]}},  # 漏读 → 待复核
+        ],
+    }
+    recon = reconstruct_hand(facts)
+    assert recon["status"] == "needs_review"  # 确实是对不上的手
+    res = hand_contributions(facts, recon)
+    m = _by_alias(res)
+    assert set(m) == {"W", "L"}  # 两位玩家都进了贡献
+    assert m["W"]["is_hero"] is True
+
+
 def test_vs_open_threebet_counter():
     recon = {
         "confidence": 0.9, "board": [],

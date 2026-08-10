@@ -52,6 +52,48 @@ function Placeholder({ height }: { height: number }) {
   return <div style={{ height }} className="animate-pulse rounded-xl bg-white/[0.03]" />;
 }
 
+interface TipItem {
+  name?: string | number;
+  value?: number | string;
+  color?: string;
+  payload?: { color?: string; fill?: string } & Record<string, unknown>;
+}
+
+/** 自定义 tooltip：显式给数值配可见的浅色（recharts 默认项色是黑色，深色背景下看不见）。 */
+function ChartTooltip(props: {
+  active?: boolean;
+  payload?: TipItem[];
+  label?: string | number;
+  hideLabel?: boolean;
+  valueFormatter?: (v: number) => string;
+}) {
+  const { active, payload, label, hideLabel, valueFormatter } = props;
+  if (!active || !payload || payload.length === 0) return null;
+  const fmt = (v: number | string | undefined): string => {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n)) return String(v ?? "");
+    return valueFormatter ? valueFormatter(n) : `${Math.round(n * 100) / 100}`;
+  };
+  return (
+    <div style={TOOLTIP_STYLE}>
+      {!hideLabel && label != null && label !== "" && (
+        <div style={{ marginBottom: 4, color: "#a3a3a3", fontSize: 11 }}>{String(label)}</div>
+      )}
+      {payload.map((p, i) => {
+        const color = p.color ?? p.payload?.color ?? p.payload?.fill ?? "#e5e5e5";
+        const name = p.name != null ? String(p.name) : "";
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, lineHeight: 1.6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: color, display: "inline-block" }} />
+            {name && <span style={{ color: "#a3a3a3" }}>{name}</span>}
+            <span style={{ marginLeft: "auto", color: "#f5f5f5", fontWeight: 600 }}>{fmt(p.value)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export interface DonutSlice {
   name: string;
   value: number;
@@ -63,11 +105,13 @@ export function Donut({
   height = 180,
   centerTop,
   centerSub,
+  valueFormatter,
 }: {
   data: DonutSlice[];
   height?: number;
   centerTop?: string;
   centerSub?: string;
+  valueFormatter?: (v: number) => string;
 }) {
   const mounted = useMounted();
   const total = data.reduce((s, d) => s + d.value, 0);
@@ -95,7 +139,14 @@ export function Donut({
               <Cell key={i} fill={d.color} />
             ))}
           </Pie>
-          <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number, n: string) => [v, n]} />
+          <Tooltip
+            content={
+              <ChartTooltip
+                hideLabel
+                valueFormatter={valueFormatter ?? ((v) => `${Math.round(v)}`)}
+              />
+            }
+          />
         </PieChart>
       </ResponsiveContainer>
       {(centerTop || centerSub) && (
@@ -132,6 +183,8 @@ export function TrendArea({
   height = 160,
   yDomain,
   yTickFormatter,
+  valueFormatter,
+  seriesName = "数值",
   refY,
 }: {
   data: Record<string, number | string>[];
@@ -141,6 +194,8 @@ export function TrendArea({
   height?: number;
   yDomain?: [number, number];
   yTickFormatter?: (v: number) => string;
+  valueFormatter?: (v: number) => string;
+  seriesName?: string;
   refY?: number;
 }) {
   const mounted = useMounted();
@@ -165,9 +220,18 @@ export function TrendArea({
           tickFormatter={yTickFormatter}
           width={40}
         />
-        <Tooltip contentStyle={TOOLTIP_STYLE} />
+        <Tooltip
+          content={<ChartTooltip valueFormatter={valueFormatter ?? yTickFormatter} />}
+        />
         {refY != null && <ReferenceLine y={refY} stroke="rgba(255,255,255,0.2)" strokeDasharray="3 3" />}
-        <Area type="monotone" dataKey={yKey} stroke={color} strokeWidth={2} fill={`url(#${gid})`} />
+        <Area
+          type="monotone"
+          dataKey={yKey}
+          name={seriesName}
+          stroke={color}
+          strokeWidth={2}
+          fill={`url(#${gid})`}
+        />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -203,9 +267,14 @@ export function NetBars({
           height={48}
         />
         <YAxis tick={{ fontSize: 10, fill: "#737373" }} axisLine={false} tickLine={false} width={40} />
-        <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+        <Tooltip
+          cursor={{ fill: "rgba(255,255,255,0.04)" }}
+          content={
+            <ChartTooltip valueFormatter={(v) => `${v > 0 ? "+" : ""}${Math.round(v)}`} />
+          }
+        />
         <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-        <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+        <Bar dataKey="value" name="净额" radius={[3, 3, 0, 0]}>
           {data.map((d, i) => (
             <Cell key={i} fill={d.value >= 0 ? CHART_COLORS.emerald : CHART_COLORS.red} />
           ))}
@@ -232,7 +301,7 @@ export function TendencyRadar({ data, height = 260 }: { data: RadarPoint[]; heig
         <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
         <Radar name="基线" dataKey="baseline" stroke={CHART_COLORS.neutral} fill={CHART_COLORS.neutral} fillOpacity={0.14} />
         <Radar name="该对手" dataKey="value" stroke={CHART_COLORS.fuchsia} fill={CHART_COLORS.fuchsia} fillOpacity={0.4} />
-        <Tooltip contentStyle={TOOLTIP_STYLE} />
+        <Tooltip content={<ChartTooltip valueFormatter={(v) => `${Math.round(v)}`} />} />
       </RadarChart>
     </ResponsiveContainer>
   );

@@ -70,13 +70,17 @@ _PROMPT = """请把这张 WePoker 截图转写为观测事实 JSON。只写你**
 
 对每位玩家（players 数组）尽量填：
 - alias（昵称）、position（由「大盲/小盲/D」标记 + 座位顺序推断为 BB/SB/BTN/UTG/MP/CO，拿不准就 null）、
-- is_hero（是否为截图主人「我」，通常有高亮/视角，拿不准就 false）、
-- hole_cards（仅摊牌可见时）、net（右侧净额，输为负）、made_hand（摊牌牌型文字，如「葫芦」）、
+- is_hero（是否为截图主人「我」）：每张回放**有且仅有一位**主视角玩家，通常在**底部中央**、底牌是**明牌可见**、常带高亮边框或「我」标识；请**务必**把这一位标为 is_hero=true，其余全部 false（不要整桌都为 false）、
+- hole_cards（仅摊牌可见时）、net（右侧净额，输为负；**通常已包含保险盈亏**）、
+- insurance（保险净额，可选）：若该玩家本手**买了保险 / 获得保险赔付**，填保险带来的**净额**（获得赔付为正、支付保费为负）。微扑克常单独显示「保险」「投保」「保险赔付」等字样或盾牌图标；**没有保险就省略此字段**、
+- made_hand（摊牌牌型文字，如「葫芦」）、
 - actions_raw（把该玩家一行**从左到右的每一个**动作与金额都照抄，用 " → " 连接，如 "加注32 → 下注38 → 跟注188 → Allin941"）、
 - actions_by_street（**把上面这些动作按所属街道分组**，对象，键取 "preflop"/"flop"/"turn"/"river"，值为该街该玩家动作字符串数组，按发生顺序；某街没动作就省略该键。示例：{"preflop":["加注32"],"flop":["下注38"],"turn":["跟注188"],"river":["Allin941"]}。同一街可以有多个动作（如翻前"加注→跟注"、翻后"过牌→加注"），都要列全。街道数不会超过公共牌进度：只有 3 张公共牌就不该有 turn/river）、
 - visible_actions（出现过的动作标签数组，取值：加注/下注/跟注/过牌/弃牌/全下）。
 
 特别注意（否则重建会对不上）：微扑克回放里一位玩家的一行是按「翻前→翻牌→转牌→河牌」从左到右排的，但**某街过牌或某街多次动作**都会打乱"第几个动作=第几街"的对应关系，所以**务必用 actions_by_street 明确每个动作属于哪条街**，不要让引擎去猜；同时 actions_raw 也要照抄完整。金额要与净额大致自洽（一个输家的各街投入之和≈其净额的绝对值）。
+
+保险对账（很重要）：只要有人买了保险，玩家右侧净额通常**已把保险盈亏算进去**，导致全桌净额之和**不为 0**（保险的钱来自/流向系统而非牌桌）。请把每位买保险玩家的 insurance 金额**单独读出**（赔付为正、保费为负），引擎会用「净额−保险」还原纯桌面结果来对账。若你只看到净额之和对不上却找不到保险数字，宁可把 insurance 省略也不要编造。
 
 顶层字段：hand_id、blinds（如 "2/4(1)"）、board（已知公共牌数组）、pot（底池数字）、hero_seat、extraction_confidence（0~1，你对本次转写整体把握）、notes（简短备注，如"结算画面无逐步动作"）。
 
@@ -195,6 +199,7 @@ def _normalize(data: Dict) -> Dict:
                 "hole_cards": _normalize_cards(p.get("hole_cards")),
                 "stack_end": _coerce_float(p.get("stack_end")),
                 "net": _coerce_float(p.get("net")),
+                "insurance": _coerce_float(p.get("insurance")),
                 "made_hand": (str(p["made_hand"]).strip() if p.get("made_hand") else None),
                 "actions_raw": (str(p["actions_raw"]).strip() if p.get("actions_raw") else None),
                 "actions_by_street": _normalize_actions_by_street(p.get("actions_by_street")),
