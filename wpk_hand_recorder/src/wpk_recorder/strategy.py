@@ -4,7 +4,10 @@ import math
 import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from .poker import equity_vs_random_multiway, equity_vs_weighted_ranges
+from .poker import (
+    showdown_stats_vs_random_multiway,
+    showdown_stats_vs_weighted_ranges,
+)
 from .squid_value import (
     hero_values_after_next_award,
     squid_state_from_dict,
@@ -38,10 +41,17 @@ def evaluate_money_strategy(
 
     pot = max(0.0, _number(decision.get("pot")) or 0.0)
     opponents = max(1, int(decision.get("players_in_hand") or 2) - 1)
-    range_models = [
-        (profile.get("preflop_range") or {}).get("weights") or {}
+    range_profiles = [
+        profile.get("preflop_range") or {}
         for profile in context.get("active_opponent_profiles") or []
     ][:opponents]
+    range_profiles.sort(
+        key=lambda profile: _number(profile.get("estimated_range_pct"))
+        or 100.0
+    )
+    range_models = [
+        profile.get("weights") or {} for profile in range_profiles
+    ]
     while len(range_models) < opponents:
         range_models.append({})
     uses_ranges = any(bool(model) for model in range_models)
@@ -49,23 +59,34 @@ def evaluate_money_strategy(
         180 if uses_ranges else 220,
         round((420 if uses_ranges else 600) / math.sqrt(opponents)),
     )
+    board = list(decision.get("board") or [])
+    showdown = _showdown_stats(
+        hole_cards, board, range_models, opponents, trials, uses_ranges
+    )
+    equity = float(showdown["pot_share"])
+    award_probability = float(showdown["award_probability"])
     if uses_ranges:
-        equity = equity_vs_weighted_ranges(
-            hole_cards,
-            list(decision.get("board") or []),
-            range_models,
-            trials=trials,
-        )
         equity_model = "hierarchical-preflop-ranges-multiway-v1"
     else:
-        equity = equity_vs_random_multiway(
-            hole_cards,
-            list(decision.get("board") or []),
-            opponents=opponents,
-            trials=trials,
-        )
         equity_model = "uniform-random-multiway-v1"
     fold_model = _fold_model(context, opponents)
+    all_fold = float(fold_model["all_fold_probability"])
+    conditional_callers = (
+        float(fold_model["expected_callers"]) / max(1e-9, 1.0 - all_fold)
+        if all_fold < 1.0
+        else 1.0
+    )
+    caller_count = max(1, min(opponents, int(round(conditional_callers))))
+    continued_showdown = _showdown_stats(
+        hole_cards,
+        board,
+        range_models[:caller_count],
+        caller_count,
+        trials,
+        uses_ranges,
+    )
+    fold_model["conditional_caller_count"] = caller_count
+    fold_model["conditional_callers"] = round(conditional_callers, 4)
     candidates = _candidate_actions(decision)
     for candidate in candidates:
         candidate.update(
@@ -73,6 +94,9 @@ def evaluate_money_strategy(
                 candidate,
                 decision,
                 equity,
+                award_probability,
+                float(continued_showdown["pot_share"]),
+                float(continued_showdown["award_probability"]),
                 fold_model,
             )
         )
@@ -111,9 +135,20 @@ def evaluate_money_strategy(
 
     confidence = _engine_confidence(decision, fold_model, squid)
     exploit_weight = {"low": 0.15, "medium": 0.30, "high": 0.45}[confidence]
+    baseline_mix = _baseline_action_mix(baseline)
+    baseline_fallback = False
+    if not baseline_mix:
+        reference_id = _reference_candidate_id(candidates)
+        reference = next(
+            (item for item in candidates if item["id"] == reference_id),
+            None,
+        )
+        if reference is not None:
+            baseline_mix = {str(reference["action"]): 1.0}
+            baseline_fallback = True
     policy = _mixed_policy(
         candidates,
-        _baseline_action_mix(baseline),
+        baseline_mix,
         exploit_weight,
         pot,
         _number(decision.get("big_blind")) or 4.0,
@@ -126,7 +161,12 @@ def evaluate_money_strategy(
         "confidence": confidence,
         "equity": {
             "pot_share_pct": round(100 * equity, 1),
+            "award_probability_pct": round(100 * award_probability, 1),
             "opponents": opponents,
+            "raise_caller_count": caller_count,
+            "raise_pot_share_pct": round(
+                100 * float(continued_showdown["pot_share"]), 1
+            ),
             "trials": trials,
             "model": equity_model,
             "range_models": [
@@ -148,6 +188,7 @@ def evaluate_money_strategy(
             if key != "round_ev_by_action"
         },
         "exploit_weight_pct": round(100 * exploit_weight),
+        "baseline_fallback": baseline_fallback,
         "reference_action": _reference_candidate_id(candidates),
         "recommended": primary,
         "policy": policy,
@@ -167,6 +208,26 @@ def evaluate_money_strategy(
         ],
         "latency_ms": _elapsed_ms(started),
     }
+
+
+def _showdown_stats(
+    hole_cards: Sequence[str],
+    board: Sequence[str],
+    range_models: Sequence[Mapping[str, float]],
+    opponents: int,
+    trials: int,
+    uses_ranges: bool,
+) -> Dict[str, float]:
+    if uses_ranges:
+        models = list(range_models)
+        while len(models) < opponents:
+            models.append({})
+        return showdown_stats_vs_weighted_ranges(
+            hole_cards, board, models[:opponents], trials
+        )
+    return showdown_stats_vs_random_multiway(
+        hole_cards, board, opponents, trials
+    )
 
 
 def _candidate_actions(decision: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -213,6 +274,9 @@ def _candidate_chip_ev(
     candidate: Mapping[str, Any],
     decision: Mapping[str, Any],
     equity: float,
+    award_probability: float,
+    continued_equity: float,
+    continued_award_probability: float,
     fold_model: Mapping[str, Any],
 ) -> Dict[str, float]:
     action = str(candidate["action"])
@@ -223,12 +287,12 @@ def _candidate_chip_ev(
     if action == "check":
         return {
             "chip_ev": round(equity * pot, 2),
-            "award_probability": round(equity, 5),
+            "award_probability": round(award_probability, 5),
         }
     if action == "call":
         return {
             "chip_ev": round(equity * (pot + call) - call, 2),
-            "award_probability": round(equity, 5),
+            "award_probability": round(award_probability, 5),
         }
 
     contribution = _number(decision.get("hero_street_contribution")) or 0.0
@@ -250,12 +314,14 @@ def _candidate_chip_ev(
         else 0.0
     )
     contested = pot + cost + call_increment * conditional_callers
-    continued_ev = equity * contested - cost
+    continued_ev = continued_equity * contested - cost
     chip_ev = all_fold * pot + (1.0 - all_fold) * continued_ev
-    award_probability = all_fold + (1.0 - all_fold) * equity
+    aggressive_award_probability = all_fold + (
+        1.0 - all_fold
+    ) * continued_award_probability
     return {
         "chip_ev": round(chip_ev, 2),
-        "award_probability": round(award_probability, 5),
+        "award_probability": round(aggressive_award_probability, 5),
     }
 
 
@@ -410,7 +476,12 @@ def _squid_edges(
         "available": True,
         "calibrated": (
             state.squid_value is not None
-            and state.rule_status in {"validated", "configured_unverified"}
+            and state.rule_status
+            in {
+                "validated",
+                "configured_basis",
+                "configured_unverified",
+            }
         ),
         "unit": "chips" if state.squid_value is not None else "squid_value_unit",
         "squid_value": state.squid_value,

@@ -908,14 +908,15 @@ function handleLiveDecision(decision) {
     renderDecisionWaiting(null);
     return;
   }
-  const cached = state.reasoningResults.get(decision.sequence);
+  const cacheKey = decisionCacheKey(decision);
+  const cached = state.reasoningResults.get(cacheKey);
   if (cached) {
     const target = document.querySelector("#reasoning-result");
     target.className = "reasoning-result";
     target.innerHTML = renderReasoningAnalysis(cached);
     return;
   }
-  const local = state.strategyResults.get(decision.sequence);
+  const local = state.strategyResults.get(cacheKey);
   if (local && state.reasoningInFlight !== decision.sequence) {
     renderLocalStrategy(local);
   } else {
@@ -925,7 +926,7 @@ function handleLiveDecision(decision) {
     !local &&
     state.strategyInFlight !== decision.sequence
   ) {
-    runCurrentStrategy(decision.sequence);
+    runCurrentStrategy(decision);
   }
   if (state.reasoningInFlight === decision.sequence) {
     const target = document.querySelector("#reasoning-result");
@@ -950,14 +951,19 @@ function handleLiveDecision(decision) {
     runReasoning(false);
   }
 }
-async function runCurrentStrategy(sequence) {
+function decisionCacheKey(decision) {
+  return `${decision?.sequence ?? "none"}:${decision?.state_hash || "legacy"}`;
+}
+async function runCurrentStrategy(decision) {
+  const sequence = decision.sequence;
+  const cacheKey = decisionCacheKey(decision);
   state.strategyInFlight = sequence;
   try {
     const response = await fetch(`/api/strategy/current?sequence=${encodeURIComponent(sequence)}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
     if (data.stale) return;
-    state.strategyResults.set(sequence, data);
+    state.strategyResults.set(cacheKey, data);
     while (state.strategyResults.size > 64) {
       state.strategyResults.delete(state.strategyResults.keys().next().value);
     }
@@ -982,6 +988,7 @@ async function runReasoning(force, analysisMode = "auto") {
     (analysisMode !== "local" && !state.llmStatus?.configured)
   ) return;
   const sequence = decision.sequence;
+  const cacheKey = decisionCacheKey(decision);
   const reasoningDepth = (
     force && analysisMode === "llm" ? state.llmDepth : "light"
   );
@@ -1027,9 +1034,9 @@ async function runReasoning(force, analysisMode = "auto") {
       }
       return;
     }
-    const changed = state.liveDecision?.sequence !== sequence;
+    const changed = decisionCacheKey(state.liveDecision) !== cacheKey;
     if (force) {
-      state.reasoningResults.set(sequence, data);
+      state.reasoningResults.set(cacheKey, data);
       state.pinnedReasoning = {
         ...state.pinnedReasoning,
         status: "done",
@@ -1042,7 +1049,7 @@ async function runReasoning(force, analysisMode = "auto") {
     if (changed || data.stale) {
       return;
     }
-    state.reasoningResults.set(sequence, data);
+    state.reasoningResults.set(cacheKey, data);
     const target = document.querySelector("#reasoning-result");
     target.className = "reasoning-result";
     target.innerHTML = renderReasoningAnalysis(data);

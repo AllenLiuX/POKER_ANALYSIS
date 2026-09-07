@@ -15,6 +15,7 @@ TARGET_BIG_BLIND = 4.0
 TARGET_ANTE = 1.0
 TARGET_TABLE_SIZES = {8, 9}
 LEGAL_ACTIONS = {"fold", "check", "call", "raise", "all_in"}
+DEFAULT_DECISION_TTL_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -456,12 +457,14 @@ def _request_remaining_ms(
     countdown = max(0.0, float(request.countdown or 0.0))
     if countdown > 300:
         countdown /= 1000.0
+    if countdown <= 0:
+        countdown = DEFAULT_DECISION_TTL_SECONDS
     try:
         captured = datetime.fromisoformat(request.captured_at.replace("Z", "+00:00"))
         if captured.tzinfo is None:
             captured = captured.replace(tzinfo=timezone.utc)
     except (AttributeError, TypeError, ValueError):
-        captured = now or datetime.now(timezone.utc)
+        return 0
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)

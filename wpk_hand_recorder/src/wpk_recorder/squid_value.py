@@ -237,20 +237,37 @@ def current_squid_state(
         if env_basis in PAYOUT_BASES
         else str(calibration.get("payout_basis") or "awarded")
     )
+    explicit_basis = env_basis in PAYOUT_BASES
+    selected_summary = (
+        (calibration.get("candidates") or {}).get(payout_basis) or {}
+    )
+    selected_rounds = int(selected_summary.get("accepted_rounds") or 0)
     squid_value = (
         env_value
         if env_value is not None
+        else _optional_number(selected_summary.get("median_squid_value"))
+        if explicit_basis
         else _optional_number(calibration.get("squid_value"))
     )
     confidence = (
         "configured"
-        if env_value is not None
+        if env_value is not None and explicit_basis
+        else (
+            "high"
+            if selected_rounds >= 10
+            else "medium"
+            if selected_rounds >= 3
+            else "low"
+        )
+        if explicit_basis and selected_rounds
         else str(calibration.get("confidence") or "none")
     )
     rule_status = str(
         calibration.get("rule_status") or "insufficient_data"
     )
-    if env_value is not None and rule_status == "insufficient_data":
+    if explicit_basis and selected_rounds:
+        rule_status = "configured_basis"
+    elif explicit_basis and env_value is not None and rule_status != "mismatch":
         rule_status = "configured_unverified"
     total_squids = participant_count + 4 if participant_count else 0
     awarded = sum(counts.values())
@@ -385,6 +402,23 @@ def calibrate_squid_rules(
                 "历史 scene=3 授予与 scene=4 结算不符合零和鱿鱼公式"
                 if rule_status == "mismatch"
                 else None
+            ),
+            "candidates": summaries,
+        }
+    if len(viable) > 1:
+        accepted = max(
+            int(summary["accepted_rounds"]) for _, summary in viable
+        )
+        return {
+            "payout_basis": None,
+            "squid_value": None,
+            "confidence": "none",
+            "accepted_rounds": accepted,
+            "examined_rounds": len(round_ids),
+            "rule_status": "ambiguous_basis",
+            "calibration_error": (
+                "仅凭结算分数无法区分按已发数量或 N+4 总数结算；"
+                "请显式配置 WPK_SQUID_PAYOUT_BASIS"
             ),
             "candidates": summaries,
         }

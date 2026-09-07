@@ -169,7 +169,7 @@ def live_decision(
     contract = decision_state_from_hand(hand, request, source="live")
     if contract is None:
         return None
-    if request.countdown > 0 and contract["remaining_ms"] <= 0:
+    if contract["remaining_ms"] <= 0:
         return None
     street = str(contract.get("street") or "")
     stack_bb = _number(contract.get("hero_stack_bb"))
@@ -218,7 +218,7 @@ def live_decision_from_hand(hand: Any) -> Optional[Dict[str, Any]]:
     contract = decision_state_from_hand(hand, request, source="live")
     if contract is None:
         return None
-    if request.countdown > 0 and contract["remaining_ms"] <= 0:
+    if contract["remaining_ms"] <= 0:
         return None
     actor = hand.players.get(contract.get("acting_seat"))
     actor_user_id = actor.user_id if actor is not None else request.user_id
@@ -1581,7 +1581,7 @@ def _has_newer_invalidation(
         WHERE sequence > ? AND hand_id = ?
           AND event_name IN (
             'userOptNotify', 'actionNotify', 'playResultNotify',
-            'cleanNotify', 'cleanGameNotify'
+            'roundChangeNotify', 'cleanNotify', 'cleanGameNotify'
           )
         LIMIT 1
         """,

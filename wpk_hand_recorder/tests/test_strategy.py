@@ -1,7 +1,10 @@
 import sqlite3
 
 from wpk_recorder.opponent_model import opponent_metrics
-from wpk_recorder.poker import equity_vs_weighted_ranges
+from wpk_recorder.poker import (
+    equity_vs_weighted_ranges,
+    showdown_stats_vs_random_multiway,
+)
 from wpk_recorder.strategy import evaluate_money_strategy
 
 
@@ -146,3 +149,51 @@ def test_weighted_range_equity_respects_strong_opponent_range():
     )
 
     assert equity < 0.2
+
+
+def test_pot_share_is_not_squid_award_probability_on_tie_board():
+    stats = showdown_stats_vs_random_multiway(
+        ["2c", "3d"],
+        ["As", "Ks", "Qs", "Js", "Ts"],
+        opponents=1,
+        trials=20,
+    )
+
+    assert stats["pot_share"] == 0.5
+    assert stats["award_probability"] == 1.0
+
+
+def test_raise_equity_uses_conditional_caller_count():
+    context = {
+        "decision": {
+            "hero_cards": ["7c", "2d"],
+            "legal_actions": ["fold", "raise"],
+            "board": ["As", "Kh", "Qc"],
+            "pot": 100,
+            "call_score": 20,
+            "min_raise_to": 60,
+            "max_raise_to": 400,
+            "hero_street_contribution": 0,
+            "hero_stack": 400,
+            "big_blind": 4,
+            "players_in_hand": 9,
+            "table_players": 9,
+            "game_mode": "squid",
+            "state_quality": {
+                "valid": True,
+                "target_game_supported": True,
+            },
+        },
+        "active_opponent_profiles": [
+            {"player": f"seat_{seat}", "observations": []}
+            for seat in range(2, 10)
+        ],
+    }
+
+    result = evaluate_money_strategy(context, {})
+
+    assert result["equity"]["raise_caller_count"] < 8
+    assert (
+        result["equity"]["raise_pot_share_pct"]
+        >= result["equity"]["pot_share_pct"]
+    )

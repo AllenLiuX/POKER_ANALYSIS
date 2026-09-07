@@ -32,7 +32,7 @@ def test_user_described_squid_settlement_is_zero_sum():
     assert sum(payoffs.values()) == 0
 
 
-def test_completed_round_calibrates_awarded_squid_value(tmp_path):
+def test_single_round_cannot_identify_payout_basis(tmp_path):
     store = RecorderStore(tmp_path)
     participants = ["a", "b", "c", "d"]
     store.save_squid_event(
@@ -78,9 +78,12 @@ def test_completed_round_calibrates_awarded_squid_value(tmp_path):
     calibration = calibrate_squid_rules(connection)
     connection.close()
 
-    assert calibration["payout_basis"] == "awarded"
-    assert calibration["squid_value"] == 10
+    assert calibration["payout_basis"] is None
+    assert calibration["squid_value"] is None
+    assert calibration["rule_status"] == "ambiguous_basis"
     assert calibration["accepted_rounds"] == 1
+    assert calibration["candidates"]["awarded"]["median_squid_value"] == 10
+    assert calibration["candidates"]["configured"]["median_squid_value"] == 1.25
 
 
 def test_rule_mismatch_is_a_hard_calibration_failure(tmp_path):

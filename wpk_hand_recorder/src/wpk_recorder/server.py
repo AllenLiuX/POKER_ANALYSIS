@@ -355,7 +355,8 @@ def create_app(
         wants_llm = request.analysis_mode == "llm"
         wants_local = request.analysis_mode == "local"
         cache_key = (
-            f"{request.sequence}:{request.analysis_mode}:"
+            f"{request.sequence}:{decision.get('state_hash')}:"
+            f"{request.analysis_mode}:"
             f"{request.reasoning_depth}"
         )
         if wants_local or (not has_hole_cards and not wants_llm):

@@ -100,19 +100,33 @@ def equity_vs_random_multiway(
 ) -> float:
     """Monte Carlo pot share against independent uniformly random hands."""
 
+    return showdown_stats_vs_random_multiway(
+        hole_cards, board, opponents, trials
+    )["pot_share"]
+
+
+def showdown_stats_vs_random_multiway(
+    hole_cards: Sequence[str],
+    board: Sequence[str],
+    opponents: int,
+    trials: int = 800,
+) -> Dict[str, float]:
+    """Return pot share and probability of receiving a pot-win award."""
+
     if len(hole_cards) != 2 or len(board) > 5:
-        return 0.0
+        return {"pot_share": 0.0, "award_probability": 0.0}
     opponents = max(1, min(int(opponents), 9))
     known = set(hole_cards) | set(board)
     deck = [f"{rank}{suit}" for rank in RANKS for suit in SUITS if f"{rank}{suit}" not in known]
     needed = 5 - len(board)
     cards_needed = opponents * 2 + needed
     if cards_needed > len(deck):
-        return 0.0
+        return {"pot_share": 0.0, "award_probability": 0.0}
     seed_text = "|".join([*sorted(hole_cards), *board, f"opponents={opponents}"])
     seed = int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16)
     rng = random.Random(seed)
     share = 0.0
+    awards = 0.0
     for _ in range(max(1, int(trials))):
         drawn = rng.sample(deck, cards_needed)
         runout = [*board, *drawn[opponents * 2 :]]
@@ -124,10 +138,16 @@ def equity_vs_random_multiway(
         best_opponent = max(opponent_ranks)
         if hero_rank > best_opponent:
             share += 1.0
+            awards += 1.0
         elif hero_rank == best_opponent:
             tied_opponents = sum(rank == hero_rank for rank in opponent_ranks)
             share += 1.0 / (tied_opponents + 1)
-    return round(share / max(1, int(trials)), 4)
+            awards += 1.0
+    completed = max(1, int(trials))
+    return {
+        "pot_share": round(share / completed, 4),
+        "award_probability": round(awards / completed, 4),
+    }
 
 
 def equity_vs_weighted_ranges(
@@ -138,8 +158,25 @@ def equity_vs_weighted_ranges(
 ) -> float:
     """Monte Carlo pot share against blocker-aware 169-class range weights."""
 
+    return showdown_stats_vs_weighted_ranges(
+        hole_cards, board, ranges, trials
+    )["pot_share"]
+
+
+def showdown_stats_vs_weighted_ranges(
+    hole_cards: Sequence[str],
+    board: Sequence[str],
+    ranges: Sequence[Mapping[str, float]],
+    trials: int = 350,
+) -> Dict[str, float]:
+    """Return blocker-aware pot share and pot-win award probability."""
+
     if len(hole_cards) != 2 or len(board) > 5 or not ranges:
-        return 0.0
+        return {
+            "pot_share": 0.0,
+            "award_probability": 0.0,
+            "completed_trials": 0,
+        }
     known = set(hole_cards) | set(board)
     full_deck = [f"{rank}{suit}" for rank in RANKS for suit in SUITS]
     combo_classes = [
@@ -175,6 +212,7 @@ def equity_vs_weighted_ranges(
     seed = int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16)
     rng = random.Random(seed)
     share = 0.0
+    awards = 0.0
     completed = 0
     for _ in range(max(1, int(trials))):
         used = set(known)
@@ -200,12 +238,20 @@ def equity_vs_weighted_ranges(
         best_opponent = max(opponent_ranks)
         if hero_rank > best_opponent:
             share += 1.0
+            awards += 1.0
         elif hero_rank == best_opponent:
             share += 1.0 / (
                 1 + sum(rank == hero_rank for rank in opponent_ranks)
             )
+            awards += 1.0
         completed += 1
-    return round(share / completed, 4) if completed else 0.0
+    return {
+        "pot_share": round(share / completed, 4) if completed else 0.0,
+        "award_probability": (
+            round(awards / completed, 4) if completed else 0.0
+        ),
+        "completed_trials": completed,
+    }
 
 
 def _draw_weighted_combo(
