@@ -89,17 +89,24 @@ wpk-recorder run --data-dir data
 
 - `WPK_LLM_MODEL`：ModelHub 部署名，默认 `gpt-5.6-sol`；
 - `WPK_LLM_ENDPOINT`：覆盖由模型名自动生成的完整接口 URL；
-- `WPK_LLM_TIMEOUT_SECONDS`：单次网络硬超时，默认 9.4 秒；服务端额外开销后仍以 10 秒为总预算；
-- `WPK_LLM_PROFILE_TIMEOUT_SECONDS`：深层画像硬超时，默认 15 秒；不用于实时行动复核；
+- `WPK_LLM_TIMEOUT_SECONDS`：轻推理硬超时，默认 12 秒；
+- `WPK_LLM_PROFILE_TIMEOUT_SECONDS`：深层画像硬超时，默认 20 秒；
 - `WPK_LLM_MAX_COMPLETION_TOKENS`：默认 800，限制在 256–6000；
-- `WPK_LLM_REASONING_EFFORT`：默认 `low`，优先满足实时延迟；
+- `WPK_LLM_REASONING_EFFORT`：默认 `low`，优先满足普通节点延迟；
+- `WPK_LLM_DEEP_TIMEOUT_SECONDS`：重推理硬超时，默认并最高为 20 秒；
+- `WPK_LLM_DEEP_MAX_COMPLETION_TOKENS`：重推理输出预算，默认 1600；
+- `WPK_LLM_DEEP_REASONING_EFFORT`：默认 `high`，可改为 `medium`；
 - `MODEL_GATEWAY_KEY`：若未设置 `WPK_LLM_API_KEY`，可复用此环境变量。
 
 实时复核请求只包含匿名座位、本人底牌（如有）、公共牌、合法动作、下注状态、匿名行动线、
 位置/码深条件化的贝叶斯机会率、相对当前牌池偏移及收缩后的对手翻前范围摘要；
 画像复核包含匿名目标、聚合统计与筛选后的匿名公开亮牌案例。两者都不会发送昵称、稳定
 user ID、hand ID、Cookie 或认证信息。
-行动点变化后，迟到的实时复核结果会被丢弃。
+看板可选轻推理或重推理：轻推理最多取 6 条关键对手证据和最近 16 个行动，以 low effort
+完成普通节点；重推理最多取 16 条证据和最近 30 个行动，以 high effort 在 20 秒预算内
+交叉检查牌型、赔率、SPR、范围和对手偏移。自动复核固定走轻推理；手动复核使用当前所选
+档位并锁定行动节点，因此牌局继续后迟到结果仍会作为复盘保留。两档超时或网关失败时都会
+明确标记并回退本地证据，不会把本地结果冒充 GPT‑5.6 结论。
 系统会先计算牌型、听牌、pot odds、SPR 与对随机单手的中性 equity 基线；只有高确定性的
 免费过牌、极端赔率和坚果牌节点才由 `local-rules-v1` 直接返回，其余复杂节点再调用 LLM。
 如果当前行动事件没有带出可靠底牌，本地层仍会立即显示当前位置和行动线的简化全范围：
