@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from .models import Action, HandHistory, Player, utc_now
+from .models import Action, DecisionRequest, HandHistory, Player, utc_now
 
 
 STREETS = ("preflop", "flop", "turn", "river", "showdown")
@@ -60,6 +60,7 @@ class HandStateMachine:
             )
             for action in hand.actions
         )
+        self._consume_pending(hand.hand_id)
 
     def apply_many(self, events: Iterable[Dict[str, Any]], source: str = "") -> List[HandHistory]:
         completed: List[HandHistory] = []
@@ -79,6 +80,12 @@ class HandStateMachine:
             return self._apply_history(event)
         if kind == "start":
             hand_id = str(event.get("hand_id") or f"unknown-{utc_now()}")
+            if (
+                self.current
+                and self.current.hand_id != hand_id
+                and _same_unknown_hand(self.current.hand_id, hand_id)
+            ):
+                self.current.hand_id = hand_id
             if self.current and self.current.hand_id == hand_id:
                 self.current.table_id = (
                     _optional_text(event.get("table_id")) or self.current.table_id
@@ -116,9 +123,7 @@ class HandStateMachine:
             self._sequence = 0
             self._known_action_ids.clear()
             self._restored_actions.clear()
-            pending, self._pending_actions = self._pending_actions, []
-            for pending_event, pending_source in pending:
-                self._apply_action(pending_event, pending_source)
+            self._consume_pending(hand_id)
             return previous
         if not self.current:
             if kind == "action":
@@ -129,9 +134,13 @@ class HandStateMachine:
         self.current.raw_message_count += 1
         if kind == "player":
             self._apply_player(event)
+        elif kind == "decision_request":
+            self._apply_decision_request(event)
         elif kind == "action":
+            self.current.pending_decision = None
             self._apply_action(event, source)
         elif kind == "board":
+            self.current.pending_decision = None
             append_cards = _cards(event.get("append_cards"))
             if append_cards:
                 self.current.board.extend(
@@ -144,6 +153,7 @@ class HandStateMachine:
             if event.get("pot") is not None:
                 self.current.pot = _number(event["pot"])
         elif kind == "result":
+            self.current.pending_decision = None
             self._apply_result(event)
             if event.get("complete") is True:
                 return self._close("completed")
@@ -174,7 +184,61 @@ class HandStateMachine:
         if cards:
             player.hole_cards = cards
 
+    def _apply_decision_request(self, event: Dict[str, Any]) -> None:
+        if event.get("is_hero") is not True:
+            self.current.pending_decision = None
+            return
+        user_id = _optional_text(event.get("user_id"))
+        seat = _seat(event.get("seat"))
+        player = next(
+            (
+                item
+                for item in self.current.players.values()
+                if user_id and item.user_id == user_id
+            ),
+            None,
+        )
+        if player is None and seat is not None:
+            player = self.current.players.setdefault(seat, Player(seat=seat))
+        cards = _cards(event.get("cards"))
+        if player is not None:
+            for item in self.current.players.values():
+                item.is_hero = item is player
+            player.user_id = user_id or player.user_id
+            if cards:
+                player.hole_cards = cards
+        legal_actions = []
+        for value in event.get("legal_actions") or []:
+            action = str(value or "").strip().lower().replace("-", "_")
+            if action == "allin":
+                action = "all_in"
+            if action in {"fold", "check", "call", "raise", "all_in"}:
+                legal_actions.append(action)
+        self.current.pending_decision = DecisionRequest(
+            event_sequence=_seat(event.get("_event_sequence")) or 0,
+            captured_at=_optional_text(event.get("_captured_at")) or utc_now(),
+            hand_id=_optional_text(event.get("hand_id")) or self.current.hand_id,
+            seat=seat,
+            user_id=user_id,
+            cards=cards,
+            legal_actions=list(dict.fromkeys(legal_actions)),
+            call_score=_number(event.get("call_score")) or 0.0,
+            min_raise_to=_number(event.get("min_raise_to")),
+            max_raise_to=_number(event.get("max_raise_to")),
+            countdown=_number(event.get("countdown")) or 0.0,
+            last_bet=_number(event.get("last_bet")),
+            seat_score=_number(event.get("seat_score")),
+            current_score=_number(event.get("current_score")),
+        )
+
     def _apply_action(self, event: Dict[str, Any], source: str) -> None:
+        event_hand_id = _optional_text(event.get("hand_id"))
+        if (
+            event_hand_id
+            and event_hand_id != self.current.hand_id
+            and not _same_unknown_hand(event_hand_id, self.current.hand_id)
+        ):
+            return
         seat = _seat(event.get("seat"))
         action = str(event.get("action") or "unknown").lower()
         street = str(event.get("street") or self._street_from_board()).lower()
@@ -218,12 +282,30 @@ class HandStateMachine:
         if event.get("pot") is not None:
             self.current.pot = _number(event["pot"])
 
+    def _consume_pending(self, hand_id: str) -> None:
+        pending, self._pending_actions = self._pending_actions, []
+        for pending_event, pending_source in pending:
+            pending_hand_id = _optional_text(pending_event.get("hand_id"))
+            if pending_hand_id and not (
+                pending_hand_id == hand_id
+                or _same_unknown_hand(pending_hand_id, hand_id)
+            ):
+                continue
+            self._apply_action(pending_event, pending_source)
+
     def _apply_result(self, event: Dict[str, Any]) -> None:
         seat = _seat(event.get("seat"))
         if seat is not None:
             player = self.current.players.setdefault(seat, Player(seat=seat))
-            player.net = _number(event.get("net"))
-            player.stack_end = _number(event.get("stack"))
+            player.user_id = _optional_text(event.get("user_id")) or player.user_id
+            if event.get("net") is not None:
+                player.net = _number(event.get("net"))
+            if event.get("stack") is not None:
+                player.stack_end = _number(event.get("stack"))
+            if event.get("insurance_result") is not None:
+                player.insurance_result = _number(event.get("insurance_result"))
+            if event.get("fund") is not None:
+                player.fund = _number(event.get("fund"))
             cards = _cards(event.get("cards"))
             if cards:
                 player.hole_cards = cards
@@ -248,6 +330,7 @@ class HandStateMachine:
     def _close(self, status: str) -> HandHistory:
         hand = self.current
         assert hand is not None
+        hand.pending_decision = None
         hand.status = status
         hand.ended_at = utc_now()
         self._validate(hand)
@@ -294,6 +377,8 @@ class HandStateMachine:
             player.position = _optional_text(item.get("position")) or player.position
             player.hole_cards = _cards(item.get("cards")) or player.hole_cards
             player.net = _number(item.get("net"))
+            if item.get("insurance_result") is not None:
+                player.insurance_result = _number(item.get("insurance_result"))
             player.is_hero = bool(item.get("is_hero", player.is_hero))
         if not hand.actions:
             hand.warnings.append("action order reconstructed from per-player history")
@@ -302,11 +387,12 @@ class HandStateMachine:
                 for index, action in enumerate(item.get("actions") or []):
                     street = action.get("street", "preflop")
                     by_street.setdefault(street, []).append((index, item, action))
+            history_sequence = 0
             for street in STREETS:
                 for _, item, action in sorted(
                     by_street.get(street, []), key=lambda row: (row[0], row[1].get("seat") or 0)
                 ):
-                    self._sequence += 1
+                    history_sequence += 1
                     hand.actions.append(
                         Action(
                             street=street,
@@ -316,7 +402,7 @@ class HandStateMachine:
                             amount=_number(action.get("amount")),
                             amount_to=None,
                             user_id=_optional_text(item.get("user_id")),
-                            sequence=self._sequence,
+                            sequence=history_sequence,
                             source_message="history",
                         )
                     )
@@ -359,14 +445,20 @@ class HandStateMachine:
         if any(action.sequence != index for index, action in enumerate(hand.actions, 1)):
             warn("action sequence is not contiguous")
         nets = [p.net for p in hand.players.values() if p.net is not None]
-        if len(nets) >= 2 and abs(sum(nets)) > 0.02:
-            warn(f"player net does not balance: {sum(nets):.2f}")
+        insurance = sum(p.insurance_result or 0 for p in hand.players.values())
+        funds = sum(p.fund or 0 for p in hand.players.values())
+        adjusted_balance = sum(nets) - insurance + funds
+        if len(nets) >= 2 and abs(adjusted_balance) > 0.02:
+            warn(f"player net does not balance: {adjusted_balance:.2f}")
         if not hand.actions:
             warn("no actions decoded")
 
 
 def _optional_text(value: Any) -> Optional[str]:
-    return str(value) if value is not None and str(value) else None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _action_signature(
@@ -377,3 +469,13 @@ def _action_signature(
     amount_to: Optional[float],
 ) -> tuple:
     return (seat, action.lower(), street.lower(), amount, amount_to)
+
+
+def _same_unknown_hand(first: str, second: str) -> bool:
+    first_room, _, first_bout = first.rpartition("-")
+    second_room, _, second_bout = second.rpartition("-")
+    return (
+        bool(first_bout)
+        and first_bout == second_bout
+        and ("unknown" in {first_room, second_room})
+    )

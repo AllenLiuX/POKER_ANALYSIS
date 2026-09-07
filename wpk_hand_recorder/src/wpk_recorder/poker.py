@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import itertools
 import random
+from bisect import bisect_left
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 RANKS = "23456789TJQKA"
@@ -86,26 +87,151 @@ def equity_vs_random(
     board: Sequence[str],
     trials: int = 600,
 ) -> float:
+    return equity_vs_random_multiway(
+        hole_cards, board, opponents=1, trials=trials
+    )
+
+
+def equity_vs_random_multiway(
+    hole_cards: Sequence[str],
+    board: Sequence[str],
+    opponents: int,
+    trials: int = 800,
+) -> float:
+    """Monte Carlo pot share against independent uniformly random hands."""
+
     if len(hole_cards) != 2 or len(board) > 5:
         return 0.0
+    opponents = max(1, min(int(opponents), 9))
     known = set(hole_cards) | set(board)
     deck = [f"{rank}{suit}" for rank in RANKS for suit in SUITS if f"{rank}{suit}" not in known]
     needed = 5 - len(board)
-    seed_text = "|".join([*sorted(hole_cards), *board])
+    cards_needed = opponents * 2 + needed
+    if cards_needed > len(deck):
+        return 0.0
+    seed_text = "|".join([*sorted(hole_cards), *board, f"opponents={opponents}"])
     seed = int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16)
     rng = random.Random(seed)
-    wins = ties = 0
-    for _ in range(trials):
-        drawn = rng.sample(deck, 2 + needed)
-        opponent = drawn[:2]
-        runout = [*board, *drawn[2:]]
+    share = 0.0
+    for _ in range(max(1, int(trials))):
+        drawn = rng.sample(deck, cards_needed)
+        runout = [*board, *drawn[opponents * 2 :]]
         hero_rank = best_rank([*hole_cards, *runout])
-        opponent_rank = best_rank([*opponent, *runout])
-        if hero_rank > opponent_rank:
-            wins += 1
-        elif hero_rank == opponent_rank:
-            ties += 1
-    return round((wins + ties / 2) / trials, 4)
+        opponent_ranks = [
+            best_rank([*drawn[index * 2 : index * 2 + 2], *runout])
+            for index in range(opponents)
+        ]
+        best_opponent = max(opponent_ranks)
+        if hero_rank > best_opponent:
+            share += 1.0
+        elif hero_rank == best_opponent:
+            tied_opponents = sum(rank == hero_rank for rank in opponent_ranks)
+            share += 1.0 / (tied_opponents + 1)
+    return round(share / max(1, int(trials)), 4)
+
+
+def equity_vs_weighted_ranges(
+    hole_cards: Sequence[str],
+    board: Sequence[str],
+    ranges: Sequence[Mapping[str, float]],
+    trials: int = 350,
+) -> float:
+    """Monte Carlo pot share against blocker-aware 169-class range weights."""
+
+    if len(hole_cards) != 2 or len(board) > 5 or not ranges:
+        return 0.0
+    known = set(hole_cards) | set(board)
+    full_deck = [f"{rank}{suit}" for rank in RANKS for suit in SUITS]
+    combo_classes = [
+        ((first, second), _starting_hand_class(first, second))
+        for first, second in itertools.combinations(full_deck, 2)
+    ]
+    samplers = []
+    range_fingerprints = []
+    for weights_by_class in ranges:
+        combos = []
+        cumulative = []
+        total = 0.0
+        for combo, hand_class in combo_classes:
+            weight = max(0.0, float(weights_by_class.get(hand_class, 0.0)))
+            if weight <= 0:
+                continue
+            total += weight
+            combos.append(combo)
+            cumulative.append(total)
+        if not combos:
+            combos = [combo for combo, _ in combo_classes]
+            cumulative = list(range(1, len(combos) + 1))
+        samplers.append((combos, cumulative))
+        range_fingerprints.append(
+            ",".join(
+                f"{key}:{float(value):.3f}"
+                for key, value in sorted(weights_by_class.items())
+            )
+        )
+    seed_text = "|".join(
+        [*sorted(hole_cards), *board, *range_fingerprints]
+    )
+    seed = int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    share = 0.0
+    completed = 0
+    for _ in range(max(1, int(trials))):
+        used = set(known)
+        opponent_hands = []
+        for combos, cumulative in samplers:
+            hand = _draw_weighted_combo(rng, combos, cumulative, used)
+            if hand is None:
+                opponent_hands = []
+                break
+            opponent_hands.append(hand)
+            used.update(hand)
+        if not opponent_hands:
+            continue
+        remaining = [card for card in full_deck if card not in used]
+        needed = 5 - len(board)
+        if needed > len(remaining):
+            continue
+        runout = [*board, *rng.sample(remaining, needed)]
+        hero_rank = best_rank([*hole_cards, *runout])
+        opponent_ranks = [
+            best_rank([*hand, *runout]) for hand in opponent_hands
+        ]
+        best_opponent = max(opponent_ranks)
+        if hero_rank > best_opponent:
+            share += 1.0
+        elif hero_rank == best_opponent:
+            share += 1.0 / (
+                1 + sum(rank == hero_rank for rank in opponent_ranks)
+            )
+        completed += 1
+    return round(share / completed, 4) if completed else 0.0
+
+
+def _draw_weighted_combo(
+    rng: random.Random,
+    combos: Sequence[Tuple[str, str]],
+    cumulative: Sequence[float],
+    used: set,
+) -> Optional[Tuple[str, str]]:
+    for _ in range(40):
+        index = bisect_left(cumulative, rng.random() * cumulative[-1])
+        combo = combos[min(index, len(combos) - 1)]
+        if combo[0] not in used and combo[1] not in used:
+            return combo
+    available = [
+        combo for combo in combos if combo[0] not in used and combo[1] not in used
+    ]
+    return rng.choice(available) if available else None
+
+
+def _starting_hand_class(first: str, second: str) -> str:
+    order = "AKQJT98765432"
+    first_rank, second_rank = first[:-1].upper(), second[:-1].upper()
+    if first_rank == second_rank:
+        return first_rank * 2
+    high, low = sorted((first_rank, second_rank), key=order.index)
+    return f"{high}{low}{'s' if first[-1] == second[-1] else 'o'}"
 
 
 def _five_card_rank(cards: Iterable[str]) -> Tuple[int, ...]:

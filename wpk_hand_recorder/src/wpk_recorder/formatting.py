@@ -28,13 +28,14 @@ STREET_LABELS = {
 }
 
 
-def display_card(card: str) -> str:
-    if len(card) < 2:
-        return card
-    return f"{card[:-1]}{SUITS.get(card[-1].lower(), card[-1])}"
+def display_card(card: Any) -> str:
+    text = str(card)
+    if len(text) < 2:
+        return text
+    return f"{text[:-1]}{SUITS.get(text[-1].lower(), text[-1])}"
 
 
-def display_cards(cards: Iterable[str]) -> str:
+def display_cards(cards: Iterable[Any]) -> str:
     return " ".join(display_card(card) for card in cards)
 
 
@@ -109,6 +110,10 @@ def render_hand_text(hand: HandHistory) -> str:
     for player in hand.players.values():
         if player.net is not None:
             lines.append(f"{player.alias or f'座位 {player.seat}'}：净额 {player.net:+g}")
+        if player.insurance_result:
+            lines.append(f"{player.alias or f'座位 {player.seat}'}：保险 {player.insurance_result:+g}")
+        if player.fund:
+            lines.append(f"{player.alias or f'座位 {player.seat}'}：基金费用 {player.fund:g}")
     if hand.warnings:
         lines.extend(f"警告：{warning}" for warning in hand.warnings)
     return "\n".join(lines) + "\n"

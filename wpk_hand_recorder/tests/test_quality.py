@@ -1,4 +1,4 @@
-from wpk_recorder.models import Action, HandHistory
+from wpk_recorder.models import Action, HandHistory, Player
 from wpk_recorder.quality import assess_hand
 
 
@@ -20,3 +20,14 @@ def test_interrupted_and_live_hands_are_not_used_for_stats():
     live = HandHistory(hand_id="live", status="in_progress")
     assert assess_hand(live) == ("live", [], True)
     assert assess_hand(live, stale_in_progress=True)[0] == "partial"
+
+
+def test_insurance_result_and_fund_balance_player_net():
+    hand = HandHistory(hand_id="insured", status="completed")
+    hand.actions = [Action("preflop", 1, "Buyer", "call", sequence=1)]
+    hand.players = {
+        1: Player(1, net=395, insurance_result=-10, fund=11),
+        2: Player(2, net=-416),
+    }
+
+    assert assess_hand(hand) == ("good", [], False)

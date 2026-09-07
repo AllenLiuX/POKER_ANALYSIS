@@ -32,6 +32,47 @@
       <section id="view-live" class="view active">
         <div id="current-hand" class="current-hand"></div>
         <aside class="rail">
+          <section class="reasoning-panel" aria-labelledby="reasoning-title">
+            <div class="reasoning-head">
+              <div>
+                <p class="eyebrow">RANGE MAP · LIVE SPOT</p>
+                <strong id="reasoning-title">当前局面策略</strong>
+              </div>
+              <label class="reasoning-switch">
+                <input id="llm-toggle" type="checkbox" />
+                <span>复杂节点自动调用 GPT‑5.6</span>
+              </label>
+            </div>
+            <p id="reasoning-service" class="reasoning-service">正在检查服务端配置…</p>
+            <div class="reasoning-depth" role="group" aria-label="LLM 推理深度">
+              <button class="reasoning-depth-option active" data-depth="light" type="button">
+                <strong>轻推理</strong>
+                <small>低 effort · 约 12s</small>
+              </button>
+              <button class="reasoning-depth-option" data-depth="deep" type="button">
+                <strong>重推理</strong>
+                <small>高 effort · 最多 20s</small>
+              </button>
+            </div>
+            <p class="reasoning-help">
+              本地基线始终会秒出。轻推理适合普通节点；复杂多人池、深码或关键大底池可选重推理，
+              它会发送更多行动线和对手证据。结果锁定后允许牌局继续，不猜未知底牌。
+            </p>
+            <div id="reasoning-result" class="reasoning-result">
+              <small>等待当前行动节点。</small>
+            </div>
+            <button id="llm-clear" class="reasoning-clear" type="button" hidden>
+              返回当前节点
+            </button>
+            <div class="reasoning-buttons">
+              <button id="local-run" class="reasoning-local-run" type="button" disabled>
+                等待当前行动节点
+              </button>
+              <button id="llm-run" class="reasoning-run" type="button" disabled>
+                等待当前行动节点
+              </button>
+            </div>
+          </section>
           <div class="section-heading">
             <span>事件流</span>
             <small>按服务端顺序</small>
@@ -55,13 +96,14 @@
       <section id="view-opponents" class="view">
         <div class="section-heading">
           <span>对手样本</span>
-          <small>贝叶斯后验 · 括号内为机会数</small>
+          <small>贝叶斯后验 · 点击展开画像、漏洞与 169 格翻前范围</small>
         </div>
         <div class="mode-filter" aria-label="游戏模式">
           <button class="mode-button active" data-mode="">全部</button>
           <button class="mode-button" data-mode="holdem">普通德州</button>
           <button class="mode-button" data-mode="squid">鱿鱼模式</button>
         </div>
+        <div id="inference-backtest" class="inference-backtest">正在计算留一手回测…</div>
         <div id="opponents-list" class="opponents-list"></div>
       </section>
 

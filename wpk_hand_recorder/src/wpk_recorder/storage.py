@@ -10,7 +10,15 @@ from typing import Any, Dict, List, Optional
 from .features import derive_decisions
 from .formatting import render_hand_text
 from .inference import rebuild_showdown_observations
-from .models import Action, HandHistory, Player, RawEvent, RawFrame, SquidEvent
+from .models import (
+    Action,
+    DecisionRequest,
+    HandHistory,
+    Player,
+    RawEvent,
+    RawFrame,
+    SquidEvent,
+)
 from .protocol import ProtocolMapper
 from .quality import assess_hand
 
@@ -99,6 +107,8 @@ class RecorderStore:
                 hole_cards_json TEXT NOT NULL,
                 is_hero INTEGER NOT NULL,
                 net REAL,
+                insurance_result REAL,
+                fund REAL,
                 PRIMARY KEY(hand_id, seat)
             );
             CREATE INDEX IF NOT EXISTS idx_hand_players_user ON hand_players(user_id, hand_id);
@@ -175,6 +185,8 @@ class RecorderStore:
                 alias TEXT,
                 net REAL,
                 stack_end REAL,
+                insurance_result REAL,
+                fund REAL,
                 shown_cards_json TEXT NOT NULL,
                 PRIMARY KEY(hand_id, seat)
             );
@@ -224,6 +236,35 @@ class RecorderStore:
                 event_sequence INTEGER,
                 PRIMARY KEY(hand_id, user_id)
             );
+            CREATE TABLE IF NOT EXISTS strategy_evaluations (
+                decision_id TEXT NOT NULL,
+                state_hash TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                hand_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                engine_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                recommended_action TEXT,
+                raise_to REAL,
+                confidence TEXT,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(decision_id, state_hash, engine_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_strategy_evaluations_hand
+                ON strategy_evaluations(hand_id, sequence);
+            CREATE TABLE IF NOT EXISTS decision_states (
+                decision_id TEXT NOT NULL,
+                state_hash TEXT NOT NULL,
+                sequence INTEGER NOT NULL UNIQUE,
+                hand_id TEXT NOT NULL,
+                captured_at TEXT,
+                source TEXT NOT NULL,
+                quality_status TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(decision_id, state_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_decision_states_hand
+                ON decision_states(hand_id, sequence);
             CREATE TABLE IF NOT EXISTS showdown_observations (
                 hand_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -263,9 +304,14 @@ class RecorderStore:
             ("excluded_from_stats", "INTEGER NOT NULL DEFAULT 1"),
         ):
             self._ensure_column("hands", name, definition)
+        for table in ("hand_players", "results"):
+            self._ensure_column(table, "insurance_result", "REAL")
+            self._ensure_column(table, "fund", "REAL")
         self.connection.commit()
         self._backfill_decisions()
         self._repair_boards_from_raw_events()
+        self._repair_results_from_raw_events()
+        self._repair_action_sequences()
         self._backfill_hand_squid_data()
         self._audit_existing_hands()
         rebuild_showdown_observations(self.connection)
@@ -326,6 +372,57 @@ class RecorderStore:
                 hand.pot = recovered_pot
                 self.save_hand(hand, final=False)
 
+    def _repair_results_from_raw_events(self) -> None:
+        mapper = ProtocolMapper()
+        rows = self.connection.execute(
+            "SELECT hand_id, hand_json FROM hands"
+        ).fetchall()
+        for hand_id, encoded_hand in rows:
+            hand = _hand_from_dict(json.loads(encoded_hand))
+            changed = False
+            events = self.connection.execute(
+                """
+                SELECT payload_json FROM raw_events
+                WHERE hand_id = ?
+                  AND event_name IN ('playResultNotify', 'updateHistoryData')
+                ORDER BY sequence
+                """,
+                (hand_id,),
+            ).fetchall()
+            for (payload_json,) in events:
+                for event in mapper.canonical_events(json.loads(payload_json)):
+                    result_players = (
+                        event.get("players") or []
+                        if event.get("event") == "history"
+                        else [event]
+                    )
+                    for result in result_players:
+                        if (
+                            event.get("event") not in {"result", "history"}
+                            or result.get("seat") is None
+                        ):
+                            continue
+                        try:
+                            seat = int(result["seat"])
+                        except (TypeError, ValueError):
+                            continue
+                        player = hand.players.setdefault(seat, Player(seat=seat))
+                        player.user_id = (
+                            str(result["user_id"])
+                            if result.get("user_id")
+                            else player.user_id
+                        )
+                        if result.get("insurance_result") is not None:
+                            player.insurance_result = _number(
+                                result["insurance_result"]
+                            )
+                            changed = True
+                        if result.get("fund") is not None:
+                            player.fund = _number(result["fund"])
+                            changed = True
+            if changed:
+                self.save_hand(hand, final=False)
+
     def _audit_existing_hands(self) -> None:
         rows = self.connection.execute(
             "SELECT hand_id, hand_json FROM hands"
@@ -358,6 +455,65 @@ class RecorderStore:
                         hand_id,
                     ),
                 )
+
+    def _repair_action_sequences(self) -> None:
+        rows = self.connection.execute(
+            "SELECT hand_id, hand_json FROM hands"
+        ).fetchall()
+        for _, encoded_hand in rows:
+            hand = _hand_from_dict(json.loads(encoded_hand))
+            original_count = len(hand.actions)
+            hand_number = _hand_number(hand.hand_id)
+            seen_ids = set()
+            actions = []
+            removed_cross_hand = 0
+            modified = False
+            for action in hand.actions:
+                action_id = str(action.action_id) if action.action_id is not None else None
+                action.action_id = action_id
+                action_hand_number = _action_hand_number(action_id)
+                if (
+                    hand_number is not None
+                    and action_hand_number is not None
+                    and action_hand_number != hand_number
+                ):
+                    removed_cross_hand += 1
+                    continue
+                if action_id and action_id in seen_ids:
+                    continue
+                if action_id:
+                    seen_ids.add(action_id)
+                if action.action in {"ante", "small_blind", "big_blind", "straddle"}:
+                    modified = modified or action.street != "preflop"
+                    action.street = "preflop"
+                if action.seat in hand.players:
+                    player = hand.players[action.seat]
+                    modified = modified or (
+                        (not action.player and bool(player.alias))
+                        or (not action.user_id and bool(player.user_id))
+                    )
+                    action.player = action.player or player.alias
+                    action.user_id = action.user_id or player.user_id
+                actions.append(action)
+            should_renumber = any(
+                action.sequence != sequence
+                for sequence, action in enumerate(actions, 1)
+            )
+            if (
+                len(actions) == original_count
+                and not should_renumber
+                and not removed_cross_hand
+                and not modified
+            ):
+                continue
+            for sequence, action in enumerate(actions, 1):
+                action.sequence = sequence
+            if removed_cross_hand:
+                hand.warnings.append(
+                    f"removed {removed_cross_hand} cross-hand actions during repair"
+                )
+            hand.actions = actions
+            self.save_hand(hand, final=False)
 
     def _backfill_hand_squid_data(self) -> None:
         with self.connection:
@@ -438,6 +594,35 @@ class RecorderStore:
         self.connection.commit()
         if cursor.rowcount:
             _append_json(self.events_path, item)
+
+    def save_decision_state(self, decision: Dict[str, Any]) -> None:
+        quality = decision.get("quality") or decision.get("state_quality") or {}
+        status = (
+            "valid"
+            if quality.get("money_ev_ready")
+            else "baseline_only"
+            if quality.get("valid")
+            else "blocked"
+        )
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO decision_states(
+                decision_id, state_hash, sequence, hand_id, captured_at,
+                source, quality_status, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(decision.get("decision_id") or ""),
+                str(decision.get("state_hash") or ""),
+                int(decision.get("sequence") or 0),
+                str(decision.get("hand_id") or ""),
+                decision.get("captured_at"),
+                str(decision.get("decision_source") or "live"),
+                status,
+                json.dumps(decision, ensure_ascii=False, default=_json_default),
+            ),
+        )
+        self.connection.commit()
 
     def _save_hand_squid_payload(
         self,
@@ -585,8 +770,8 @@ class RecorderStore:
                     """
                     INSERT INTO hand_players (
                         hand_id, seat, user_id, alias, position, stack_start, stack_end,
-                        hole_cards_json, is_hero, net
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        hole_cards_json, is_hero, net, insurance_result, fund
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         hand.hand_id,
@@ -599,13 +784,16 @@ class RecorderStore:
                         json.dumps(player.hole_cards),
                         int(player.is_hero),
                         player.net,
+                        player.insurance_result,
+                        player.fund,
                     ),
                 )
                 self.connection.execute(
                     """
                     INSERT INTO results(
-                        hand_id, seat, user_id, alias, net, stack_end, shown_cards_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        hand_id, seat, user_id, alias, net, stack_end,
+                        insurance_result, fund, shown_cards_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         hand.hand_id,
@@ -614,6 +802,8 @@ class RecorderStore:
                         player.alias,
                         player.net,
                         player.stack_end,
+                        player.insurance_result,
+                        player.fund,
                         json.dumps(player.hole_cards),
                     ),
                 )
@@ -805,6 +995,51 @@ class RecorderStore:
         os.chmod(self.live_path, 0o600)
 
 
+def save_strategy_evaluation(
+    data_dir: Path,
+    decision: Dict[str, Any],
+    evaluation: Dict[str, Any],
+) -> bool:
+    """Persist a versioned recommendation without making advice depend on audit I/O."""
+
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists():
+        return False
+    recommended = evaluation.get("recommended") or {}
+    try:
+        with sqlite3.connect(path, timeout=2) as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO strategy_evaluations(
+                    decision_id, state_hash, sequence, hand_id, created_at,
+                    engine_version, status, recommended_action, raise_to,
+                    confidence, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(decision.get("decision_id") or ""),
+                    str(decision.get("state_hash") or ""),
+                    int(decision.get("sequence") or 0),
+                    str(decision.get("hand_id") or ""),
+                    datetime.now(timezone.utc).isoformat(),
+                    str(evaluation.get("engine_version") or "unknown"),
+                    str(evaluation.get("status") or "unknown"),
+                    recommended.get("action"),
+                    recommended.get("raise_to"),
+                    evaluation.get("confidence"),
+                    json.dumps(
+                        evaluation,
+                        ensure_ascii=False,
+                        default=_json_default,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        return True
+    except (sqlite3.Error, TypeError, ValueError):
+        return False
+
+
 def render_text(hand: HandHistory) -> str:
     return render_hand_text(hand)
 
@@ -837,6 +1072,14 @@ def _hand_number(hand_id: str) -> Optional[int]:
         return int(hand_id.rsplit("-", 1)[-1])
     except (TypeError, ValueError):
         return None
+
+
+def _action_hand_number(action_id: Optional[str]) -> Optional[int]:
+    try:
+        number = int(action_id) if action_id is not None else 0
+    except (TypeError, ValueError):
+        return None
+    return number // 1000 if number >= 1000 else None
 
 
 def _normalize_time(value: Any) -> Optional[str]:
@@ -881,6 +1124,8 @@ def _hand_from_dict(data: Dict[str, Any]) -> HandHistory:
         "hole_cards",
         "is_hero",
         "net",
+        "insurance_result",
+        "fund",
     }
     action_fields = {
         "street",
@@ -907,6 +1152,9 @@ def _hand_from_dict(data: Dict[str, Any]) -> HandHistory:
         Action(**{key: value for key, value in item.items() if key in action_fields})
         for item in data.get("actions", [])
     ]
+    for action in actions:
+        if action.action_id is not None:
+            action.action_id = str(action.action_id)
     hand_fields = {
         "hand_id",
         "table_id",
@@ -931,4 +1179,35 @@ def _hand_from_dict(data: Dict[str, Any]) -> HandHistory:
     )
     hand.players = players
     hand.actions = actions
+    pending = data.get("pending_decision")
+    if isinstance(pending, dict):
+        request_fields = {
+            "event_sequence",
+            "captured_at",
+            "hand_id",
+            "seat",
+            "user_id",
+            "cards",
+            "legal_actions",
+            "call_score",
+            "min_raise_to",
+            "max_raise_to",
+            "countdown",
+            "last_bet",
+            "seat_score",
+            "current_score",
+        }
+        hand.pending_decision = DecisionRequest(
+            **{
+                key: value
+                for key, value in pending.items()
+                if key in request_fields
+            }
+        )
     return hand
+
+
+def hand_from_dict(data: Dict[str, Any]) -> HandHistory:
+    """Public decoder for the persisted HandHistory representation."""
+
+    return _hand_from_dict(data)

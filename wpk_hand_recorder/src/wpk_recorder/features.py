@@ -9,6 +9,7 @@ from .models import Action, HandHistory
 AGGRESSIVE = {"bet", "raise", "all_in"}
 VOLUNTARY = AGGRESSIVE | {"call"}
 BLINDS = {"small_blind", "big_blind", "ante", "straddle"}
+STREETS_ORDER = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
 
 
 @dataclass
@@ -51,10 +52,92 @@ class DecisionSnapshot:
         return data
 
 
+@dataclass
+class ProjectedHandState:
+    street: str
+    reconstructed_pot: float
+    street_contributions: Dict[int, float]
+    total_contributions: Dict[int, float]
+    stacks: Dict[int, float]
+    active_seats: Set[int]
+    folded_seats: Set[int]
+    preflop_aggressor: Optional[int]
+    side_pots: List[Dict[str, Any]]
+
+
+def project_hand_state(
+    hand: HandHistory,
+    before_action_sequence: Optional[int] = None,
+) -> ProjectedHandState:
+    """Pure action replay used by both live decisions and historical snapshots."""
+
+    stacks = {
+        seat: float(player.stack_start)
+        for seat, player in hand.players.items()
+        if player.stack_start is not None
+    }
+    active = set(hand.players)
+    folded: Set[int] = set()
+    street_contributions: Dict[int, float] = {}
+    total_contributions: Dict[int, float] = {}
+    reconstructed_pot = 0.0
+    current_street = ""
+    preflop_aggressor = None
+    for action in sorted(hand.actions, key=lambda item: item.sequence):
+        if (
+            before_action_sequence is not None
+            and action.sequence >= before_action_sequence
+        ):
+            break
+        if action.street != current_street:
+            current_street = action.street
+            street_contributions = {}
+        seat = action.seat
+        amount = max(0.0, float(action.amount or 0.0))
+        if seat is not None:
+            previous = street_contributions.get(seat, 0.0)
+            street_contributions[seat] = (
+                float(action.amount_to)
+                if action.amount_to is not None
+                else previous + amount
+            )
+            total_contributions[seat] = (
+                total_contributions.get(seat, 0.0) + amount
+            )
+            if action.stack_after is not None:
+                stacks[seat] = float(action.stack_after)
+            elif seat in stacks:
+                stacks[seat] = max(0.0, stacks[seat] - amount)
+            kind = _action(action.action)
+            if kind == "fold":
+                active.discard(seat)
+                folded.add(seat)
+            if action.street == "preflop" and kind in AGGRESSIVE:
+                preflop_aggressor = seat
+        reconstructed_pot += amount
+    street = current_street or _street_for_board(hand.board)
+    if before_action_sequence is None:
+        board_street = _street_for_board(hand.board)
+        if STREETS_ORDER.get(board_street, 0) > STREETS_ORDER.get(street, 0):
+            street = board_street
+            street_contributions = {}
+    return ProjectedHandState(
+        street=street,
+        reconstructed_pot=reconstructed_pot,
+        street_contributions=street_contributions,
+        total_contributions=total_contributions,
+        stacks=stacks,
+        active_seats=active,
+        folded_seats=folded,
+        preflop_aggressor=preflop_aggressor,
+        side_pots=_project_side_pots(total_contributions, active),
+    )
+
+
 def derive_decisions(hand: HandHistory) -> List[DecisionSnapshot]:
     positions = derive_positions(hand)
     for seat, position in positions.items():
-        if seat in hand.players and not hand.players[seat].position:
+        if seat in hand.players and not (hand.players[seat].position or "").strip():
             hand.players[seat].position = position
 
     stacks = {
@@ -74,12 +157,20 @@ def derive_decisions(hand: HandHistory) -> List[DecisionSnapshot]:
     snapshots: List[DecisionSnapshot] = []
 
     for action in sorted(hand.actions, key=lambda item: item.sequence):
+        projected = project_hand_state(
+            hand, before_action_sequence=action.sequence
+        )
         if action.street != current_street:
             current_street = action.street
             contributions = {}
             street_actions = []
             street_raises = 0
             checked = set()
+        contributions = dict(projected.street_contributions)
+        stacks = dict(projected.stacks)
+        active = set(projected.active_seats)
+        pot = projected.reconstructed_pot
+        preflop_aggressor = projected.preflop_aggressor
         kind = _action(action.action)
         seat = action.seat
         contribution = contributions.get(seat, 0.0) if seat is not None else 0.0
@@ -312,6 +403,44 @@ def _is_in_position(
 def _action(value: str) -> str:
     normalized = value.lower().replace(" ", "_").replace("-", "_")
     return "all_in" if normalized in {"allin", "all_in"} else normalized
+
+
+def _street_for_board(board: List[str]) -> str:
+    return {
+        0: "preflop",
+        3: "flop",
+        4: "turn",
+        5: "river",
+    }.get(min(5, len(board)), "preflop")
+
+
+def _project_side_pots(
+    contributions: Dict[int, float], active_seats: Set[int]
+) -> List[Dict[str, Any]]:
+    positive = {
+        seat: max(0.0, float(amount))
+        for seat, amount in contributions.items()
+        if amount > 0
+    }
+    levels = sorted(set(positive.values()))
+    pots: List[Dict[str, Any]] = []
+    previous = 0.0
+    for level in levels:
+        contributors = [
+            seat for seat, amount in positive.items() if amount >= level
+        ]
+        amount = (level - previous) * len(contributors)
+        if amount > 0:
+            pots.append(
+                {
+                    "amount": amount,
+                    "eligible_seats": sorted(
+                        seat for seat in contributors if seat in active_seats
+                    ),
+                }
+            )
+        previous = level
+    return pots
 
 
 def _rank_value(rank: str) -> int:

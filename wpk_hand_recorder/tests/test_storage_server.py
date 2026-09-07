@@ -129,6 +129,11 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
     response = client.get("/api/snapshot")
     assert response.status_code == 200
     assert response.json()["hands"][0]["hand_id"] == "T1-1"
+    range_response = client.get(
+        "/api/players/villain/preflop-range?position=ALL&line=open_raise"
+    )
+    assert range_response.status_code == 200
+    assert len(range_response.json()["matrix"]) == 169
     csv_response = client.get("/api/export/hands.csv")
     assert "Villain" in csv_response.text
     assert client.get("/api/export/hands.json").json()[0]["hand_id"] == "T1-1"
@@ -203,3 +208,185 @@ def test_hands_sort_by_normalized_time_and_show_numeric_hand_number(tmp_path):
     hands = snapshot(tmp_path)["hands"]
     assert [hand["hand_number"] for hand in hands] == [40, 39]
     assert hands[0]["played_at_cn"] == "2026-09-07 23:47:35"
+
+
+def test_live_hand_is_current_even_if_previous_time_is_slightly_later(tmp_path):
+    store = RecorderStore(tmp_path)
+    previous = HandHistory(
+        hand_id="room-3",
+        started_at="2026-09-07T16:16:43.180000+00:00",
+        status="completed",
+    )
+    previous.actions = [Action("preflop", 1, "A", "fold", sequence=1)]
+    current = HandHistory(
+        hand_id="room-4",
+        started_at="2026-09-07T16:16:43.174000+00:00",
+        status="in_progress",
+    )
+    current.actions = [Action("preflop", 1, "A", "call", sequence=1)]
+    store.save_hand(previous)
+    store.save_hand(current, final=False)
+    store.close()
+
+    data = snapshot(tmp_path)
+    assert data["current_hand"]["hand_id"] == "room-4"
+    assert [hand["hand_number"] for hand in data["hands"][:2]] == [4, 3]
+
+
+def test_startup_repair_removes_cross_hand_actions_and_renumbers(tmp_path):
+    store = RecorderStore(tmp_path)
+    hand = HandHistory(hand_id="room-35", status="completed")
+    hand.actions = [
+        Action(
+            "flop",
+            1,
+            "Previous",
+            "fold",
+            action_id="34019",
+            sequence=1,
+        ),
+        Action(
+            "flop",
+            2,
+            "Current",
+            "ante",
+            action_id="35001",
+            sequence=20,
+        ),
+        Action(
+            "preflop",
+            2,
+            "Current",
+            "call",
+            action_id="35002",
+            sequence=36,
+        ),
+    ]
+    store.save_hand(hand, final=False)
+    store.close()
+
+    repaired_store = RecorderStore(tmp_path)
+    repaired = repaired_store.load_hand("room-35")
+    repaired_store.close()
+
+    assert repaired is not None
+    assert [action.action_id for action in repaired.actions] == ["35001", "35002"]
+    assert [action.sequence for action in repaired.actions] == [1, 2]
+    assert [action.street for action in repaired.actions] == ["preflop", "preflop"]
+    assert repaired.quality_status == "good"
+
+
+def test_existing_insured_hand_is_repaired_from_raw_result(tmp_path):
+    hand = HandHistory(hand_id="room-5", status="completed")
+    hand.actions = [Action("preflop", 1, "Buyer", "call", sequence=1)]
+    hand.players = {
+        1: Player(1, user_id="buyer", alias="Buyer", net=395),
+        2: Player(2, user_id="other", alias="Other", net=-416),
+    }
+    store = RecorderStore(tmp_path)
+    store.save_hand(hand)
+    store.save_raw_event(
+        RawEvent(
+            timestamp="2026-01-01T00:00:00+00:00",
+            event_name="playResultNotify",
+            sequence=1,
+            hand_id="room-5",
+            payload={
+                "event": "playResultNotify",
+                "data": {
+                    "thanList": [
+                        {
+                            "seatNum": 1,
+                            "userId": "buyer",
+                            "insuranceResult": -10,
+                            "fund": 11,
+                        },
+                        {
+                            "seatNum": 2,
+                            "userId": "other",
+                            "insuranceResult": 0,
+                            "fund": 0,
+                        },
+                    ]
+                },
+            },
+        )
+    )
+    store.close()
+
+    migrated = RecorderStore(tmp_path)
+    migrated.close()
+    repaired = snapshot(tmp_path)["hands"][0]
+    buyer = next(player for player in repaired["players"] if player["seat"] == 1)
+    assert repaired["quality_status"] == "good"
+    assert buyer["insurance_result"] == -10
+    assert buyer["fund"] == 11
+
+
+def test_existing_insured_hand_falls_back_to_history_fields(tmp_path):
+    hand = HandHistory(hand_id="room-6", status="completed")
+    hand.actions = [Action("preflop", 1, "Buyer", "call", sequence=1)]
+    hand.players = {
+        1: Player(1, user_id="buyer", net=90),
+        2: Player(2, user_id="other", net=-100),
+    }
+    store = RecorderStore(tmp_path)
+    store.save_hand(hand)
+    store.save_raw_event(
+        RawEvent(
+            timestamp="2026-01-01T00:00:00+00:00",
+            event_name="updateHistoryData",
+            sequence=1,
+            hand_id="room-6",
+            payload={
+                "event": "updateHistoryData",
+                "data": {
+                    "handList1": [
+                        {
+                            "roomId": "room",
+                            "handNum": 6,
+                            "seatNum": 1,
+                            "userId": "buyer",
+                            "changeScore": 90,
+                            "insuranceInvest": 10,
+                            "insuranceWin": 0,
+                        },
+                        {
+                            "roomId": "room",
+                            "handNum": 6,
+                            "seatNum": 2,
+                            "userId": "other",
+                            "changeScore": -100,
+                            "insuranceInvest": 0,
+                            "insuranceWin": 0,
+                        },
+                    ]
+                },
+            },
+        )
+    )
+    store.close()
+
+    migrated = RecorderStore(tmp_path)
+    migrated.close()
+    repaired = snapshot(tmp_path)["hands"][0]
+    assert repaired["quality_status"] == "good"
+    assert repaired["players"][0]["insurance_result"] == -10
+
+
+def test_migration_deduplicates_ids_and_repairs_offset_sequences(tmp_path):
+    hand = HandHistory(hand_id="room-8", status="completed")
+    hand.actions = [
+        Action("preflop", 1, "A", "call", action_id=100, sequence=10),
+        Action("preflop", 1, "A", "call", action_id="100", sequence=11),
+    ]
+    store = RecorderStore(tmp_path)
+    store.save_hand(hand)
+    store.close()
+
+    migrated = RecorderStore(tmp_path)
+    migrated.close()
+    repaired = snapshot(tmp_path)["hands"][0]
+    assert repaired["quality_status"] == "good"
+    assert [action["sequence"] for action in repaired["actions"]] == [1]
+    assert repaired["actions"][0]["action_id"] == "100"

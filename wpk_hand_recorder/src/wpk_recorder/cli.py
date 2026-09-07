@@ -11,10 +11,11 @@ import sys
 import webbrowser
 from collections import Counter
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from .cdp import CDPRecorder, page_target
 from .decoder import decode_payload, summarize_shape
+from .decision_state import decision_state_from_hand
 from .protocol import ProtocolMapper
 from .state import HandStateMachine
 from .storage import RecorderStore
@@ -62,6 +63,16 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--protocol", type=Path)
     run.add_argument("--retain-wire", action="store_true")
     run.add_argument("--no-browser", action="store_true", help="do not open browser windows")
+
+    record = sub.add_parser("record", help="start the recorder without the dashboard")
+    record.add_argument("--port", type=int, default=9223, help="Chrome CDP port")
+    record.add_argument("--data-dir", type=Path, default=Path("data"))
+    record.add_argument("--protocol", type=Path)
+    record.add_argument("--retain-wire", action="store_true")
+
+    dashboard = sub.add_parser("dashboard", help="start only the local live dashboard")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--data-dir", type=Path, default=Path("data"))
     return root
 
 
@@ -92,6 +103,53 @@ def launch_browser(port: int, profile: Path, url: str) -> None:
     print(f"Chrome launched; local CDP port: {port}")
 
 
+async def _record_while_dashboard_alive(
+    recorder: CDPRecorder,
+    dashboard_task: "asyncio.Task[Any]",
+) -> None:
+    async def record_forever() -> None:
+        while True:
+            try:
+                await recorder.run()
+            except (OSError, RuntimeError) as error:
+                print(f"Recorder reconnecting: {error}", file=sys.stderr)
+            await asyncio.sleep(1)
+
+    recorder_task = asyncio.create_task(record_forever())
+    try:
+        done, _ = await asyncio.wait(
+            (dashboard_task, recorder_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if dashboard_task in done:
+            await dashboard_task
+            raise RuntimeError("Dashboard server stopped unexpectedly")
+        await recorder_task
+    finally:
+        recorder_task.cancel()
+        await asyncio.gather(recorder_task, return_exceptions=True)
+
+
+async def _ensure_browser(port: int) -> None:
+    try:
+        page_target(port)
+        return
+    except (OSError, RuntimeError):
+        launch_browser(
+            port,
+            Path.home() / ".wpk-recorder" / "chrome-profile",
+            DEFAULT_URL,
+        )
+    for _ in range(30):
+        await asyncio.sleep(0.5)
+        try:
+            page_target(port)
+            return
+        except (OSError, RuntimeError):
+            continue
+    raise RuntimeError("Chrome WPK page did not become ready")
+
+
 def capture(args: argparse.Namespace) -> int:
     page_target(args.port)
     store = RecorderStore(args.data_dir, retain_raw=args.retain_raw)
@@ -112,6 +170,48 @@ def capture(args: argparse.Namespace) -> int:
     return 0
 
 
+def record_system(args: argparse.Namespace) -> int:
+    store = RecorderStore(args.data_dir, retain_raw=args.retain_wire)
+    recorder = CDPRecorder(
+        store=store,
+        mapper=ProtocolMapper(args.protocol),
+        debug_port=args.port,
+        include_sent=args.retain_wire,
+    )
+
+    async def record_forever() -> None:
+        await _ensure_browser(args.port)
+        print("Recorder attached. Press Ctrl-C to stop.")
+        while True:
+            try:
+                await recorder.run()
+            except (OSError, RuntimeError) as error:
+                print(f"Recorder reconnecting: {error}", file=sys.stderr)
+            await asyncio.sleep(1)
+
+    try:
+        asyncio.run(record_forever())
+    except KeyboardInterrupt:
+        print("\nStopping recorder...")
+    finally:
+        store.close()
+    return 0
+
+
+def serve_dashboard(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .server import create_app
+
+    uvicorn.run(
+        create_app(args.data_dir),
+        host="127.0.0.1",
+        port=args.port,
+        log_level="warning",
+    )
+    return 0
+
+
 def run_system(args: argparse.Namespace) -> int:
     from uvicorn import Config, Server
 
@@ -126,24 +226,11 @@ def run_system(args: argparse.Namespace) -> int:
     )
 
     async def serve_and_record() -> None:
-        try:
-            page_target(args.port)
-        except (OSError, RuntimeError):
-            launch_browser(
-                args.port,
-                Path.home() / ".wpk-recorder" / "chrome-profile",
-                DEFAULT_URL,
-            )
-            for _ in range(30):
-                await asyncio.sleep(0.5)
-                try:
-                    page_target(args.port)
-                    break
-                except (OSError, RuntimeError):
-                    continue
-            else:
-                raise RuntimeError("Chrome WPK page did not become ready")
-        app = create_app(args.data_dir)
+        await _ensure_browser(args.port)
+        app = create_app(
+            args.data_dir,
+            live_hand_provider=recorder.current_hand_snapshot,
+        )
         server = Server(
             Config(
                 app,
@@ -155,23 +242,20 @@ def run_system(args: argparse.Namespace) -> int:
         # Embedded server: let asyncio.run handle Ctrl-C instead of letting
         # uvicorn replace and replay process-wide signal handlers.
         server_task = asyncio.create_task(server._serve())
-        await asyncio.sleep(0.5)
-        dashboard_url = f"http://127.0.0.1:{args.dashboard_port}/"
-        if not args.no_browser:
-            webbrowser.open(dashboard_url)
-        print(f"Dashboard: {dashboard_url}")
-        print("Recorder attached. Press Ctrl-C to stop.")
         try:
-            while not server_task.done():
-                try:
-                    await recorder.run()
-                except (OSError, RuntimeError) as error:
-                    print(f"Recorder reconnecting: {error}", file=sys.stderr)
-                if not server_task.done():
-                    await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
+            if server_task.done():
+                await server_task
+                raise RuntimeError("Dashboard server stopped during startup")
+            dashboard_url = f"http://127.0.0.1:{args.dashboard_port}/"
+            if not args.no_browser:
+                webbrowser.open(dashboard_url)
+            print(f"Dashboard: {dashboard_url}")
+            print("Recorder attached. Press Ctrl-C to stop.")
+            await _record_while_dashboard_alive(recorder, server_task)
         finally:
             server.should_exit = True
-            await server_task
+            await asyncio.gather(server_task, return_exceptions=True)
 
     try:
         asyncio.run(serve_and_record())
@@ -224,7 +308,14 @@ def replay(data_dir: Path, protocol_path: Path) -> int:
     rows = connection.execute(
         "SELECT sha256, payload_b64 FROM frames WHERE payload_b64 IS NOT NULL"
     ).fetchall()
+    raw_events = connection.execute(
+        """
+        SELECT sequence, timestamp, payload_json
+        FROM raw_events ORDER BY sequence
+        """
+    ).fetchall()
     connection.execute("DELETE FROM hands")
+    connection.execute("DELETE FROM decision_states")
     connection.commit()
     connection.close()
     hands_path = data_dir / "hands.jsonl"
@@ -248,10 +339,55 @@ def replay(data_dir: Path, protocol_path: Path) -> int:
         if partial:
             store.save_hand(partial)
             completed += 1
+        _rebuild_replay_decision_states(store, protocol_path, raw_events)
     finally:
         store.close()
     print(f"Replayed {len(rows)} raw frames; wrote {completed} hand(s)")
     return 0
+
+
+def _rebuild_replay_decision_states(
+    store: RecorderStore,
+    protocol_path: Path,
+    rows: Sequence[Sequence[Any]],
+) -> int:
+    mapper = ProtocolMapper(protocol_path)
+    state = HandStateMachine()
+    active_squid_round_id = None
+    saved = 0
+    for sequence, timestamp, payload_json in rows:
+        payload = json.loads(payload_json)
+        for event in mapper.canonical_events(payload):
+            event["_event_sequence"] = int(sequence)
+            event["_captured_at"] = str(timestamp)
+            if event.get("event") == "squid":
+                scene = int(event.get("scene") or 0)
+                if scene in {1, 2, 3, 5, 6}:
+                    active_squid_round_id = event.get("round_id")
+                elif scene == 4:
+                    active_squid_round_id = None
+                continue
+            state.apply(event, source="replay")
+            if state.current is None:
+                continue
+            if active_squid_round_id:
+                state.current.game_mode = "squid"
+                state.current.squid_round_id = str(active_squid_round_id)
+            if event.get("event") != "decision_request":
+                continue
+            request = state.current.pending_decision
+            countdown = float(request.countdown or 0.0) if request else 0.0
+            if countdown > 300:
+                countdown /= 1000.0
+            decision = decision_state_from_hand(
+                state.current,
+                source="replay",
+                remaining_ms=round(countdown * 1000),
+            )
+            if decision is not None:
+                store.save_decision_state(decision)
+                saved += 1
+    return saved
 
 
 def purge_raw(data_dir: Path) -> int:
@@ -284,6 +420,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         if args.command == "capture":
             return capture(args)
+        if args.command == "record":
+            return record_system(args)
+        if args.command == "dashboard":
+            return serve_dashboard(args)
         if args.command == "inspect":
             return inspect_capture(args.data_dir)
         if args.command == "replay":

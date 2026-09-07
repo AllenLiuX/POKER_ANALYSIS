@@ -68,6 +68,26 @@ class Player:
     hole_cards: List[str] = field(default_factory=list)
     is_hero: bool = False
     net: Optional[float] = None
+    insurance_result: Optional[float] = None
+    fund: Optional[float] = None
+
+
+@dataclass
+class DecisionRequest:
+    event_sequence: int
+    captured_at: str
+    hand_id: str
+    seat: Optional[int] = None
+    user_id: Optional[str] = None
+    cards: List[str] = field(default_factory=list)
+    legal_actions: List[str] = field(default_factory=list)
+    call_score: float = 0.0
+    min_raise_to: Optional[float] = None
+    max_raise_to: Optional[float] = None
+    countdown: float = 0.0
+    last_bet: Optional[float] = None
+    seat_score: Optional[float] = None
+    current_score: Optional[float] = None
 
 
 @dataclass
@@ -91,6 +111,7 @@ class HandHistory:
     squid_round_id: Optional[str] = None
     quality_status: str = "unknown"
     quality_reasons: List[str] = field(default_factory=list)
+    pending_decision: Optional[DecisionRequest] = None
 
     def as_dict(self) -> Dict[str, Any]:
         data = asdict(self)

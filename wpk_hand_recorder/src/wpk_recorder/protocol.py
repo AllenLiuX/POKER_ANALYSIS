@@ -80,6 +80,7 @@ class ProtocolMapper:
         self.big_blind: Optional[float] = None
         self.ante: Optional[float] = None
         self.hero_seat: Optional[int] = None
+        self.current_user_id: Optional[str] = None
         self.button_seat: Optional[int] = None
         self.squid_round_id: Optional[str] = None
         self.squid_counter = 0
@@ -87,6 +88,9 @@ class ProtocolMapper:
     def canonical_events(self, value: Any) -> Iterable[Dict[str, Any]]:
         for message in self._message_maps(value):
             flattened = self._unwrap(message)
+            runtime_user_id = flattened.get("_recorderCurrentUserId")
+            if runtime_user_id is not None:
+                self.current_user_id = str(runtime_user_id)
             raw_event = self._get(flattened, "event")
             if isinstance(raw_event, str):
                 special = list(self._wpk_runtime_events(raw_event, flattened))
@@ -135,13 +139,66 @@ class ProtocolMapper:
                 if isinstance(player, Mapping):
                     yield self._player_event(player)
             return
+        if raw_event == "userOptNotify":
+            user_id = (
+                str(message.get("userId"))
+                if message.get("userId") is not None
+                else ""
+            )
+            seat = self.user_seats.get(user_id)
+            yield {
+                "event": "decision_request",
+                "hand_id": _hand_id(self.room_id, self.bout),
+                "seat": seat,
+                "user_id": user_id or None,
+                "is_hero": bool(
+                    (
+                        self.hero_seat not in {None, 0}
+                        and seat == self.hero_seat
+                    )
+                    or (
+                        self.current_user_id
+                        and user_id == self.current_user_id
+                    )
+                ),
+                "cards": _card_list(message.get("handCards")),
+                "legal_actions": [
+                    str(action).strip().lower()
+                    for action in message.get("canActionList") or []
+                ],
+                "call_score": message.get("callScore"),
+                "min_raise_to": message.get("minRaiseScore"),
+                "max_raise_to": message.get("maxRaiseScore"),
+                "countdown": message.get("countDown"),
+                "last_bet": message.get("lastBet"),
+                "seat_score": message.get("seatScore"),
+                "current_score": message.get("currentScore"),
+                "_source_event": raw_event,
+            }
+            return
         if raw_event in {"actionNotify", "actionHistoryNotify"}:
-            for action in message.get("actionList") or []:
+            action_list = message.get("actionList") or []
+            action_bouts = {
+                bout
+                for action in action_list
+                if isinstance(action, Mapping)
+                if (bout := _action_bout(action.get("actionId"))) is not None
+            }
+            if raw_event == "actionNotify" and len(action_bouts) == 1:
+                action_bout = str(next(iter(action_bouts)))
+                if action_bout != self.bout:
+                    self.bout = action_bout
+                    yield self._start_event(self.bout)
+            for action in action_list:
                 if not isinstance(action, Mapping):
                     continue
                 user_id = str(action.get("userId")) if action.get("userId") is not None else ""
                 yield {
                     "event": "action",
+                    "hand_id": _hand_id(
+                        self.room_id,
+                        _action_bout(action.get("actionId")) or self.bout,
+                    ),
                     "seat": action.get("seatNum", self.user_seats.get(user_id)),
                     "user_id": user_id or None,
                     "alias": self.user_aliases.get(user_id),
@@ -163,13 +220,57 @@ class ProtocolMapper:
                 "pot": message.get("totalPot"),
             }
             return
+        if raw_event == "openCardNotify":
+            user_id = (
+                str(message["userId"]) if message.get("userId") is not None else ""
+            )
+            yield {
+                "event": "player",
+                "seat": self.user_seats.get(user_id),
+                "user_id": user_id or None,
+                "alias": self.user_aliases.get(user_id),
+                "cards": _card_list(message.get("publicCards")),
+            }
+            return
+        if raw_event in {"openCardByAllinNotify", "handCardsNotify"}:
+            players = (
+                message.get("userCardInfoList")
+                or message.get("list")
+                or [message]
+            )
+            for player in players:
+                if not isinstance(player, Mapping):
+                    continue
+                user_id = (
+                    str(player["userId"])
+                    if player.get("userId") is not None
+                    else ""
+                )
+                yield {
+                    "event": "player",
+                    "seat": player.get("seatNum", self.user_seats.get(user_id)),
+                    "user_id": user_id or None,
+                    "alias": self.user_aliases.get(user_id),
+                    "cards": _card_list(
+                        player.get("publicCards") or player.get("handCards")
+                    ),
+                }
+            return
         if raw_event == "playResultNotify":
             for result in message.get("thanList") or []:
                 if isinstance(result, Mapping):
                     yield {
                         "event": "result",
                         "seat": result.get("seatNum"),
+                        "user_id": (
+                            str(result["userId"])
+                            if result.get("userId") is not None
+                            else None
+                        ),
                         "cards": _card_list(result.get("highHandCards")),
+                        "stack": result.get("changeAfterScore"),
+                        "insurance_result": result.get("insuranceResult"),
+                        "fund": result.get("fund"),
                         "complete": False,
                     }
             yield {"event": "end"}
@@ -246,7 +347,13 @@ class ProtocolMapper:
             "alias": player.get("nickname") or self.user_aliases.get(user_id),
             "stack": player.get("currentScore"),
             "cards": _card_list(player.get("handCards")),
-            "is_hero": seat is not None and seat == self.hero_seat,
+            "is_hero": bool(
+                (seat is not None and seat == self.hero_seat)
+                or (
+                    self.current_user_id
+                    and user_id == self.current_user_id
+                )
+            ),
         }
 
     def _history_event(self, message: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -261,6 +368,13 @@ class ProtocolMapper:
         for player in players:
             if not isinstance(player, Mapping):
                 continue
+            insurance_invest = _float(player.get("insuranceInvest"))
+            insurance_win = _float(player.get("insuranceWin"))
+            insurance_result = (
+                (insurance_win or 0) - (insurance_invest or 0)
+                if insurance_invest is not None or insurance_win is not None
+                else None
+            )
             normalized_players.append(
                 {
                     "seat": _int(player.get("seatNum")),
@@ -270,6 +384,7 @@ class ProtocolMapper:
                     "alias": player.get("nickname"),
                     "cards": _card_list(player.get("handCard")),
                     "net": player.get("changeScore"),
+                    "insurance_result": insurance_result,
                     "is_hero": _int(player.get("seatNum")) == self.hero_seat,
                     "position": player.get("seatPos"),
                     "actions": _history_actions(player.get("betList")),
@@ -341,6 +456,13 @@ def _int(value: Any) -> Optional[int]:
         return None
 
 
+def _action_bout(value: Any) -> Optional[int]:
+    action_id = _int(value)
+    if action_id is None or action_id < 1000:
+        return None
+    return action_id // 1000
+
+
 def _float(value: Any) -> Optional[float]:
     try:
         return float(value) if value is not None else None
@@ -352,6 +474,7 @@ def _street(value: Any) -> str:
     name = str(value or "").upper()
     return {
         "BET_BLIND": "preflop",
+        "CLEAN": "preflop",
         "PRE_FLOP": "preflop",
         "FLOP": "flop",
         "TURN": "turn",

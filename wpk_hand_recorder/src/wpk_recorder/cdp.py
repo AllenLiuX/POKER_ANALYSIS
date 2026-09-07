@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -12,6 +14,7 @@ from urllib.request import urlopen
 from websockets.asyncio.client import connect
 
 from .decoder import cdp_payload, decode_payload, summarize_shape
+from .decision_state import decision_state_from_hand
 from .formatting import render_event, render_hand_text
 from .models import RawEvent, RawFrame, utc_now
 from .privacy import safe_url
@@ -85,6 +88,11 @@ class CDPRecorder:
         self.event_sequence = store.max_event_sequence()
         self.squid_events = 0
         self.active_squid_round_id: Optional[str] = None
+
+    def current_hand_snapshot(self) -> Any:
+        """Return an isolated in-memory snapshot for the embedded strategy API."""
+
+        return copy.deepcopy(self.state.current)
 
     async def run(self, duration: Optional[float] = None) -> None:
         target = page_target(self.debug_port)
@@ -259,7 +267,15 @@ class CDPRecorder:
             self.shapes[summarize_shape(result.value)] += 1
             for event in events:
                 event["_event_sequence"] = self.event_sequence
-                friendly = render_event(event)
+                event["_captured_at"] = utc_now()
+                try:
+                    friendly = render_event(event)
+                except Exception as error:
+                    print(
+                        f"Skipping live-log formatting error: {error}",
+                        file=sys.stderr,
+                    )
+                    friendly = None
                 if friendly:
                     self.store.append_live(friendly)
                 if event.get("event") == "squid":
@@ -285,6 +301,10 @@ class CDPRecorder:
                     if self.active_squid_round_id:
                         current.game_mode = "squid"
                         current.squid_round_id = self.active_squid_round_id
+                    if event.get("event") == "decision_request":
+                        decision = decision_state_from_hand(current)
+                        if decision is not None:
+                            self.store.save_decision_state(decision)
                     self.store.save_hand(current, final=False)
                 for hand in completed:
                     if self.active_squid_round_id:
@@ -309,15 +329,22 @@ def _event_hook_script() -> str:
     events = json.dumps(RELEVANT_EVENTS)
     return f"""
 (() => {{
-  const hookVersion = 2;
+  const hookVersion = 3;
   const keys = {events};
   const safe = (key, event) => {{
     try {{
       const envelope = event && event.getUserData ? event.getUserData() : (event && event.detail);
       const body = envelope && Object.prototype.hasOwnProperty.call(envelope, "msgBody")
         ? envelope.msgBody : envelope;
+      const currentUserId = window.CurrentUserInfo && window.CurrentUserInfo.user
+        ? window.CurrentUserInfo.user.userId : null;
       const payload = JSON.stringify(
-        {{event: key, data: body, sysTime: envelope && envelope.sysTime}},
+        {{
+          event: key,
+          data: body,
+          sysTime: envelope && envelope.sysTime,
+          _recorderCurrentUserId: currentUserId,
+        }},
         (_key, value) => typeof value === "bigint" ? value.toString() : value
       );
       window.{BINDING_NAME}(payload);

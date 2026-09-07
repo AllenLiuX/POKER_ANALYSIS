@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 
-from wpk_recorder.formatting import render_hand_text
-from wpk_recorder.models import Action, HandHistory
+from wpk_recorder.decision_state import decision_state_from_hand
+from wpk_recorder.formatting import display_card, render_hand_text
+from wpk_recorder.models import Action, DecisionRequest, HandHistory, Player
 from wpk_recorder.protocol import ProtocolMapper
 from wpk_recorder.state import HandStateMachine
 from wpk_recorder.squid import SquidStateMachine
@@ -41,6 +42,85 @@ def test_duplicate_events_are_ignored():
     hand = state.flush()
     assert len(hand.actions) == 1
     assert hand.status == "partial"
+
+
+def test_live_and_replay_decisions_share_projection_and_hash():
+    hand = HandHistory(
+        hand_id="room-1",
+        button_seat=3,
+        small_blind=2,
+        big_blind=4,
+        ante=1,
+        pot=250,
+        game_mode="squid",
+        squid_round_id="sq-1",
+    )
+    hand.players = {
+        1: Player(1, user_id="v1", stack_start=100),
+        2: Player(2, user_id="v2", stack_start=50),
+        3: Player(3, user_id="hero", stack_start=100, is_hero=True),
+    }
+    hand.actions = [
+        Action("preflop", 1, "V1", "all_in", 100, 100, "v1", stack_after=0, sequence=1),
+        Action("preflop", 2, "V2", "all_in", 50, 50, "v2", stack_after=0, sequence=2),
+        Action("preflop", 3, "Hero", "call", 100, 100, "hero", stack_after=0, sequence=3),
+    ]
+    request = DecisionRequest(
+        event_sequence=17,
+        captured_at="2026-01-01T00:00:00+00:00",
+        hand_id=hand.hand_id,
+        seat=3,
+        user_id="hero",
+        cards=["As", "Ks"],
+        legal_actions=["fold", "call"],
+        countdown=20,
+        current_score=100,
+    )
+
+    live = decision_state_from_hand(
+        hand, request, source="live", remaining_ms=15_000
+    )
+    replay = decision_state_from_hand(
+        hand, request, source="replay", remaining_ms=20_000
+    )
+
+    assert live is not None and replay is not None
+    assert live["state_hash"] == replay["state_hash"]
+    assert sum(pot["amount"] for pot in live["side_pots"]) == 250
+    assert live["side_pots"][0]["eligible_seats"] == [1, 2, 3]
+    assert live["side_pots"][1]["eligible_seats"] == [1, 3]
+    assert live["players"][1]["all_in"] is True
+    assert live["action_order"] == [3, 1, 2]
+
+
+def test_pending_decision_is_invalidated_by_next_action():
+    state = HandStateMachine()
+    state.apply({"event": "start", "hand_id": "h1"})
+    state.apply(
+        {
+            "event": "player",
+            "seat": 1,
+            "user_id": "hero",
+            "is_hero": True,
+            "stack": 100,
+        }
+    )
+    state.apply(
+        {
+            "event": "decision_request",
+            "hand_id": "h1",
+            "seat": 1,
+            "user_id": "hero",
+            "is_hero": True,
+            "cards": ["As", "Ks"],
+            "legal_actions": ["fold", "call"],
+            "_event_sequence": 7,
+        }
+    )
+    assert state.current is not None
+    assert state.current.pending_decision is not None
+    state.apply({"event": "action", "seat": 1, "action": "call", "amount": 4})
+    assert state.current.pending_decision is None
 
 
 def test_sanitized_wpk_runtime_fixture_reconstructs_exact_hand():
@@ -146,6 +226,102 @@ def test_room_snapshot_resynchronizes_board_after_background_resume():
     assert board["pot"] == 2469
 
 
+def test_user_option_event_does_not_treat_spectated_actor_as_hero():
+    mapper = ProtocolMapper()
+    state = HandStateMachine()
+    room_events = mapper.canonical_events(
+        {
+            "event": "upDateRoomNotify",
+            "data": {
+                "roomId": 99,
+                "currentBoutNum": 8,
+                "round": "PRE_FLOP",
+                "currentUserSeatNum": 0,
+                "sitUserList": [
+                    {
+                        "seatNum": 1,
+                        "userId": 123,
+                        "nickname": "Hero",
+                        "currentScore": 200,
+                        "handCards": [],
+                    }
+                ],
+            },
+        }
+    )
+    state.apply_many(room_events)
+    decision = next(
+        iter(
+            mapper.canonical_events(
+                {
+                    "event": "userOptNotify",
+                    "data": {
+                        "userId": 123,
+                        "handCards": [101, 113],
+                        "canActionList": ["FOLD", "CALL", "RAISE"],
+                        "callScore": 4,
+                        "countDown": 15,
+                    },
+                }
+            )
+        )
+    )
+    assert decision["event"] == "decision_request"
+    assert decision["user_id"] == "123"
+    assert decision["is_hero"] is False
+    state.apply(decision)
+    assert state.current is not None
+    assert state.current.players[1].is_hero is False
+    assert state.current.players[1].hole_cards == []
+
+
+def test_runtime_current_user_identifies_hero_without_current_seat():
+    mapper = ProtocolMapper()
+    state = HandStateMachine()
+    room_events = mapper.canonical_events(
+        {
+            "event": "upDateRoomNotify",
+            "_recorderCurrentUserId": 123,
+            "data": {
+                "roomId": 99,
+                "currentBoutNum": 8,
+                "round": "PRE_FLOP",
+                "currentUserSeatNum": 0,
+                "sitUserList": [
+                    {
+                        "seatNum": 1,
+                        "userId": 123,
+                        "nickname": "Hero",
+                        "currentScore": 200,
+                        "handCards": [101, 113],
+                    }
+                ],
+            },
+        }
+    )
+    state.apply_many(room_events)
+    decision = next(
+        iter(
+            mapper.canonical_events(
+                {
+                    "event": "userOptNotify",
+                    "_recorderCurrentUserId": 123,
+                    "data": {
+                        "userId": 123,
+                        "handCards": [101, 113],
+                        "canActionList": ["FOLD", "CALL", "RAISE"],
+                    },
+                }
+            )
+        )
+    )
+    assert decision["is_hero"] is True
+    state.apply(decision)
+    assert state.current is not None
+    assert state.current.players[1].is_hero is True
+    assert state.current.players[1].hole_cards == ["As", "Ks"]
+
+
 def test_restored_hand_skips_replayed_action_history():
     restored = HandHistory(hand_id="room-2")
     restored.actions = [
@@ -187,3 +363,147 @@ def test_restored_hand_skips_replayed_action_history():
         }
     )
     assert len(state.current.actions) == 2
+
+
+def test_history_maps_insurance_invest_and_payout_to_signed_result():
+    mapper = ProtocolMapper()
+    history = next(
+        event
+        for event in mapper.canonical_events(
+            {
+                "event": "updateHistoryData",
+                "data": {
+                    "handList1": [
+                        {
+                            "roomId": 1,
+                            "handNum": 2,
+                            "seatNum": 1,
+                            "userId": 10,
+                            "changeScore": 468,
+                            "insuranceInvest": 93,
+                            "insuranceWin": 561,
+                        }
+                    ]
+                },
+            }
+        )
+        if event["event"] == "history"
+    )
+
+    assert history["players"][0]["insurance_result"] == 468
+
+
+def test_open_card_events_normalize_numeric_cards_before_formatting():
+    mapper = ProtocolMapper()
+    mapper.user_seats["10"] = 3
+    mapper.user_aliases["10"] = "Player"
+
+    event = next(
+        iter(
+            mapper.canonical_events(
+                {
+                    "event": "openCardNotify",
+                    "data": {
+                        "userId": 10,
+                        "publicCards": [403, -100],
+                    },
+                }
+            )
+        )
+    )
+
+    assert event["event"] == "player"
+    assert event["seat"] == 3
+    assert event["cards"] == ["3d"]
+    assert display_card(403) == "403"
+
+
+def test_history_reconstruction_starts_action_sequence_at_one():
+    state = HandStateMachine()
+    state._sequence = 20
+
+    hand = state.apply(
+        {
+            "event": "history",
+            "hand_id": "room-7",
+            "players": [
+                {
+                    "seat": 1,
+                    "actions": [
+                        {"street": "preflop", "action": "call", "amount": 2}
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert [action.sequence for action in hand.actions] == [1]
+
+
+def test_action_id_starts_correct_hand_before_deal_notification():
+    mapper = ProtocolMapper()
+    mapper.room_id = "99"
+    mapper.bout = "33"
+
+    events = list(
+        mapper.canonical_events(
+            {
+                "event": "actionNotify",
+                "data": {
+                    "actionList": [
+                        {
+                            "actionId": 34001,
+                            "actionType": "ANTE",
+                            "round": "CLEAN",
+                            "seatNum": 1,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    assert events[0]["event"] == "start"
+    assert events[0]["hand_id"] == "99-34"
+    assert events[1]["hand_id"] == "99-34"
+    assert events[1]["street"] == "preflop"
+
+
+def test_pending_action_is_not_attached_to_different_hand():
+    state = HandStateMachine()
+    state.apply(
+        {
+            "event": "action",
+            "hand_id": "room-34",
+            "action_id": "34001",
+            "action": "ante",
+        }
+    )
+    state.apply({"event": "start", "hand_id": "room-35"})
+
+    assert state.current is not None
+    assert state.current.actions == []
+
+
+def test_history_for_previous_hand_does_not_advance_live_sequence():
+    state = HandStateMachine()
+    state.apply({"event": "start", "hand_id": "room-35"})
+    state.apply({"event": "action", "hand_id": "room-35", "action": "call"})
+    state.apply(
+        {
+            "event": "history",
+            "hand_id": "room-34",
+            "players": [
+                {
+                    "seat": 1,
+                    "actions": [
+                        {"street": "preflop", "action": "call", "amount": 2}
+                    ],
+                }
+            ],
+        }
+    )
+    state.apply({"event": "action", "hand_id": "room-35", "action": "check"})
+
+    assert state.current is not None
+    assert [action.sequence for action in state.current.actions] == [1, 2]

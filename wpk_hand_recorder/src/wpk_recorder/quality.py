@@ -23,6 +23,10 @@ def assess_hand(
     sequences = [action.sequence for action in hand.actions]
     if sequences != list(range(1, len(sequences) + 1)):
         reasons.append("行动序号不连续")
+    street_order = {"preflop": 0, "flop": 1, "turn": 2, "river": 3, "showdown": 4}
+    streets = [street_order.get(action.street, 0) for action in hand.actions]
+    if any(current < previous for previous, current in zip(streets, streets[1:])):
+        reasons.append("行动街道顺序逆序，疑似混入其他手牌")
     action_ids = [action.action_id for action in hand.actions if action.action_id]
     if len(action_ids) != len(set(action_ids)):
         reasons.append("检测到重复 action ID")
@@ -42,8 +46,11 @@ def assess_hand(
             f"行动已到后续街道，但公共牌只有 {len(hand.board)} 张"
         )
     nets = [player.net for player in hand.players.values() if player.net is not None]
-    if len(nets) >= 2 and abs(sum(nets)) > 0.02:
-        reasons.append(f"玩家净输赢不平衡：{sum(nets):.2f}")
+    insurance = sum(player.insurance_result or 0 for player in hand.players.values())
+    funds = sum(player.fund or 0 for player in hand.players.values())
+    adjusted_balance = sum(nets) - insurance + funds
+    if len(nets) >= 2 and abs(adjusted_balance) > 0.02:
+        reasons.append(f"玩家净输赢不平衡：{adjusted_balance:.2f}")
     if reasons:
         return "bad", reasons, True
     return "good", [], False
