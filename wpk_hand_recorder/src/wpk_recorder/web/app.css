@@ -216,6 +216,10 @@ main { position: relative; padding: 28px 4vw 60px; }
   color: var(--signal);
   background: rgba(223, 194, 96, .07);
 }
+.reasoning-depth-option:disabled {
+  cursor: wait;
+  opacity: .6;
+}
 .reasoning-depth-option strong {
   font-size: 10px;
 }

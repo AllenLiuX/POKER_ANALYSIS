@@ -838,6 +838,9 @@ function updateReasoningControls() {
   const available = decisionCanBeReviewed(decision);
   run.disabled = !available || !configured || state.reasoningInFlight !== null;
   localRun.disabled = !available || state.reasoningInFlight !== null;
+  document.querySelectorAll(".reasoning-depth-option").forEach(option => {
+    option.disabled = state.reasoningInFlight !== null;
+  });
   clear.hidden = !state.pinnedReasoning;
   if (state.reasoningInFlight !== null) {
     const remote = state.reasoningModeInFlight !== "local";
