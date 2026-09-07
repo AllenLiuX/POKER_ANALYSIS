@@ -1,0 +1,13 @@
+[
+  {"event":"squidGameNotify","data":{"scene":1,"users":[101,202,303],"ext":"{\"total\":3,\"playNum\":3}","sysTime":1700000000001}},
+  {"event":"squidGameNotify","data":{"scene":2,"users":[404],"ext":"{\"playNum\":4,\"gainNum\":0}","sysTime":1700000000002}},
+  {"event":"squidGameNotify","data":{"scene":3,"users":[101],"ext":"{\"wait\":3,\"winSquidNum\":1}","sysTime":1700000000003}},
+  {"event":"squidGameNotify","data":{"scene":5,"users":[101,202,303,404],"ext":"{\"inSett\":false,\"nextWinSquidNum\":2}","sysTime":1700000000004}},
+  {"event":"squidGameNotify","data":{"scene":6,"users":[],"ext":"{\"waitEndTime\":1700000009999}","sysTime":1700000000005}},
+  {"event":"squidGameNotify","data":{"scene":7,"users":[],"sysTime":1700000000006}},
+  {"event":"squidGameNotify","data":{"scene":8,"users":[],"sysTime":1700000000007}},
+  {"event":"squidGameNotify","data":{"scene":9,"users":[],"sysTime":1700000000008}},
+  {"event":"squidGameNotify","data":{"scene":10,"users":[],"ext":"{\"isFlock\":1,\"nextWinSquidNum\":2}","sysTime":1700000000009}},
+  {"event":"squidGameNotify","data":{"scene":11,"users":[],"ext":"{\"squidSettHands\":[7,8]}","sysTime":1700000000010}},
+  {"event":"squidGameNotify","data":{"scene":4,"users":[101,202,303,404],"sett":[{"userId":101,"addScore":30,"curScore":230},{"userId":202,"addScore":-10,"curScore":190},{"userId":303,"addScore":-10,"curScore":190},{"userId":404,"addScore":-10,"curScore":190}],"ext":"{\"squidSettHands\":[7,8]}","sysTime":1700000000011}}
+]

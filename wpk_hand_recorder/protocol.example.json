@@ -1,0 +1,19 @@
+{
+  "event_ids": {
+    "REPLACE_WITH_WPK_START_ID": "start",
+    "REPLACE_WITH_WPK_PLAYER_ID": "player",
+    "REPLACE_WITH_WPK_ACTION_ID": "action",
+    "REPLACE_WITH_WPK_BOARD_ID": "board",
+    "REPLACE_WITH_WPK_RESULT_ID": "result",
+    "REPLACE_WITH_WPK_END_ID": "end"
+  },
+  "action_ids": {
+    "REPLACE_WITH_WPK_FOLD_ID": "fold",
+    "REPLACE_WITH_WPK_CHECK_ID": "check",
+    "REPLACE_WITH_WPK_CALL_ID": "call",
+    "REPLACE_WITH_WPK_BET_ID": "bet",
+    "REPLACE_WITH_WPK_RAISE_ID": "raise",
+    "REPLACE_WITH_WPK_ALL_IN_ID": "all-in"
+  },
+  "field_aliases": {}
+}

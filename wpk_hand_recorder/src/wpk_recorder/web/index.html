@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WPK 牌局记录台</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">LOCAL TABLE TELEMETRY</p>
+        <h1>WPK 牌局记录台</h1>
+      </div>
+      <div class="connection">
+        <span id="connection-dot" class="dot"></span>
+        <span id="connection-label">正在连接</span>
+        <span id="sequence" class="sequence">#0</span>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="看板栏目">
+      <button class="tab active" data-view="live">实时牌局</button>
+      <button class="tab" data-view="hands">历史牌谱</button>
+      <button class="tab" data-view="opponents">对手数据</button>
+      <button class="tab" data-view="squid">鱿鱼模式</button>
+      <button class="tab" data-view="raw">原始事件</button>
+      <a class="export" href="/api/export/hands.csv">导出行动 CSV</a>
+    </nav>
+
+    <main>
+      <section id="view-live" class="view active">
+        <div id="current-hand" class="current-hand"></div>
+        <aside class="rail">
+          <div class="section-heading">
+            <span>事件流</span>
+            <small>按服务端顺序</small>
+          </div>
+          <ol id="event-stream" class="event-stream"></ol>
+        </aside>
+      </section>
+
+      <section id="view-hands" class="view">
+        <div class="section-heading">
+          <span>最近牌谱</span>
+          <small>点击查看完整行动线</small>
+        </div>
+        <div class="history-filter" aria-label="牌谱质量筛选">
+          <button class="history-filter-button active" data-valid-only="false">全部牌谱</button>
+          <button class="history-filter-button" data-valid-only="true">仅看有效</button>
+        </div>
+        <div id="hands-list" class="hands-list"></div>
+      </section>
+
+      <section id="view-opponents" class="view">
+        <div class="section-heading">
+          <span>对手样本</span>
+          <small>贝叶斯后验 · 括号内为机会数</small>
+        </div>
+        <div class="mode-filter" aria-label="游戏模式">
+          <button class="mode-button active" data-mode="">全部</button>
+          <button class="mode-button" data-mode="holdem">普通德州</button>
+          <button class="mode-button" data-mode="squid">鱿鱼模式</button>
+        </div>
+        <div id="opponents-list" class="opponents-list"></div>
+      </section>
+
+      <section id="view-squid" class="view">
+        <div class="section-heading">
+          <span>鱿鱼模式时间线</span>
+          <small>scene 1–11 与结算</small>
+        </div>
+        <div id="squid-list" class="squid-list"></div>
+      </section>
+
+      <section id="view-raw" class="view">
+        <div class="section-heading">
+          <span>完整桌内事件</span>
+          <small>认证、聊天、支付已排除</small>
+        </div>
+        <div id="raw-list" class="raw-list"></div>
+      </section>
+    </main>
+
+    <dialog id="hand-dialog">
+      <button id="dialog-close" class="dialog-close" aria-label="关闭">关闭</button>
+      <div id="dialog-content"></div>
+    </dialog>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

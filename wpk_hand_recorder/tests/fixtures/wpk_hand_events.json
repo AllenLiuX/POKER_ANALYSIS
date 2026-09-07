@@ -1,0 +1,103 @@
+[
+  {
+    "event": "upDateRoomNotify",
+    "data": {
+      "roomId": 999,
+      "currentBoutNum": 7,
+      "round": "PRE_FLOP",
+      "currentUserSeatNum": 1,
+      "ante": 0,
+      "totalPot": 3,
+      "gradeCfg": {"smallBlind": 1, "bigBlind": 2},
+      "sitUserList": [
+        {"userId": 101, "seatNum": 1, "nickname": "Hero", "currentScore": 198, "handCards": [406, 411]},
+        {"userId": 202, "seatNum": 5, "nickname": "Villain", "currentScore": 199, "handCards": [-1, -1]}
+      ]
+    }
+  },
+  {
+    "event": "actionHistoryNotify",
+    "data": {
+      "actionList": [
+        {"userId": 202, "actionType": "SMALL_BLIND", "actionScore": 1, "round": "BET_BLIND"},
+        {"userId": 101, "actionType": "BIG_BLIND", "actionScore": 2, "round": "BET_BLIND"}
+      ]
+    }
+  },
+  {
+    "event": "actionNotify",
+    "data": {
+      "totalPot": 12,
+      "actionList": [
+        {"userId": 202, "seatNum": 5, "actionType": "RAISE", "actionScore": 9, "seatScore": 10, "round": "PRE_FLOP"}
+      ]
+    }
+  },
+  {
+    "event": "actionNotify",
+    "data": {
+      "totalPot": 20,
+      "actionList": [
+        {"userId": 101, "seatNum": 1, "actionType": "CALL", "actionScore": 8, "seatScore": 10, "round": "PRE_FLOP"}
+      ]
+    }
+  },
+  {
+    "event": "roundChangeNotify",
+    "data": {"round": "FLOP", "dealPublicCards": [403, 405, 111], "totalPot": 20}
+  },
+  {
+    "event": "roundChangeNotify",
+    "data": {"round": "TURN", "dealPublicCards": [205], "totalPot": 20}
+  },
+  {
+    "event": "roundChangeNotify",
+    "data": {"round": "RIVER", "dealPublicCards": [401], "totalPot": 20}
+  },
+  {
+    "event": "playResultNotify",
+    "data": {
+      "thanList": [
+        {"userId": 101, "seatNum": 1, "highHandCards": [406, 411]},
+        {"userId": 202, "seatNum": 5, "highHandCards": []}
+      ]
+    }
+  },
+  {
+    "event": "updateHistoryData",
+    "data": {
+      "handNum": 7,
+      "totalPot": 20,
+      "handList1": [
+        {
+          "userId": 101,
+          "roomId": 999,
+          "handNum": 7,
+          "seatNum": 1,
+          "nickname": "Hero",
+          "handCard": "[406,411]",
+          "publicCardAll": "[403,405,111,205,401]",
+          "changeScore": 10,
+          "createTime": 1700000000000,
+          "grade": 1,
+          "ante": 0,
+          "betList": "[{\"score\":8,\"action\":\"CALL\",\"round\":\"PRE_FLOP\"}]"
+        },
+        {
+          "userId": 202,
+          "roomId": 999,
+          "handNum": 7,
+          "seatNum": 5,
+          "nickname": "Villain",
+          "handCard": "[-1,-1]",
+          "publicCardAll": "[403,405,111,205,401]",
+          "changeScore": -10,
+          "createTime": 1700000000000,
+          "grade": 1,
+          "ante": 0,
+          "betList": "[{\"score\":9,\"action\":\"RAISE\",\"round\":\"PRE_FLOP\"}]"
+        }
+      ]
+    }
+  }
+]
