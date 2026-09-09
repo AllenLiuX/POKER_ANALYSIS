@@ -5,6 +5,9 @@ from typing import List, Tuple
 from .models import HandHistory
 
 
+RAKE_BALANCE_TOLERANCE = 10.0
+
+
 def assess_hand(
     hand: HandHistory, stale_in_progress: bool = False
 ) -> Tuple[str, List[str], bool]:
@@ -49,7 +52,7 @@ def assess_hand(
     insurance = sum(player.insurance_result or 0 for player in hand.players.values())
     funds = sum(player.fund or 0 for player in hand.players.values())
     adjusted_balance = sum(nets) - insurance + funds
-    if len(nets) >= 2 and abs(adjusted_balance) > 0.02:
+    if len(nets) >= 2 and abs(adjusted_balance) > RAKE_BALANCE_TOLERANCE:
         reasons.append(f"玩家净输赢不平衡：{adjusted_balance:.2f}")
     if reasons:
         return "bad", reasons, True

@@ -31,3 +31,28 @@ def test_insurance_result_and_fund_balance_player_net():
     }
 
     assert assess_hand(hand) == ("good", [], False)
+
+
+def test_player_net_difference_within_rake_tolerance_is_good():
+    hand = HandHistory(hand_id="raked", status="completed")
+    hand.actions = [Action("preflop", 1, "Winner", "call", sequence=1)]
+    hand.players = {
+        1: Player(1, net=100),
+        2: Player(2, net=-90),
+    }
+
+    assert assess_hand(hand) == ("good", [], False)
+
+
+def test_player_net_difference_over_rake_tolerance_is_bad():
+    hand = HandHistory(hand_id="unbalanced", status="completed")
+    hand.actions = [Action("preflop", 1, "Winner", "call", sequence=1)]
+    hand.players = {
+        1: Player(1, net=100),
+        2: Player(2, net=-89),
+    }
+
+    quality, reasons, excluded = assess_hand(hand)
+    assert quality == "bad"
+    assert reasons == ["玩家净输赢不平衡：11.00"]
+    assert excluded is True
