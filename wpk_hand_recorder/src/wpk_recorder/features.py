@@ -12,6 +12,22 @@ BLINDS = {"small_blind", "big_blind", "ante", "straddle"}
 STREETS_ORDER = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
 
 
+def stack_bucket(value: Any) -> str:
+    """Shared effective-stack taxonomy for statistics and range features."""
+
+    try:
+        stack_bb = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if stack_bb < 20:
+        return "short"
+    if stack_bb < 60:
+        return "medium"
+    if stack_bb < 150:
+        return "deep"
+    return "very_deep"
+
+
 @dataclass
 class Opportunity:
     metric: str
@@ -137,7 +153,10 @@ def project_hand_state(
 def derive_decisions(hand: HandHistory) -> List[DecisionSnapshot]:
     positions = derive_positions(hand)
     for seat, position in positions.items():
-        if seat in hand.players and not (hand.players[seat].position or "").strip():
+        if seat in hand.players and (
+            hand.button_seat in hand.players
+            or not (hand.players[seat].position or "").strip()
+        ):
             hand.players[seat].position = position
 
     stacks = {
@@ -154,6 +173,7 @@ def derive_decisions(hand: HandHistory) -> List[DecisionSnapshot]:
     first_raiser: Optional[int] = None
     preflop_aggressor: Optional[int] = None
     checked: Set[int] = set()
+    street_history: Dict[str, List[Action]] = {}
     snapshots: List[DecisionSnapshot] = []
 
     for action in sorted(hand.actions, key=lambda item: item.sequence):
@@ -161,6 +181,8 @@ def derive_decisions(hand: HandHistory) -> List[DecisionSnapshot]:
             hand, before_action_sequence=action.sequence
         )
         if action.street != current_street:
+            if current_street:
+                street_history[current_street] = list(street_actions)
             current_street = action.street
             contributions = {}
             street_actions = []
@@ -205,6 +227,7 @@ def derive_decisions(hand: HandHistory) -> List[DecisionSnapshot]:
             preflop_aggressor=preflop_aggressor,
             checked=checked,
             to_call=to_call,
+            street_history=street_history,
         )
         snapshots.append(
             DecisionSnapshot(
@@ -331,6 +354,7 @@ def _opportunities(
     preflop_aggressor: Optional[int],
     checked: Set[int],
     to_call: float,
+    street_history: Dict[str, List[Action]],
 ) -> List[Opportunity]:
     result: List[Opportunity] = []
     prior_voluntary = [
@@ -357,8 +381,43 @@ def _opportunities(
         prior_aggression = [
             item for item in street_actions if _action(item.action) in AGGRESSIVE
         ]
+        previous_street = {
+            "turn": "flop",
+            "river": "turn",
+        }.get(action.street)
+        previous_actions = (
+            street_history.get(previous_street, [])
+            if previous_street
+            else []
+        )
+        aggressor_missed_previous = _aggressor_checked_through(
+            previous_actions, preflop_aggressor
+        )
+        aggressor_bet_previous = _seat_was_aggressive(
+            previous_actions, preflop_aggressor
+        )
+        aggressor_acted = any(
+            item.seat == preflop_aggressor for item in street_actions
+        )
         if not prior_aggression and to_call == 0 and action.seat == preflop_aggressor:
             result.append(Opportunity(f"{action.street}_cbet", aggressive))
+            if action.street == "turn" and aggressor_missed_previous:
+                result.append(Opportunity("turn_delayed_cbet", aggressive))
+            if action.street in {"turn", "river"} and aggressor_bet_previous:
+                result.append(
+                    Opportunity(f"{action.street}_barrel", aggressive)
+                )
+            if (
+                action.street == "river"
+                and aggressor_bet_previous
+                and _seat_was_aggressive(
+                    street_history.get("flop", []),
+                    preflop_aggressor,
+                )
+            ):
+                result.append(
+                    Opportunity("river_triple_barrel", aggressive)
+                )
         if (
             to_call > 0
             and prior_aggression
@@ -367,23 +426,76 @@ def _opportunities(
             result.append(
                 Opportunity(f"fold_to_{action.street}_cbet", kind == "fold")
             )
+            if action.street == "turn" and aggressor_missed_previous:
+                result.append(
+                    Opportunity("fold_to_turn_delayed_cbet", kind == "fold")
+                )
+            if action.street in {"turn", "river"} and aggressor_bet_previous:
+                result.append(
+                    Opportunity(
+                        f"fold_to_{action.street}_barrel",
+                        kind == "fold",
+                    )
+                )
         if (
             not prior_aggression
             and to_call == 0
             and action.seat != preflop_aggressor
-            and any(item.seat == preflop_aggressor and _action(item.action) == "check" for item in street_actions)
+            and not aggressor_acted
         ):
-            result.append(Opportunity(f"{action.street}_probe", aggressive))
+            if aggressor_missed_previous:
+                result.append(
+                    Opportunity(f"{action.street}_probe", aggressive)
+                )
+            elif action.street == "flop" or aggressor_bet_previous:
+                result.append(
+                    Opportunity(f"{action.street}_donk", aggressive)
+                )
         if action.seat in checked and to_call > 0:
             result.append(Opportunity(f"{action.street}_check_raise", aggressive))
         if to_call > 0:
             result.append(Opportunity(f"fold_to_{action.street}_bet", kind == "fold"))
-        if previous := (street_actions[-1] if street_actions else None):
-            if _action(previous.action) in {"raise", "all_in"}:
-                result.append(
-                    Opportunity(f"fold_to_{action.street}_raise", kind == "fold")
+            result.append(
+                Opportunity(
+                    f"call_vs_{action.street}_bet",
+                    kind == "call",
                 )
+            )
+            result.append(
+                Opportunity(
+                    f"raise_vs_{action.street}_bet",
+                    aggressive,
+                )
+            )
+        if to_call > 0 and street_raises >= 2:
+            result.append(
+                Opportunity(f"fold_to_{action.street}_raise", kind == "fold")
+            )
     return result
+
+
+def _seat_was_aggressive(
+    actions: List[Action], seat: Optional[int]
+) -> bool:
+    return seat is not None and any(
+        action.seat == seat and _action(action.action) in AGGRESSIVE
+        for action in actions
+    )
+
+
+def _aggressor_checked_through(
+    actions: List[Action], aggressor_seat: Optional[int]
+) -> bool:
+    if aggressor_seat is None or not actions:
+        return False
+    return (
+        not any(_action(action.action) in AGGRESSIVE for action in actions)
+        and any(
+            action.seat == aggressor_seat
+            and _action(action.action) == "check"
+            for action in actions
+        )
+    )
 
 
 def _is_in_position(

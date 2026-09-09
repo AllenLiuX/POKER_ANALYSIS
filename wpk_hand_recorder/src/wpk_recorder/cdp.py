@@ -329,8 +329,79 @@ def _event_hook_script() -> str:
     events = json.dumps(RELEVANT_EVENTS)
     return f"""
 (() => {{
-  const hookVersion = 3;
+  const hookVersion = 9;
   const keys = {events};
+  const validCard = value => {{
+    const card = Number(value);
+    const suit = Math.floor(card / 100);
+    const rank = card % 100;
+    return Number.isInteger(card) && suit >= 1 && suit <= 4 && rank >= 1 && rank <= 13;
+  }};
+  const currentHeroCards = currentUserId => {{
+    if (currentUserId == null || !window.cc || !cc.director) return null;
+    try {{
+      const scene = cc.director.getScene();
+      const direct = window.cc.find ? cc.find("gameContr", scene) : null;
+      const queue = direct ? [direct] : [scene];
+      while (queue.length) {{
+        const node = queue.shift();
+        for (const component of (node && node._components) || []) {{
+          if (!Array.isArray(component._dealList)) continue;
+          const hero = component._dealList.find(
+            player => player && String(player.userId) === String(currentUserId)
+          );
+          const cards = hero && hero.handCards;
+          if (Array.isArray(cards) && cards.length === 2 && cards.every(validCard)) {{
+            return cards.slice();
+          }}
+        }}
+        if (!direct) queue.push(...((node && node.children) || []));
+      }}
+    }} catch (_error) {{}}
+    return null;
+  }};
+  const currentPlayerStates = () => {{
+    if (!window.cc || !cc.director) return null;
+    try {{
+      const scene = cc.director.getScene();
+      const direct = window.cc.find ? cc.find("gameContr", scene) : null;
+      const controller = ((direct && direct._components) || []).find(
+        component => Array.isArray(component._dealList)
+      );
+      const seats = controller && controller._gameUI && controller._gameUI.seats;
+      if (!Array.isArray(seats)) return null;
+      return seats.map((root, index) => {{
+        let userId = null;
+        let isFold = null;
+        let currentScore = null;
+        let alias = null;
+        let seatNum = null;
+        const queue = [root];
+        while (queue.length) {{
+          const node = queue.shift();
+          for (const component of (node && node._components) || []) {{
+            try {{
+              if (component.userId != null) userId = component.userId;
+              if (typeof component.isFold === "boolean") isFold = component.isFold;
+              if (component.currentScore != null) currentScore = component.currentScore;
+              if (component._playerFullName) alias = component._playerFullName;
+              if (component._curSeatNum != null) seatNum = component._curSeatNum;
+            }} catch (_error) {{}}
+          }}
+          queue.push(...((node && node.children) || []));
+        }}
+        return userId == null ? null : {{
+          userId,
+          isFold,
+          currentScore,
+          alias,
+          seatNum,
+          localSeatNum: index,
+        }};
+      }}).filter(Boolean);
+    }} catch (_error) {{}}
+    return null;
+  }};
   const safe = (key, event) => {{
     try {{
       const envelope = event && event.getUserData ? event.getUserData() : (event && event.detail);
@@ -338,16 +409,33 @@ def _event_hook_script() -> str:
         ? envelope.msgBody : envelope;
       const currentUserId = window.CurrentUserInfo && window.CurrentUserInfo.user
         ? window.CurrentUserInfo.user.userId : null;
+      const isDealEvent = (
+        key === "dealNotify" || key === "dealNotify_reconnection"
+      );
+      // The deal callback can run before Cocos replaces the previous hand's
+      // decrypted _dealList. Never persist that synchronous value.
+      const recorderHeroCards = isDealEvent
+        ? null : currentHeroCards(currentUserId);
       const payload = JSON.stringify(
         {{
           event: key,
           data: body,
           sysTime: envelope && envelope.sysTime,
           _recorderCurrentUserId: currentUserId,
+          _recorderHeroCards: recorderHeroCards,
+          _recorderPlayerStates: currentPlayerStates(),
         }},
         (_key, value) => typeof value === "bigint" ? value.toString() : value
       );
       window.{BINDING_NAME}(payload);
+      if (isDealEvent) {{
+        for (const delay of [0, 100, 300, 700, 1500, 3000]) {{
+          setTimeout(
+            () => safe("recorderHeroCards", {{ detail: {{}} }}),
+            delay,
+          );
+        }}
+      }}
     }} catch (_error) {{}}
   }};
   const install = () => {{
@@ -366,6 +454,7 @@ def _event_hook_script() -> str:
     }}
     window.__wpkRecorderHooked = true;
     window.__wpkRecorderHookVersion = hookVersion;
+    setTimeout(() => safe("recorderPlayerState", {{ detail: {{}} }}), 0);
     return true;
   }};
   if (install()) return `hooked:${{window.__wpkRecorderHandlers.length}}`;

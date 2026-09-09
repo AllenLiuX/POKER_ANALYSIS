@@ -14,7 +14,9 @@ from .reasoning import live_decision, public_decision
 
 def connect_readonly(data_dir: Path) -> sqlite3.Connection:
     path = data_dir / "hands.sqlite3"
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    connection.execute("PRAGMA busy_timeout=5000")
+    connection.execute("PRAGMA query_only=ON")
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -27,28 +29,12 @@ def snapshot(
 ) -> Dict[str, Any]:
     connection = connect_readonly(data_dir)
     try:
-        hands = []
-        for row in connection.execute(
-            """
-            SELECT hand_json, game_mode, hand_number, played_at,
-                   quality_status, quality_reasons_json, excluded_from_stats
-            FROM hands
-            WHERE (? IS NULL OR game_mode = ?)
-            ORDER BY CASE WHEN quality_status = 'live' THEN 0 ELSE 1 END,
-                     played_at DESC, hand_number DESC LIMIT ?
-            """,
-            (mode, mode, hand_limit),
-        ):
-            hand = json.loads(row["hand_json"])
-            hand["game_mode"] = row["game_mode"]
-            hand["hand_number"] = row["hand_number"]
-            hand["played_at"] = row["played_at"]
-            hand["played_at_cn"] = _cn_time(row["played_at"])
-            hand["quality_status"] = row["quality_status"]
-            hand["quality_reasons"] = json.loads(row["quality_reasons_json"])
-            hand["excluded_from_stats"] = bool(row["excluded_from_stats"])
-            hand["squid_hand"] = _hand_squid(connection, hand["hand_id"])
-            hands.append(hand)
+        hands, _ = _hand_summaries(
+            connection,
+            limit=hand_limit,
+            offset=0,
+            mode=mode,
+        )
         events = [
             {
                 "sequence": row["sequence"],
@@ -67,20 +53,221 @@ def snapshot(
         ]
         last_sequence = events[0]["sequence"] if events else 0
         decision = public_decision(live_decision(connection, mode=mode))
+        current_hand = next(
+            (hand for hand in hands if hand["quality_status"] == "live"),
+            None,
+        )
+        if current_hand is None:
+            latest_hand_id = next(
+                (
+                    str(event["hand_id"])
+                    for event in events
+                    if event.get("hand_id")
+                ),
+                None,
+            )
+            current_hand = next(
+                (
+                    hand
+                    for hand in hands
+                    if str(hand.get("hand_id") or "") == latest_hand_id
+                ),
+                hands[0] if hands else None,
+            )
+        _apply_runtime_player_states(current_hand, events)
         return {
             "last_sequence": last_sequence,
-            "current_hand": next(
-                (hand for hand in hands if hand["quality_status"] == "live"),
-                hands[0] if hands else None,
-            ),
+            "current_hand": current_hand,
             "live_decision": decision,
             "hands": hands,
             "events": events,
             "opponents": opponent_stats(connection, mode),
+            "hero": hero_stats(connection, mode),
             "squid": squid_snapshot(connection),
         }
     finally:
         connection.close()
+
+
+def _apply_runtime_player_states(
+    hand: Optional[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+) -> None:
+    """Overlay the latest client-rendered fold state on the live hand."""
+
+    if not hand or hand.get("status") != "in_progress":
+        return
+    hand_id = str(hand.get("hand_id") or "")
+    for event in events:
+        if str(event.get("hand_id") or "") != hand_id:
+            continue
+        payload = event.get("payload")
+        states = (
+            payload.get("_recorderPlayerStates")
+            if isinstance(payload, dict)
+            else None
+        )
+        if not isinstance(states, list):
+            continue
+        by_user = {
+            str(state.get("userId")): state
+            for state in states
+            if isinstance(state, dict) and state.get("userId") is not None
+        }
+        if not by_user:
+            continue
+        for player in hand.get("players") or []:
+            state = by_user.get(str(player.get("user_id")))
+            if state is None or not isinstance(state.get("isFold"), bool):
+                continue
+            player["folded"] = state["isFold"]
+        hand["player_state_source"] = "client_runtime"
+        hand["player_state_sequence"] = event.get("sequence")
+        return
+
+
+def hand_summaries(
+    data_dir: Path,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    mode: Optional[str] = None,
+    valid_only: bool = False,
+    user_id: Optional[str] = None,
+    revealed_only: bool = False,
+    query: Optional[str] = None,
+    result: Optional[str] = None,
+    street: Optional[str] = None,
+) -> Dict[str, Any]:
+    connection = connect_readonly(data_dir)
+    try:
+        hands, total = _hand_summaries(
+            connection,
+            limit=limit,
+            offset=offset,
+            mode=mode,
+            valid_only=valid_only,
+            user_id=user_id,
+            revealed_only=revealed_only,
+            query=query,
+            result=result,
+            street=street,
+        )
+        return {
+            "hands": hands,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(hands) < total,
+        }
+    finally:
+        connection.close()
+
+
+def _hand_summaries(
+    connection: sqlite3.Connection,
+    *,
+    limit: int,
+    offset: int,
+    mode: Optional[str],
+    valid_only: bool = False,
+    user_id: Optional[str] = None,
+    revealed_only: bool = False,
+    query: Optional[str] = None,
+    result: Optional[str] = None,
+    street: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], int]:
+    clauses = ["(? IS NULL OR h.game_mode = ?)"]
+    parameters: List[Any] = [mode, mode]
+    if valid_only:
+        clauses.append("h.quality_status = 'good'")
+    if user_id:
+        reveal_clause = (
+            " AND COALESCE(filtered_hp.hole_cards_json, '[]') <> '[]'"
+            if revealed_only
+            else ""
+        )
+        clauses.append(
+            "EXISTS ("
+            "SELECT 1 FROM hand_players filtered_hp "
+            "WHERE filtered_hp.hand_id = h.hand_id "
+            f"AND filtered_hp.user_id = ?{reveal_clause}"
+            ")"
+        )
+        parameters.append(user_id)
+    elif revealed_only:
+        clauses.append(
+            "EXISTS ("
+            "SELECT 1 FROM hand_players revealed_hp "
+            "WHERE revealed_hp.hand_id = h.hand_id "
+            "AND revealed_hp.is_hero = 0 "
+            "AND COALESCE(revealed_hp.hole_cards_json, '[]') <> '[]'"
+            ")"
+        )
+    if query and query.strip():
+        pattern = f"%{query.strip()}%"
+        clauses.append(
+            "("
+            "h.hand_id LIKE ? OR CAST(h.hand_number AS TEXT) LIKE ? OR "
+            "EXISTS ("
+            "SELECT 1 FROM hand_players search_hp "
+            "WHERE search_hp.hand_id = h.hand_id "
+            "AND (search_hp.alias LIKE ? OR search_hp.user_id LIKE ?)"
+            ")"
+            ")"
+        )
+        parameters.extend([pattern, pattern, pattern, pattern])
+    if result in {"won", "lost", "even"}:
+        comparison = {"won": "> 0", "lost": "< 0", "even": "= 0"}[result]
+        clauses.append(
+            "EXISTS ("
+            "SELECT 1 FROM hand_players hero_hp "
+            "WHERE hero_hp.hand_id = h.hand_id "
+            "AND hero_hp.is_hero = 1 "
+            f"AND hero_hp.net {comparison}"
+            ")"
+        )
+    board_count = "json_array_length(COALESCE(h.board_json, '[]'))"
+    if street == "preflop":
+        clauses.append(f"{board_count} = 0")
+    elif street == "flop":
+        clauses.append(f"{board_count} = 3")
+    elif street == "turn":
+        clauses.append(f"{board_count} = 4")
+    elif street == "river":
+        clauses.append(f"{board_count} >= 5")
+    where = " AND ".join(clauses)
+    total = int(
+        connection.execute(
+            f"SELECT COUNT(*) FROM hands h WHERE {where}",
+            parameters,
+        ).fetchone()[0]
+    )
+    rows = connection.execute(
+        f"""
+        SELECT h.hand_json, h.game_mode, h.hand_number, h.played_at,
+               h.quality_status, h.quality_reasons_json, h.excluded_from_stats
+        FROM hands h
+        WHERE {where}
+        ORDER BY CASE WHEN h.quality_status = 'live' THEN 0 ELSE 1 END,
+                 h.played_at DESC, h.hand_number DESC
+        LIMIT ? OFFSET ?
+        """,
+        [*parameters, limit, offset],
+    )
+    hands = []
+    for row in rows:
+        hand = json.loads(row["hand_json"])
+        hand["game_mode"] = row["game_mode"]
+        hand["hand_number"] = row["hand_number"]
+        hand["played_at"] = row["played_at"]
+        hand["played_at_cn"] = _cn_time(row["played_at"])
+        hand["quality_status"] = row["quality_status"]
+        hand["quality_reasons"] = json.loads(row["quality_reasons_json"])
+        hand["excluded_from_stats"] = bool(row["excluded_from_stats"])
+        hand["squid_hand"] = _hand_squid(connection, hand["hand_id"])
+        hands.append(hand)
+    return hands, total
 
 
 def hand_detail(data_dir: Path, hand_id: str) -> Optional[Dict[str, Any]]:
@@ -127,6 +314,22 @@ def hand_detail(data_dir: Path, hand_id: str) -> Optional[Dict[str, Any]]:
 def opponent_stats(
     connection: sqlite3.Connection, mode: Optional[str] = None
 ) -> List[Dict[str, Any]]:
+    return _player_stats(connection, mode, is_hero=False)
+
+
+def hero_stats(
+    connection: sqlite3.Connection, mode: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    profiles = _player_stats(connection, mode, is_hero=True)
+    return profiles[0] if profiles else None
+
+
+def _player_stats(
+    connection: sqlite3.Connection,
+    mode: Optional[str] = None,
+    *,
+    is_hero: bool,
+) -> List[Dict[str, Any]]:
     players: Dict[str, Dict[str, Any]] = {}
     for row in connection.execute(
         """
@@ -135,11 +338,11 @@ def opponent_stats(
         FROM hand_players hp
         JOIN hands h ON h.hand_id = hp.hand_id
         LEFT JOIN players p ON p.user_id = hp.user_id
-        WHERE hp.is_hero = 0 AND hp.user_id IS NOT NULL
+        WHERE hp.is_hero = ? AND hp.user_id IS NOT NULL
           AND h.excluded_from_stats = 0
           AND (? IS NULL OR h.game_mode = ?)
         """,
-        (mode, mode),
+        (int(is_hero), mode, mode),
     ):
         item = players.setdefault(
             row["user_id"],
@@ -267,6 +470,7 @@ def opponent_stats(
                 "user_id": item["user_id"],
                 "alias": item["alias"],
                 "hands": hand_count,
+                "revealed_hands": len(item["showdowns"]),
                 "modes": sorted(item["modes"]),
                 "net": sum(value or 0 for value in item["net_by_hand"].values()),
                 "metrics": metrics,

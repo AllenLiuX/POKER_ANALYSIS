@@ -13,10 +13,14 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from .assistance_policy import ASSISTANCE_MODES
 from .cdp import CDPRecorder, page_target
 from .decoder import decode_payload, summarize_shape
 from .decision_state import decision_state_from_hand
+from .inference_eval import evaluate_prompt_templates
+from .inference_templates import template_ids
 from .protocol import ProtocolMapper
+from .reasoning import LLMReasoner
 from .state import HandStateMachine
 from .storage import RecorderStore
 
@@ -63,6 +67,12 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--protocol", type=Path)
     run.add_argument("--retain-wire", action="store_true")
     run.add_argument("--no-browser", action="store_true", help="do not open browser windows")
+    run.add_argument(
+        "--assistance-mode",
+        choices=ASSISTANCE_MODES,
+        default=None,
+        help="server-enforced range/advice capability policy",
+    )
 
     record = sub.add_parser("record", help="start the recorder without the dashboard")
     record.add_argument("--port", type=int, default=9223, help="Chrome CDP port")
@@ -73,6 +83,32 @@ def parser() -> argparse.ArgumentParser:
     dashboard = sub.add_parser("dashboard", help="start only the local live dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--data-dir", type=Path, default=Path("data"))
+    dashboard.add_argument(
+        "--assistance-mode",
+        choices=ASSISTANCE_MODES,
+        default=None,
+        help="server-enforced range/advice capability policy",
+    )
+    evaluate = sub.add_parser(
+        "eval-templates",
+        help="offline replay of versioned inference prompt templates",
+    )
+    evaluate.add_argument("--data-dir", type=Path, default=Path("data"))
+    evaluate.add_argument(
+        "--template",
+        dest="templates",
+        action="append",
+        choices=template_ids(),
+        help="template ID; repeat to compare multiple templates",
+    )
+    evaluate.add_argument("--limit", type=int, default=50)
+    evaluate.add_argument("--repeats", type=int, default=1)
+    evaluate.add_argument(
+        "--depth",
+        choices=("light", "deep"),
+        default="deep",
+    )
+    evaluate.add_argument("--no-persist", action="store_true")
     return root
 
 
@@ -204,7 +240,10 @@ def serve_dashboard(args: argparse.Namespace) -> int:
     from .server import create_app
 
     uvicorn.run(
-        create_app(args.data_dir),
+        create_app(
+            args.data_dir,
+            assistance_mode=args.assistance_mode,
+        ),
         host="127.0.0.1",
         port=args.port,
         log_level="warning",
@@ -230,6 +269,7 @@ def run_system(args: argparse.Namespace) -> int:
         app = create_app(
             args.data_dir,
             live_hand_provider=recorder.current_hand_snapshot,
+            assistance_mode=args.assistance_mode,
         )
         server = Server(
             Config(
@@ -412,6 +452,26 @@ def purge_raw(data_dir: Path) -> int:
     return 0
 
 
+def eval_templates(args: argparse.Namespace) -> int:
+    reasoner = LLMReasoner.from_env()
+    if not reasoner.configured:
+        raise RuntimeError(
+            "LLM 未配置：请设置 WPK_LLM_API_KEY 或 MODEL_GATEWAY_KEY"
+        )
+    selected = args.templates or template_ids()
+    report = evaluate_prompt_templates(
+        args.data_dir,
+        reasoner,
+        selected,
+        limit=max(1, min(args.limit, 1000)),
+        repeats=max(1, min(args.repeats, 10)),
+        reasoning_depth=args.depth,
+        persist=not args.no_persist,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -430,9 +490,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return replay(args.data_dir, args.protocol)
         if args.command == "purge-raw":
             return purge_raw(args.data_dir)
+        if args.command == "eval-templates":
+            return eval_templates(args)
         if args.command == "run":
             return run_system(args)
-    except (OSError, RuntimeError, sqlite3.Error) as error:
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     return 1

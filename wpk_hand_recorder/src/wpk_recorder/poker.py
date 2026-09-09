@@ -5,6 +5,7 @@ import itertools
 import random
 from bisect import bisect_left
 from collections import Counter
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
@@ -26,6 +27,8 @@ CATEGORY_NAMES = (
 def best_rank(cards: Sequence[str]) -> Tuple[int, ...]:
     if len(cards) < 5:
         return _partial_rank(cards)
+    if len(cards) <= 7:
+        return _best_five_to_seven_rank(cards)
     return max(_five_card_rank(combo) for combo in itertools.combinations(cards, 5))
 
 
@@ -38,18 +41,26 @@ def hand_features(hole_cards: Sequence[str], board: Sequence[str]) -> Dict[str, 
     flush_draw = len(board) < 5 and max(suit_counts.values(), default=0) == 4
     straight_draw = False
     gutshot = False
-    expanded = set(ranks)
-    if 14 in expanded:
-        expanded.add(1)
-    for start in range(1, 11):
-        present = len(expanded & set(range(start, start + 5)))
-        if present == 4:
-            missing = list(set(range(start, start + 5)) - expanded)
-            straight_draw = straight_draw or missing[0] in {start, start + 4}
-            gutshot = gutshot or missing[0] not in {start, start + 4}
+    if len(board) < 5:
+        expanded = set(ranks)
+        if 14 in expanded:
+            expanded.add(1)
+        for start in range(1, 11):
+            present = len(expanded & set(range(start, start + 5)))
+            if present == 4:
+                missing = list(set(range(start, start + 5)) - expanded)
+                straight_draw = (
+                    straight_draw
+                    or missing[0] in {start, start + 4}
+                )
+                gutshot = (
+                    gutshot
+                    or missing[0] not in {start, start + 4}
+                )
     return {
         "category": category,
         "category_rank": rank[0],
+        "rank": rank,
         "flush_draw": flush_draw,
         "open_ended_draw": straight_draw,
         "gutshot": gutshot,
@@ -179,35 +190,24 @@ def showdown_stats_vs_weighted_ranges(
         }
     known = set(hole_cards) | set(board)
     full_deck = [f"{rank}{suit}" for rank in RANKS for suit in SUITS]
-    combo_classes = [
-        ((first, second), _starting_hand_class(first, second))
-        for first, second in itertools.combinations(full_deck, 2)
-    ]
-    samplers = []
-    range_fingerprints = []
-    for weights_by_class in ranges:
-        combos = []
-        cumulative = []
-        total = 0.0
-        for combo, hand_class in combo_classes:
-            weight = max(0.0, float(weights_by_class.get(hand_class, 0.0)))
-            if weight <= 0:
-                continue
-            total += weight
-            combos.append(combo)
-            cumulative.append(total)
-        if not combos:
-            combos = [combo for combo, _ in combo_classes]
-            cumulative = list(range(1, len(combos) + 1))
-        samplers.append((combos, cumulative))
-        range_fingerprints.append(
-            ",".join(
-                f"{key}:{float(value):.3f}"
-                for key, value in sorted(weights_by_class.items())
-            )
+    range_fingerprints = tuple(
+        tuple(
+            (str(key), round(max(0.0, float(value)), 6))
+            for key, value in sorted(weights_by_class.items())
+            if float(value) > 0
         )
+        for weights_by_class in ranges
+    )
+    samplers = _weighted_range_samplers(range_fingerprints)
     seed_text = "|".join(
-        [*sorted(hole_cards), *board, *range_fingerprints]
+        [
+            *sorted(hole_cards),
+            *board,
+            *(
+                ",".join(f"{key}:{value:.3f}" for key, value in fingerprint)
+                for fingerprint in range_fingerprints
+            ),
+        ]
     )
     seed = int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16)
     rng = random.Random(seed)
@@ -254,6 +254,35 @@ def showdown_stats_vs_weighted_ranges(
     }
 
 
+@lru_cache(maxsize=128)
+def _weighted_range_samplers(
+    range_fingerprints: Tuple[Tuple[Tuple[str, float], ...], ...],
+) -> Tuple[Tuple[Tuple[Tuple[str, str], ...], Tuple[float, ...]], ...]:
+    full_deck = [f"{rank}{suit}" for rank in RANKS for suit in SUITS]
+    combo_classes = [
+        ((first, second), _starting_hand_class(first, second))
+        for first, second in itertools.combinations(full_deck, 2)
+    ]
+    samplers = []
+    for fingerprint in range_fingerprints:
+        weights_by_class = dict(fingerprint)
+        combos = []
+        cumulative = []
+        total = 0.0
+        for combo, hand_class in combo_classes:
+            weight = weights_by_class.get(hand_class, 0.0)
+            if weight <= 0:
+                continue
+            total += weight
+            combos.append(combo)
+            cumulative.append(total)
+        if not combos:
+            combos = [combo for combo, _ in combo_classes]
+            cumulative = list(range(1, len(combos) + 1))
+        samplers.append((tuple(combos), tuple(cumulative)))
+    return tuple(samplers)
+
+
 def _draw_weighted_combo(
     rng: random.Random,
     combos: Sequence[Tuple[str, str]],
@@ -269,6 +298,30 @@ def _draw_weighted_combo(
         combo for combo in combos if combo[0] not in used and combo[1] not in used
     ]
     return rng.choice(available) if available else None
+
+
+def starting_hand_class(hole_cards: Sequence[str]) -> Optional[str]:
+    if len(hole_cards) != 2:
+        return None
+    return _starting_hand_class(str(hole_cards[0]), str(hole_cards[1]))
+
+
+def starting_hand_combos_by_class(
+    excluded: Sequence[str] = (),
+) -> Dict[str, List[Tuple[str, str]]]:
+    blocked = set(excluded)
+    deck = [
+        f"{rank}{suit}"
+        for rank in RANKS
+        for suit in SUITS
+        if f"{rank}{suit}" not in blocked
+    ]
+    result: Dict[str, List[Tuple[str, str]]] = {}
+    for first, second in itertools.combinations(deck, 2):
+        result.setdefault(_starting_hand_class(first, second), []).append(
+            (first, second)
+        )
+    return result
 
 
 def _starting_hand_class(first: str, second: str) -> str:
@@ -314,13 +367,102 @@ def _five_card_rank(cards: Iterable[str]) -> Tuple[int, ...]:
     return (0, *ranks)
 
 
+def _best_five_to_seven_rank(cards: Sequence[str]) -> Tuple[int, ...]:
+    """Return the best five-card rank without enumerating all combinations."""
+
+    ranks = [_rank(card) for card in cards]
+    counts = Counter(ranks)
+    ranks_desc = sorted(counts, reverse=True)
+    suits: Dict[str, List[int]] = {}
+    for card, rank in zip(cards, ranks):
+        suits.setdefault(card[-1], []).append(rank)
+
+    for suited_ranks in suits.values():
+        if len(suited_ranks) >= 5:
+            straight_flush = _straight_high(suited_ranks)
+            if straight_flush:
+                return (8, straight_flush)
+
+    quads = [rank for rank in ranks_desc if counts[rank] == 4]
+    if quads:
+        quad = quads[0]
+        kicker = next(rank for rank in ranks_desc if rank != quad)
+        return (7, quad, kicker)
+
+    trips = [rank for rank in ranks_desc if counts[rank] >= 3]
+    if trips:
+        pair = next(
+            (
+                rank
+                for rank in ranks_desc
+                if rank != trips[0] and counts[rank] >= 2
+            ),
+            None,
+        )
+        if pair is not None:
+            return (6, trips[0], pair)
+
+    flushes = [
+        sorted(suited_ranks, reverse=True)[:5]
+        for suited_ranks in suits.values()
+        if len(suited_ranks) >= 5
+    ]
+    if flushes:
+        return (5, *max(flushes))
+
+    straight = _straight_high(ranks)
+    if straight:
+        return (4, straight)
+
+    if trips:
+        trip = trips[0]
+        kickers = [rank for rank in ranks_desc if rank != trip][:2]
+        return (3, trip, *kickers)
+
+    pairs = [rank for rank in ranks_desc if counts[rank] >= 2]
+    if len(pairs) >= 2:
+        high_pair, low_pair = pairs[:2]
+        kicker = next(
+            rank
+            for rank in ranks_desc
+            if rank not in {high_pair, low_pair}
+        )
+        return (2, high_pair, low_pair, kicker)
+    if pairs:
+        pair = pairs[0]
+        kickers = [rank for rank in ranks_desc if rank != pair][:3]
+        return (1, pair, *kickers)
+    return (0, *sorted(ranks, reverse=True)[:5])
+
+
+def _straight_high(ranks: Iterable[int]) -> int:
+    unique = set(ranks)
+    if 14 in unique:
+        unique.add(1)
+    for high in range(14, 4, -1):
+        if all(high - offset in unique for offset in range(5)):
+            return high
+    return 0
+
+
 def _partial_rank(cards: Sequence[str]) -> Tuple[int, ...]:
     ranks = sorted((_rank(card) for card in cards), reverse=True)
     counts = Counter(ranks)
     if not counts:
         return (0,)
     most = max(counts.values())
-    category = 3 if most == 3 else 1 if most == 2 else 0
+    pairs = sum(count == 2 for count in counts.values())
+    category = (
+        7
+        if most == 4
+        else 3
+        if most == 3
+        else 2
+        if pairs >= 2
+        else 1
+        if pairs == 1
+        else 0
+    )
     return (category, *ranks)
 
 

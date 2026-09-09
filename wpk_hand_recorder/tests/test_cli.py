@@ -29,9 +29,38 @@ def test_recorder_is_cancelled_when_dashboard_stops():
 
 def test_record_and_dashboard_commands_have_independent_ports():
     record = parser().parse_args(["record", "--port", "9224"])
-    dashboard = parser().parse_args(["dashboard", "--port", "8766"])
+    dashboard = parser().parse_args(
+        [
+            "dashboard",
+            "--port",
+            "8766",
+            "--assistance-mode",
+            "post_session",
+        ]
+    )
 
     assert record.command == "record"
     assert record.port == 9224
     assert dashboard.command == "dashboard"
     assert dashboard.port == 8766
+    assert dashboard.assistance_mode == "post_session"
+
+
+def test_eval_templates_command_accepts_versioned_templates():
+    args = parser().parse_args(
+        [
+            "eval-templates",
+            "--template",
+            "full-range-v1",
+            "--template",
+            "full-range-evidence-v2",
+            "--depth",
+            "light",
+        ]
+    )
+    assert args.command == "eval-templates"
+    assert args.templates == [
+        "full-range-v1",
+        "full-range-evidence-v2",
+    ]
+    assert args.depth == "light"

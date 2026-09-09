@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,9 @@ from .protocol import ProtocolMapper
 from .quality import assess_hand
 
 
+OPPORTUNITY_SCHEMA_VERSION = "2"
+
+
 class RecorderStore:
     def __init__(self, data_dir: Path, retain_raw: bool = False):
         self.data_dir = data_dir
@@ -36,7 +40,10 @@ class RecorderStore:
         self.live_path = self.data_dir / "live.log"
         self.text_dir = self.data_dir / "text"
         self.text_dir.mkdir(exist_ok=True)
-        self.connection = sqlite3.connect(self.db_path)
+        self.connection = sqlite3.connect(self.db_path, timeout=5)
+        self.connection.execute("PRAGMA busy_timeout=5000")
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA synchronous=NORMAL")
         os.chmod(self.db_path, 0o600)
         self._migrate()
 
@@ -57,6 +64,10 @@ class RecorderStore:
                 payload_b64 TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_frames_sha ON frames(sha256);
+            CREATE TABLE IF NOT EXISTS recorder_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS hands (
                 hand_id TEXT PRIMARY KEY,
                 table_id TEXT,
@@ -265,6 +276,56 @@ class RecorderStore:
             );
             CREATE INDEX IF NOT EXISTS idx_decision_states_hand
                 ON decision_states(hand_id, sequence);
+            CREATE TABLE IF NOT EXISTS inference_contexts (
+                context_hash TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL,
+                state_hash TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                hand_id TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                context_version TEXT NOT NULL,
+                temporal_quality TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_inference_contexts_decision
+                ON inference_contexts(decision_id, state_hash);
+            CREATE TABLE IF NOT EXISTS inference_runs (
+                run_id TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL,
+                state_hash TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                hand_id TEXT NOT NULL,
+                context_hash TEXT NOT NULL,
+                template_id TEXT NOT NULL,
+                template_hash TEXT NOT NULL,
+                prompt_hash TEXT,
+                model TEXT,
+                reasoning_depth TEXT NOT NULL,
+                analysis_mode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                validation_status TEXT NOT NULL,
+                latency_ms INTEGER,
+                error_reason TEXT,
+                created_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_inference_runs_context
+                ON inference_runs(context_hash, template_id, created_at);
+            CREATE TABLE IF NOT EXISTS profile_analyses (
+                user_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                position TEXT NOT NULL,
+                line TEXT NOT NULL,
+                context_hash TEXT NOT NULL,
+                model TEXT,
+                confidence TEXT,
+                created_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(user_id, mode, position, line, context_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_profile_analyses_latest
+                ON profile_analyses(user_id, mode, position, line, created_at);
             CREATE TABLE IF NOT EXISTS showdown_observations (
                 hand_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -309,12 +370,17 @@ class RecorderStore:
             self._ensure_column(table, "fund", "REAL")
         self.connection.commit()
         self._backfill_decisions()
+        self._refresh_opportunities_if_needed()
         self._repair_boards_from_raw_events()
         self._repair_results_from_raw_events()
         self._repair_action_sequences()
         self._backfill_hand_squid_data()
         self._audit_existing_hands()
-        rebuild_showdown_observations(self.connection)
+        has_showdown_observations = self.connection.execute(
+            "SELECT 1 FROM showdown_observations LIMIT 1"
+        ).fetchone()
+        if has_showdown_observations is None:
+            rebuild_showdown_observations(self.connection)
 
     def _ensure_column(self, table: str, name: str, definition: str) -> None:
         columns = {
@@ -339,6 +405,35 @@ class RecorderStore:
                 continue
             if hand.actions:
                 self.save_hand(hand, final=False)
+
+    def _refresh_opportunities_if_needed(self) -> None:
+        row = self.connection.execute(
+            """
+            SELECT value FROM recorder_metadata
+            WHERE key = 'opportunity_schema_version'
+            """
+        ).fetchone()
+        if row and str(row[0]) == OPPORTUNITY_SCHEMA_VERSION:
+            return
+        rows = self.connection.execute(
+            "SELECT hand_json FROM hands"
+        ).fetchall()
+        for row in rows:
+            try:
+                hand = _hand_from_dict(json.loads(row[0]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if hand.actions:
+                self.save_hand(hand, final=False)
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO recorder_metadata(key, value)
+                VALUES ('opportunity_schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (OPPORTUNITY_SCHEMA_VERSION,),
+            )
 
     def _repair_boards_from_raw_events(self) -> None:
         mapper = ProtocolMapper()
@@ -1038,6 +1133,507 @@ def save_strategy_evaluation(
         return True
     except (sqlite3.Error, TypeError, ValueError):
         return False
+
+
+def save_profile_analysis(
+    data_dir: Path,
+    *,
+    user_id: str,
+    mode: Optional[str],
+    position: str,
+    line: str,
+    context_hash: str,
+    response: Dict[str, Any],
+) -> Optional[str]:
+    """Persist a validated opponent-profile analysis for later restoration."""
+
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists() or not user_id or not context_hash:
+        return None
+    created_at = datetime.now(timezone.utc).isoformat()
+    analysis = response.get("analysis") or {}
+    try:
+        with sqlite3.connect(path, timeout=5) as connection:
+            connection.execute("PRAGMA busy_timeout=5000")
+            _ensure_profile_analysis_table(connection)
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO profile_analyses(
+                    user_id, mode, position, line, context_hash, model,
+                    confidence, created_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    mode or "all",
+                    position,
+                    line,
+                    context_hash,
+                    analysis.get("source"),
+                    analysis.get("confidence"),
+                    created_at,
+                    json.dumps(
+                        response,
+                        ensure_ascii=False,
+                        default=_json_default,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        return created_at
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+
+
+def load_profile_analysis(
+    data_dir: Path,
+    *,
+    user_id: str,
+    mode: Optional[str],
+    position: str,
+    line: str,
+    context_hash: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Load an exact or latest persisted opponent-profile analysis."""
+
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists() or not user_id:
+        return None
+    where = "user_id = ? AND mode = ? AND position = ? AND line = ?"
+    parameters: List[Any] = [user_id, mode or "all", position, line]
+    if context_hash:
+        where += " AND context_hash = ?"
+        parameters.append(context_hash)
+    try:
+        with sqlite3.connect(path, timeout=5) as connection:
+            connection.execute("PRAGMA busy_timeout=5000")
+            _ensure_profile_analysis_table(connection)
+            row = connection.execute(
+                f"""
+                SELECT context_hash, created_at, payload_json
+                FROM profile_analyses
+                WHERE {where}
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                parameters,
+            ).fetchone()
+        if row is None:
+            return None
+        response = json.loads(row[2])
+        if not isinstance(response, dict):
+            return None
+        response["persistence"] = {
+            "saved": True,
+            "restored": True,
+            "stale": False if context_hash else None,
+            "context_hash": row[0],
+            "created_at": row[1],
+        }
+        return response
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def save_inference_context(
+    data_dir: Path,
+    context_hash: str,
+    snapshot: Dict[str, Any],
+) -> bool:
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists() or not context_hash:
+        return False
+    anonymous = _anonymize_inference_payload(snapshot)
+    context = anonymous.get("context") or {}
+    decision = context.get("decision") or {}
+    try:
+        with sqlite3.connect(path, timeout=2) as connection:
+            _ensure_inference_tables(connection)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO inference_contexts(
+                    context_hash, decision_id, state_hash, sequence, hand_id,
+                    subject, context_version, temporal_quality, created_at,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    context_hash,
+                    str(decision.get("decision_id") or ""),
+                    str(decision.get("state_hash") or ""),
+                    int(decision.get("sequence") or 0),
+                    str(decision.get("hand_id") or ""),
+                    str(anonymous.get("subject") or "full_range"),
+                    str(anonymous.get("schema_version") or "unknown"),
+                    str(
+                        anonymous.get("temporal_quality")
+                        or "approximate"
+                    ),
+                    str(
+                        anonymous.get("captured_at")
+                        or datetime.now(timezone.utc).isoformat()
+                    ),
+                    json.dumps(
+                        anonymous,
+                        ensure_ascii=False,
+                        default=_json_default,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        return True
+    except (sqlite3.Error, TypeError, ValueError):
+        return False
+
+
+def load_inference_context(
+    data_dir: Path,
+    sequence: int,
+    *,
+    state_hash: Optional[str] = None,
+    hand_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists():
+        return None
+    clauses = ["sequence = ?"]
+    params: List[Any] = [int(sequence)]
+    if state_hash:
+        clauses.append("state_hash = ?")
+        params.append(str(state_hash))
+    if hand_id:
+        clauses.append("hand_id = ?")
+        params.append(str(hand_id))
+    try:
+        with sqlite3.connect(path, timeout=2) as connection:
+            row = connection.execute(
+                f"""
+                SELECT payload_json, hand_id
+                FROM inference_contexts
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is None:
+                return None
+            snapshot = json.loads(row[0])
+            context = (
+                snapshot.get("context")
+                if isinstance(snapshot, dict)
+                else None
+            )
+            if not isinstance(context, dict):
+                return None
+            restored = dict(context)
+            integrity = dict(restored.get("context_integrity") or {})
+            if not integrity.get("complete_action_history"):
+                complete_history = _frozen_action_history(
+                    connection,
+                    str(row[1] or ""),
+                    int(sequence),
+                    restored.get("decision") or {},
+                )
+                if complete_history:
+                    restored["action_history"] = complete_history
+                    integrity["complete_action_history"] = True
+                    integrity["action_count"] = len(complete_history)
+        decision = restored.get("decision")
+        if not isinstance(decision, dict):
+            return None
+        if int(decision.get("sequence") or 0) != int(sequence):
+            return None
+        if state_hash and str(decision.get("state_hash") or "") != str(state_hash):
+            return None
+        if hand_id and str(decision.get("hand_id") or "") != str(hand_id):
+            return None
+        integrity["frozen_replay"] = True
+        integrity["temporal_quality"] = str(
+            snapshot.get("temporal_quality") or "point_in_time"
+        )
+        restored["context_integrity"] = integrity
+        return restored
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _frozen_action_history(
+    connection: sqlite3.Connection,
+    hand_id: str,
+    decision_sequence: int,
+    decision: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    row = connection.execute(
+        "SELECT hand_json FROM hands WHERE hand_id = ?",
+        (hand_id,),
+    ).fetchone()
+    if row is None:
+        return []
+    hand = json.loads(row[0])
+    positions = {
+        player.get("seat"): player.get("position")
+        for player in decision.get("players") or []
+        if isinstance(player, dict)
+    }
+    history = []
+    allowed = {
+        "ante",
+        "small_blind",
+        "big_blind",
+        "straddle",
+        "fold",
+        "check",
+        "call",
+        "bet",
+        "raise",
+        "all_in",
+    }
+    for action in hand.get("actions") or []:
+        event_sequence = int(action.get("event_sequence") or 0)
+        if event_sequence and event_sequence >= decision_sequence:
+            continue
+        kind = (
+            str(action.get("action") or "")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
+        kind = {"allin": "all_in"}.get(kind, kind)
+        history.append(
+            {
+                "street": action.get("street"),
+                "seat": action.get("seat"),
+                "position": positions.get(action.get("seat")),
+                "action": kind if kind in allowed else None,
+                "amount": _number(action.get("amount")),
+                "amount_to": _number(action.get("amount_to")),
+                "sequence": int(
+                    event_sequence
+                    or action.get("sequence")
+                    or 0
+                ),
+            }
+        )
+    return history
+
+
+def save_inference_run(
+    data_dir: Path,
+    decision: Dict[str, Any],
+    advice: Dict[str, Any],
+    *,
+    analysis_mode: str,
+    reasoning_depth: str,
+    status: str = "completed",
+    validation_status: str = "valid",
+    error_reason: Optional[str] = None,
+) -> Optional[str]:
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists():
+        return None
+    route = advice.get("route") or {}
+    context = advice.get("context") or {}
+    run_id = uuid.uuid4().hex
+    anonymous = _anonymize_inference_payload(advice)
+    try:
+        with sqlite3.connect(path, timeout=2) as connection:
+            _ensure_inference_tables(connection)
+            connection.execute(
+                """
+                INSERT INTO inference_runs(
+                    run_id, decision_id, state_hash, sequence, hand_id,
+                    context_hash, template_id, template_hash, prompt_hash,
+                    model, reasoning_depth, analysis_mode, status,
+                    validation_status, latency_ms, error_reason, created_at,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    str(decision.get("decision_id") or ""),
+                    str(decision.get("state_hash") or ""),
+                    int(decision.get("sequence") or 0),
+                    str(decision.get("hand_id") or ""),
+                    str(context.get("hash") or ""),
+                    str(route.get("template_id") or "unknown"),
+                    str(route.get("template_hash") or "unknown"),
+                    route.get("prompt_hash"),
+                    route.get("source"),
+                    reasoning_depth,
+                    analysis_mode,
+                    status,
+                    validation_status,
+                    int(route.get("latency_ms") or 0) or None,
+                    error_reason,
+                    datetime.now(timezone.utc).isoformat(),
+                    json.dumps(
+                        anonymous,
+                        ensure_ascii=False,
+                        default=_json_default,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        return run_id
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+
+
+def inference_context_rows(
+    data_dir: Path,
+    *,
+    limit: int = 100,
+    subject: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists():
+        return []
+    try:
+        with sqlite3.connect(path, timeout=2) as connection:
+            connection.row_factory = sqlite3.Row
+            _ensure_inference_tables(connection)
+            params: List[Any] = []
+            where = ""
+            if subject in {"exact_hand", "full_range"}:
+                where = "WHERE subject = ?"
+                params.append(subject)
+            params.append(max(1, min(int(limit), 1000)))
+            rows = connection.execute(
+                f"""
+                SELECT context_hash, decision_id, state_hash, sequence,
+                       hand_id, subject, context_version, temporal_quality,
+                       created_at, payload_json
+                FROM inference_contexts
+                {where}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "payload": json.loads(row["payload_json"]),
+            }
+            for row in rows
+        ]
+    except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def inference_run_rows(
+    data_dir: Path,
+    *,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    path = Path(data_dir) / "hands.sqlite3"
+    if not path.exists():
+        return []
+    try:
+        with sqlite3.connect(path, timeout=2) as connection:
+            connection.row_factory = sqlite3.Row
+            _ensure_inference_tables(connection)
+            rows = connection.execute(
+                """
+                SELECT run_id, decision_id, state_hash, sequence, hand_id,
+                       context_hash, template_id, template_hash, prompt_hash,
+                       model, reasoning_depth, analysis_mode, status,
+                       validation_status, latency_ms, error_reason, created_at,
+                       payload_json
+                FROM inference_runs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "payload": json.loads(row["payload_json"]),
+            }
+            for row in rows
+        ]
+    except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _ensure_inference_tables(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS inference_contexts (
+            context_hash TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL,
+            state_hash TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            hand_id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            context_version TEXT NOT NULL,
+            temporal_quality TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_inference_contexts_decision
+            ON inference_contexts(decision_id, state_hash);
+        CREATE TABLE IF NOT EXISTS inference_runs (
+            run_id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL,
+            state_hash TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            hand_id TEXT NOT NULL,
+            context_hash TEXT NOT NULL,
+            template_id TEXT NOT NULL,
+            template_hash TEXT NOT NULL,
+            prompt_hash TEXT,
+            model TEXT,
+            reasoning_depth TEXT NOT NULL,
+            analysis_mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            validation_status TEXT NOT NULL,
+            latency_ms INTEGER,
+            error_reason TEXT,
+            created_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_inference_runs_context
+            ON inference_runs(context_hash, template_id, created_at);
+        """
+    )
+
+
+def _ensure_profile_analysis_table(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS profile_analyses (
+            user_id TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            position TEXT NOT NULL,
+            line TEXT NOT NULL,
+            context_hash TEXT NOT NULL,
+            model TEXT,
+            confidence TEXT,
+            created_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY(user_id, mode, position, line, context_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_profile_analyses_latest
+            ON profile_analyses(user_id, mode, position, line, created_at);
+        """
+    )
+
+
+def _anonymize_inference_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _anonymize_inference_payload(item)
+            for key, item in value.items()
+            if key not in {"display_name", "display_names", "display_player"}
+            and key not in {"user_id", "alias"}
+        }
+    if isinstance(value, list):
+        return [_anonymize_inference_payload(item) for item in value]
+    return value
 
 
 def render_text(hand: HandHistory) -> str:

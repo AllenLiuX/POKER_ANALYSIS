@@ -132,6 +132,22 @@ def decision_state_contract(decision: Mapping[str, Any]) -> Dict[str, Any]:
     return {**state.as_dict(), "quality": quality}
 
 
+def canonical_legal_actions(values: Any) -> Tuple[str, ...]:
+    """Normalize server actions and remove fold when a free check exists."""
+
+    actions = tuple(
+        action
+        for action in (
+            str(value or "").strip().lower().replace("-", "_")
+            for value in values or []
+        )
+        if action in LEGAL_ACTIONS
+    )
+    if "check" in actions:
+        actions = tuple(action for action in actions if action != "fold")
+    return actions
+
+
 def decision_state_from_hand(
     hand: HandHistory,
     request: Optional[DecisionRequest] = None,
@@ -183,7 +199,7 @@ def decision_state_from_hand(
             {
                 "seat": seat,
                 "user_id": player.user_id,
-                "position": player.position or positions.get(seat),
+                "position": positions.get(seat) or player.position,
                 "stack": stack,
                 "street_contribution": projected.street_contributions.get(
                     seat, 0.0
@@ -221,7 +237,7 @@ def decision_state_from_hand(
         "hero_cards": request.cards
         or (actor.hole_cards if actor is not None else []),
         "hero_position": (
-            actor.position or positions.get(acting_seat)
+            positions.get(acting_seat) or actor.position
             if actor is not None
             else positions.get(acting_seat)
         ),
@@ -261,14 +277,7 @@ def decision_state_from_hand(
 
 
 def _canonical_fields(decision: Mapping[str, Any]) -> Dict[str, Any]:
-    legal = tuple(
-        action
-        for action in (
-            str(value or "").strip().lower().replace("-", "_")
-            for value in decision.get("legal_actions") or []
-        )
-        if action in LEGAL_ACTIONS
-    )
+    legal = canonical_legal_actions(decision.get("legal_actions"))
     players = tuple(
         DecisionPlayerState(
             seat=_integer(item.get("seat")),
@@ -397,7 +406,10 @@ def _quality_reasons(state: DecisionState) -> Tuple[list, list]:
         and state.max_raise_to is not None
         and state.min_raise_to > state.max_raise_to
     ):
-        blocking.append("最小加注额高于最大加注额")
+        if "raise" in state.legal_actions:
+            blocking.append("最小加注额高于最大加注额")
+        elif "all_in" in state.legal_actions:
+            warnings.append("剩余筹码不足常规最小加注，仅允许不足额全下")
     if state.hero_stack is None or state.hero_stack < 0:
         blocking.append("本人剩余筹码缺失或为负数")
     if not state.players:

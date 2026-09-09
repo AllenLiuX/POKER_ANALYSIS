@@ -7,6 +7,12 @@ from .models import Action, DecisionRequest, HandHistory, Player, utc_now
 
 
 STREETS = ("preflop", "flop", "turn", "river", "showdown")
+FORCED_PREFLOP_ACTIONS = {
+    "ante",
+    "small_blind",
+    "big_blind",
+    "straddle",
+}
 
 
 def _number(value: Any) -> Optional[float]:
@@ -108,6 +114,7 @@ class HandStateMachine:
                     if event.get("ante") is not None
                     else self.current.ante
                 )
+                self._refresh_button_from_blinds()
                 return None
             previous = self._close("interrupted") if self.current else None
             self.current = HandHistory(
@@ -183,11 +190,10 @@ class HandStateMachine:
         cards = _cards(event.get("cards"))
         if cards:
             player.hole_cards = cards
+        self._refresh_button_from_blinds()
 
     def _apply_decision_request(self, event: Dict[str, Any]) -> None:
-        if event.get("is_hero") is not True:
-            self.current.pending_decision = None
-            return
+        is_hero = event.get("is_hero") is True
         user_id = _optional_text(event.get("user_id"))
         seat = _seat(event.get("seat"))
         player = next(
@@ -202,10 +208,11 @@ class HandStateMachine:
             player = self.current.players.setdefault(seat, Player(seat=seat))
         cards = _cards(event.get("cards"))
         if player is not None:
-            for item in self.current.players.values():
-                item.is_hero = item is player
+            if is_hero:
+                for item in self.current.players.values():
+                    item.is_hero = item is player
             player.user_id = user_id or player.user_id
-            if cards:
+            if cards and is_hero:
                 player.hole_cards = cards
         legal_actions = []
         for value in event.get("legal_actions") or []:
@@ -220,7 +227,7 @@ class HandStateMachine:
             hand_id=_optional_text(event.get("hand_id")) or self.current.hand_id,
             seat=seat,
             user_id=user_id,
-            cards=cards,
+            cards=cards if is_hero else [],
             legal_actions=list(dict.fromkeys(legal_actions)),
             call_score=_number(event.get("call_score")) or 0.0,
             min_raise_to=_number(event.get("min_raise_to")),
@@ -281,6 +288,53 @@ class HandStateMachine:
             self._known_action_ids.add(action_id)
         if event.get("pot") is not None:
             self.current.pot = _number(event["pot"])
+        self._refresh_button_from_blinds()
+
+    def _refresh_button_from_blinds(self) -> None:
+        """Use this hand's forced bets to repair stale room-level Button data."""
+
+        if self.current is None:
+            return
+        preflop_actions = [
+            action
+            for action in self.current.actions
+            if action.street == "preflop" and action.seat is not None
+        ]
+        small_blind_seat = next(
+            (
+                action.seat
+                for action in reversed(preflop_actions)
+                if action.action == "small_blind"
+            ),
+            None,
+        )
+        if small_blind_seat is None:
+            return
+        ante_seats = {
+            action.seat
+            for action in preflop_actions
+            if action.action == "ante"
+        }
+        if len(ante_seats) >= 2:
+            participating_seats = sorted(ante_seats)
+        else:
+            if any(
+                action.action not in FORCED_PREFLOP_ACTIONS
+                for action in preflop_actions
+            ):
+                return
+            participating_seats = sorted(self.current.players)
+        if small_blind_seat not in participating_seats:
+            return
+        if len(participating_seats) == 2:
+            self.current.button_seat = small_blind_seat
+            return
+        if len(participating_seats) < 3:
+            return
+        small_blind_index = participating_seats.index(small_blind_seat)
+        self.current.button_seat = participating_seats[
+            small_blind_index - 1
+        ]
 
     def _consume_pending(self, hand_id: str) -> None:
         pending, self._pending_actions = self._pending_actions, []
@@ -353,7 +407,8 @@ class HandStateMachine:
         else:
             hand = HandHistory(hand_id=hand_id)
         hand.table_id = _optional_text(event.get("table_id")) or hand.table_id
-        hand.started_at = _optional_text(event.get("started_at")) or hand.started_at
+        if hand.started_at is None:
+            hand.started_at = _optional_text(event.get("started_at"))
         hand.button_seat = _seat(event.get("button_seat")) or hand.button_seat
         if event.get("small_blind") is not None:
             hand.small_blind = _number(event.get("small_blind"))

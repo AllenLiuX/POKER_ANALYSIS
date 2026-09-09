@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WPK 牌局记录台</title>
-    <link rel="stylesheet" href="/assets/app.css" />
+    <link rel="stylesheet" href="/assets/app.css?v=reasoning-context-v8" />
   </head>
   <body>
     <header class="masthead">
@@ -30,18 +30,26 @@
 
     <main>
       <section id="view-live" class="view active">
-        <div id="current-hand" class="current-hand"></div>
+        <div class="live-main">
+          <div id="current-hand" class="current-hand"></div>
+        </div>
         <aside class="rail">
           <section class="reasoning-panel" aria-labelledby="reasoning-title">
             <div class="reasoning-head">
               <div>
-                <p class="eyebrow">RANGE MAP · LIVE SPOT</p>
-                <strong id="reasoning-title">当前局面策略</strong>
+                <p class="eyebrow">UNIFIED INFERENCE · LIVE SPOT</p>
+                <strong id="reasoning-title">实时行动与范围建议</strong>
               </div>
-              <label class="reasoning-switch">
-                <input id="llm-toggle" type="checkbox" />
-                <span>复杂节点自动调用 GPT‑5.6</span>
-              </label>
+              <div class="reasoning-switches">
+                <label class="reasoning-switch">
+                  <input id="observer-live-toggle" type="checkbox" />
+                  <span>观战实时范围</span>
+                </label>
+                <label class="reasoning-switch">
+                  <input id="llm-toggle" type="checkbox" />
+                  <span>复杂节点自动调用 GPT‑5.6</span>
+                </label>
+              </div>
             </div>
             <p id="reasoning-service" class="reasoning-service">正在检查服务端配置…</p>
             <div class="reasoning-depth" role="group" aria-label="LLM 推理深度">
@@ -51,12 +59,12 @@
               </button>
               <button class="reasoning-depth-option" data-depth="deep" type="button">
                 <strong>重推理</strong>
-                <small>高 effort · 最多 20s</small>
+                <small>中 effort · 最多 20s</small>
               </button>
             </div>
             <p class="reasoning-help">
-              本地基线始终会秒出。轻推理适合普通节点；复杂多人池、深码或关键大底池可选重推理，
-              它会发送更多行动线和对手证据。结果锁定后允许牌局继续，不猜未知底牌。
+              本人行动点输出格式化动作与精简理由；观战节点只输出全范围建议，不猜未知底牌。
+              Context 会按需加入游戏设置、当前行动线及活跃对手的最新可剥削证据。
             </p>
             <div id="reasoning-result" class="reasoning-result">
               <small>等待当前行动节点。</small>
@@ -73,11 +81,6 @@
               </button>
             </div>
           </section>
-          <div class="section-heading">
-            <span>事件流</span>
-            <small>按服务端顺序</small>
-          </div>
-          <ol id="event-stream" class="event-stream"></ol>
         </aside>
       </section>
 
@@ -90,7 +93,48 @@
           <button class="history-filter-button active" data-valid-only="false">全部牌谱</button>
           <button class="history-filter-button" data-valid-only="true">仅看有效</button>
         </div>
+        <div class="history-advanced-filter">
+          <label>搜索
+            <input id="history-search" type="search" placeholder="手牌编号、牌局 ID、玩家昵称或 ID">
+          </label>
+          <label>模式
+            <select id="history-mode">
+              <option value="">全部模式</option>
+              <option value="holdem">普通德州</option>
+              <option value="squid">鱿鱼模式</option>
+            </select>
+          </label>
+          <label>本人结果
+            <select id="history-result">
+              <option value="">全部结果</option>
+              <option value="won">盈利</option>
+              <option value="lost">亏损</option>
+              <option value="even">持平</option>
+            </select>
+          </label>
+          <label>最深街道
+            <select id="history-street">
+              <option value="">全部街道</option>
+              <option value="preflop">止步翻前</option>
+              <option value="flop">止步翻牌</option>
+              <option value="turn">止步转牌</option>
+              <option value="river">到达河牌</option>
+            </select>
+          </label>
+          <label>公开底牌
+            <select id="history-revealed">
+              <option value="false">全部手牌</option>
+              <option value="true">有对手亮牌</option>
+            </select>
+          </label>
+          <button id="history-reset" type="button">重置筛选</button>
+        </div>
+        <div class="history-scope">
+          <span id="history-count">正在加载牌谱…</span>
+          <button id="history-clear-player" type="button" hidden>清除对手亮牌筛选</button>
+        </div>
         <div id="hands-list" class="hands-list"></div>
+        <button id="hands-load-more" class="load-more" type="button" hidden>加载更多牌谱</button>
       </section>
 
       <section id="view-opponents" class="view">
@@ -102,6 +146,22 @@
           <button class="mode-button active" data-mode="">全部</button>
           <button class="mode-button" data-mode="holdem">普通德州</button>
           <button class="mode-button" data-mode="squid">鱿鱼模式</button>
+        </div>
+        <div class="opponent-controls">
+          <label>搜索
+            <input id="opponent-search" type="search" placeholder="昵称或玩家 ID">
+          </label>
+          <label>排序
+            <select id="opponent-sort">
+              <option value="hands_desc">手数最多</option>
+              <option value="revealed_desc">亮牌最多</option>
+              <option value="net_desc">净赢最多</option>
+              <option value="net_asc">净输最多</option>
+              <option value="vpip_desc">VPIP 最高</option>
+              <option value="alias_asc">昵称 A–Z</option>
+            </select>
+          </label>
+          <span id="opponent-count"></span>
         </div>
         <div id="inference-backtest" class="inference-backtest">正在计算留一手回测…</div>
         <div id="opponents-list" class="opponents-list"></div>
@@ -128,6 +188,18 @@
       <button id="dialog-close" class="dialog-close" aria-label="关闭">关闭</button>
       <div id="dialog-content"></div>
     </dialog>
-    <script src="/assets/app.js"></script>
+    <dialog id="opponent-node-dialog" class="opponent-node-dialog" aria-labelledby="opponent-node-title">
+      <header class="opponent-node-shell-head">
+        <div>
+          <p class="eyebrow">FROZEN NODE · 169 RANGE</p>
+          <h2 id="opponent-node-title">对手节点范围</h2>
+        </div>
+        <button id="opponent-node-close" class="dialog-close" type="button" aria-label="关闭对手节点范围">关闭</button>
+      </header>
+      <div id="opponent-node-content" class="opponent-node-content">
+        <div class="node-range-empty">选择实时或历史牌局中的对手。</div>
+      </div>
+    </dialog>
+    <script src="/assets/app.js?v=reasoning-context-v8"></script>
   </body>
 </html>
