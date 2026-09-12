@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .inference import selected_opponent_range
 from .poker import (
@@ -15,13 +15,19 @@ from .poker import (
 CURVE_VERSION = "range-equity-curve-v2"
 
 
+class EquityCurveCancelled(RuntimeError):
+    """Raised when a superseded curve calculation should stop."""
+
+
 def build_range_equity_curve(
     context: Mapping[str, Any],
     hero_range: Mapping[str, Any],
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Build an equity-ordered hero-range curve for the current board."""
 
     started = time.perf_counter()
+    _raise_if_cancelled(cancel_check)
     decision = context.get("decision") or {}
     board = list(decision.get("board") or [])
     if len(board) < 3 or len(board) > 5:
@@ -64,12 +70,14 @@ def build_range_equity_curve(
     rows = []
     total_simulations = 0
     for hand_class, range_weight in weights.items():
+        _raise_if_cancelled(cancel_check)
         combos = combos_by_class.get(hand_class) or []
         if not combos:
             continue
         representatives = _representative_combos(combos, limit=2)
         equities = []
         for combo in representatives:
+            _raise_if_cancelled(cancel_check)
             equities.append(
                 _exact_equity(
                     combo,
@@ -131,6 +139,7 @@ def build_range_equity_curve(
         rows,
         total_mass,
         weights,
+        cancel_check,
     )
     confidence = _curve_confidence(
         selected_range_profiles,
@@ -211,7 +220,9 @@ def _hero_marker(
     rows: Sequence[Mapping[str, Any]],
     total_mass: float,
     weights: Mapping[str, float],
+    cancel_check: Optional[Callable[[], bool]],
 ) -> Optional[Dict[str, Any]]:
+    _raise_if_cancelled(cancel_check)
     hole_cards = list(decision.get("hero_cards") or [])
     if len(hole_cards) != 2:
         return None
@@ -313,6 +324,13 @@ def _curve_confidence(
     ):
         return "low"
     return "medium"
+
+
+def _raise_if_cancelled(
+    cancel_check: Optional[Callable[[], bool]],
+) -> None:
+    if cancel_check is not None and cancel_check():
+        raise EquityCurveCancelled("权益曲线计算已被更新状态取代")
 
 
 def _elapsed_ms(started: float) -> int:

@@ -9,6 +9,7 @@ import sqlite3
 import time
 from copy import deepcopy
 from pathlib import Path
+from threading import Event
 from typing import Any, AsyncIterator, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -22,10 +23,13 @@ from .analytics import (
     connect_readonly,
     hand_detail,
     hand_summaries,
+    materialize_player_profiles,
     opponent_stats,
+    player_profile_snapshot_status,
+    read_player_profiles,
     snapshot,
 )
-from .equity_curve import build_range_equity_curve
+from .equity_curve import EquityCurveCancelled, build_range_equity_curve
 from .features import derive_positions, project_hand_state
 from .inference import (
     contextual_tendencies,
@@ -90,6 +94,11 @@ class ReasoningRequest(BaseModel):
     )
 
 
+class ReasoningCancelRequest(BaseModel):
+    sequence: int = Field(..., ge=1)
+    state_hash: str = Field(..., min_length=1, max_length=128)
+
+
 class ProfileReasoningRequest(BaseModel):
     position: str = Field(default="ALL", max_length=16)
     line: str = Field(default="vpip", max_length=24)
@@ -110,12 +119,16 @@ def create_app(
     app.state.llm_reasoner = llm_reasoner or LLMReasoner.from_env()
     app.state.inference_engine = InferenceEngine(app.state.llm_reasoner)
     app.state.reasoning_cache = {}
+    app.state.auto_reasoning_task = None
     app.state.strategy_cache = {}
     app.state.equity_curve_cache = {}
+    app.state.equity_curve_tasks = {}
     app.state.profile_reasoning_cache = {}
     app.state.opponent_range_cache = {}
     app.state.snapshot_cache = {}
     app.state.snapshot_locks = {}
+    app.state.snapshot_tasks = {}
+    app.state.profile_snapshot_tasks = {}
     app.state.inference_backtest_cache = None
     app.state.inference_backtest_lock = None
     app.state.live_hand_provider = live_hand_provider
@@ -256,6 +269,9 @@ def create_app(
         mode: Optional[str] = Query(default=None, pattern="^(holdem|squid)$")
     ) -> dict:
         try:
+            await _ensure_player_profile_snapshot(
+                app, data_dir, mode, wait_if_missing=True
+            )
             result = dict(await _cached_snapshot(app, data_dir, mode))
             live_hand = _live_hand_snapshot(app)
             if app.state.assistance_policy.allows("live_advice"):
@@ -274,6 +290,23 @@ def create_app(
             return result
         except sqlite3.Error as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get("/api/profiles")
+    async def api_profiles(
+        mode: Optional[str] = Query(default=None, pattern="^(holdem|squid)$")
+    ) -> dict:
+        await _ensure_player_profile_snapshot(app, data_dir, mode)
+        cached = await run_in_threadpool(read_player_profiles, data_dir, mode)
+        if cached is None:
+            cached = await run_in_threadpool(
+                materialize_player_profiles, data_dir, mode
+            )
+        return {
+            "opponents": cached.get("opponents") or [],
+            "hero": cached.get("hero"),
+            "source_revision": cached.get("source_revision"),
+            "updated_at": cached.get("updated_at"),
+        }
 
     @app.get("/api/hands/{hand_id}")
     async def api_hand(hand_id: str) -> dict:
@@ -765,6 +798,7 @@ def create_app(
 
     @app.get("/api/equity/current")
     async def current_equity_curve(
+        request: Request,
         sequence: Optional[int] = Query(default=None, ge=1),
         hand_id: Optional[str] = Query(default=None, max_length=160),
         subject_seat: Optional[int] = Query(default=None, ge=0),
@@ -801,11 +835,50 @@ def create_app(
         cached = app.state.equity_curve_cache.get(cache_key)
         if cached is None:
             hero_range = hero_preflop_range(context)
-            cached = await run_in_threadpool(
-                build_range_equity_curve,
-                context,
-                hero_range,
+            selected_seat = decision.get("subject_seat")
+            if selected_seat is None:
+                selected_seat = decision.get("acting_seat")
+            task_key = (
+                str(decision.get("hand_id") or ""),
+                str(selected_seat if selected_seat is not None else "primary"),
             )
+            state_hash = str(decision.get("state_hash") or "")
+            previous = app.state.equity_curve_tasks.get(task_key)
+            cancel_event = Event()
+            if previous is not None and previous[0] != state_hash:
+                previous[1].set()
+            app.state.equity_curve_tasks[task_key] = (
+                state_hash,
+                cancel_event,
+            )
+
+            async def cancel_on_disconnect() -> None:
+                while not cancel_event.is_set():
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    await asyncio.sleep(0.05)
+
+            disconnect_task = asyncio.create_task(cancel_on_disconnect())
+            try:
+                cached = await run_in_threadpool(
+                    build_range_equity_curve,
+                    context,
+                    hero_range,
+                    cancel_event.is_set,
+                )
+            except EquityCurveCancelled as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            finally:
+                cancel_event.set()
+                disconnect_task.cancel()
+                try:
+                    await disconnect_task
+                except asyncio.CancelledError:
+                    pass
+                current_task = app.state.equity_curve_tasks.get(task_key)
+                if current_task is not None and current_task[1] is cancel_event:
+                    app.state.equity_curve_tasks.pop(task_key, None)
             app.state.equity_curve_cache[cache_key] = cached
             while len(app.state.equity_curve_cache) > 32:
                 app.state.equity_curve_cache.pop(
@@ -1027,9 +1100,22 @@ def create_app(
         llm_started = time.perf_counter()
         llm_fallback = False
         fallback_reason = ""
+        current_task = asyncio.current_task()
+        previous_auto = app.state.auto_reasoning_task
+        if (
+            previous_auto is not None
+            and previous_auto[1] is not current_task
+            and not previous_auto[1].done()
+        ):
+            previous_auto[1].cancel()
+        auto_task_key = (
+            f"{request.sequence}:{decision.get('state_hash') or ''}"
+        )
+        registered_auto = not request.force and current_task is not None
+        if registered_auto:
+            app.state.auto_reasoning_task = (auto_task_key, current_task)
         try:
-            call = run_in_threadpool(
-                app.state.inference_engine.run_remote,
+            call = app.state.inference_engine.run_remote_async(
                 context,
                 timeout,
                 request.reasoning_depth,
@@ -1048,6 +1134,11 @@ def create_app(
                 round((time.perf_counter() - llm_started) * 1000),
                 request.reasoning_depth,
             )
+        except asyncio.CancelledError as error:
+            raise HTTPException(
+                status_code=409,
+                detail="该实时推理已取消（行动点更新或客户端断开）",
+            ) from error
         except ReasoningError as error:
             llm_fallback = True
             fallback_reason = str(error)
@@ -1057,6 +1148,13 @@ def create_app(
                 round((time.perf_counter() - llm_started) * 1000),
                 request.reasoning_depth,
             )
+        finally:
+            if (
+                registered_auto
+                and app.state.auto_reasoning_task is not None
+                and app.state.auto_reasoning_task[1] is current_task
+            ):
+                app.state.auto_reasoning_task = None
 
         exploit_strategy = apply_exploit_frequency_shifts(
             strategy,
@@ -1133,6 +1231,18 @@ def create_app(
             while len(app.state.reasoning_cache) > 64:
                 app.state.reasoning_cache.pop(next(iter(app.state.reasoning_cache)))
         return response
+
+    @app.post("/api/inference/cancel", status_code=204)
+    async def cancel_inference(request: ReasoningCancelRequest) -> Response:
+        task_key = f"{request.sequence}:{request.state_hash}"
+        current = app.state.auto_reasoning_task
+        if (
+            current is not None
+            and current[0] == task_key
+            and not current[1].done()
+        ):
+            current[1].cancel()
+        return Response(status_code=204)
 
     @app.post("/api/inference/analyze")
     async def analyze_inference(request: ReasoningRequest) -> dict:
@@ -1414,6 +1524,7 @@ def _compact_money_strategy(
             "hero_bucket",
             "preferred_bet_fraction",
             "preferred_preflop_raise_to",
+            "preflop_sizing_plan",
             "caveats",
             "reasons",
         )
@@ -1933,6 +2044,41 @@ def _load_inference_backtest(data_dir: Path) -> dict:
         connection.close()
 
 
+async def _ensure_player_profile_snapshot(
+    app: FastAPI,
+    data_dir: Path,
+    mode: Optional[str],
+    wait_if_missing: bool = False,
+) -> None:
+    status = await run_in_threadpool(
+        player_profile_snapshot_status,
+        data_dir,
+        mode,
+    )
+    if not status["stale"]:
+        return
+    key = mode or "all"
+    task = app.state.profile_snapshot_tasks.get(key)
+    if task is None or task.done():
+        async def rebuild() -> None:
+            try:
+                await run_in_threadpool(
+                    materialize_player_profiles,
+                    data_dir,
+                    mode,
+                )
+                app.state.snapshot_cache.pop(key, None)
+            finally:
+                current = asyncio.current_task()
+                if app.state.profile_snapshot_tasks.get(key) is current:
+                    app.state.profile_snapshot_tasks.pop(key, None)
+
+        task = asyncio.create_task(rebuild())
+        app.state.profile_snapshot_tasks[key] = task
+    if wait_if_missing and not status["exists"]:
+        await asyncio.shield(task)
+
+
 async def _cached_snapshot(
     app: FastAPI,
     data_dir: Path,
@@ -1946,21 +2092,29 @@ async def _cached_snapshot(
     now = time.monotonic()
     if cached is not None and now - cached[0] < 0.7:
         return cached[1]
-    lock = app.state.snapshot_locks.setdefault(key, asyncio.Lock())
-    async with lock:
-        cached = cache.get(key)
-        now = time.monotonic()
-        if cached is not None and now - cached[0] < 0.7:
-            return cached[1]
-        data = await run_in_threadpool(
-            snapshot,
-            data_dir,
-            30,
-            80,
-            mode,
+    tasks = app.state.snapshot_tasks
+    task = tasks.get(key)
+    if task is None or task.done():
+        task = asyncio.create_task(
+            run_in_threadpool(
+                snapshot,
+                data_dir,
+                30,
+                80,
+                mode,
+            )
         )
-        cache[key] = (time.monotonic(), data)
-        return data
+        tasks[key] = task
+    try:
+        data = await asyncio.shield(task)
+    except BaseException:
+        if task.done() and tasks.get(key) is task:
+            tasks.pop(key, None)
+        raise
+    if tasks.get(key) is task:
+        tasks.pop(key, None)
+    cache[key] = (time.monotonic(), data)
+    return data
 
 
 async def _event_stream(
@@ -1988,7 +2142,27 @@ async def _event_stream(
             current = int(data.get("last_sequence", 0))
             if current != last_sequence:
                 last_sequence = current
-                yield f"event: snapshot\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                payload = dict(data)
+                if app is not None:
+                    live_hand = _live_hand_snapshot(app)
+                    if app.state.assistance_policy.allows("live_advice"):
+                        current_decision = public_decision(
+                            live_decision_from_hand(live_hand)
+                        )
+                        if current_decision and (
+                            mode is None
+                            or current_decision.get("game_mode") == mode
+                        ):
+                            payload["live_decision"] = current_decision
+                    else:
+                        payload["live_decision"] = None
+                    payload["assistance_policy"] = (
+                        app.state.assistance_policy.as_dict()
+                    )
+                yield (
+                    "event: snapshot\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                )
             else:
                 yield ": keepalive\n\n"
         except sqlite3.Error as error:

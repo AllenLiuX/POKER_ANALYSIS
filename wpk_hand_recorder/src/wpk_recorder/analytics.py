@@ -4,13 +4,16 @@ import json
 import math
 import sqlite3
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .inference import hand_range_predictions
 from .reasoning import live_decision, public_decision
+
+PLAYER_PROFILE_SNAPSHOT_VERSION = "player-profiles-v1"
+
 
 def connect_readonly(data_dir: Path) -> sqlite3.Connection:
     path = data_dir / "hands.sqlite3"
@@ -75,15 +78,87 @@ def snapshot(
                 hands[0] if hands else None,
             )
         _apply_runtime_player_states(current_hand, events)
+        materialized = load_player_profile_snapshot(connection, mode)
+        if materialized is None:
+            materialized = {
+                "opponents": opponent_stats(connection, mode),
+                "hero": hero_stats(connection, mode),
+            }
         return {
             "last_sequence": last_sequence,
             "current_hand": current_hand,
             "live_decision": decision,
             "hands": hands,
             "events": events,
-            "opponents": opponent_stats(connection, mode),
-            "hero": hero_stats(connection, mode),
+            "opponents": materialized.get("opponents") or [],
+            "hero": materialized.get("hero"),
             "squid": squid_snapshot(connection),
+        }
+    finally:
+        connection.close()
+
+
+def live_snapshot(
+    data_dir: Path,
+    hand_limit: int = 3,
+    event_limit: int = 30,
+    mode: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Load only latency-sensitive table state for the SSE update loop."""
+
+    connection = connect_readonly(data_dir)
+    try:
+        hands, _ = _hand_summaries(
+            connection,
+            limit=hand_limit,
+            offset=0,
+            mode=mode,
+        )
+        events = [
+            {
+                "sequence": row["sequence"],
+                "timestamp": row["timestamp"],
+                "event_name": row["event_name"],
+                "hand_id": row["hand_id"],
+                "payload": json.loads(row["payload_json"]),
+            }
+            for row in connection.execute(
+                """
+                SELECT sequence, timestamp, event_name, hand_id, payload_json
+                FROM raw_events ORDER BY sequence DESC LIMIT ?
+                """,
+                (event_limit,),
+            )
+        ]
+        last_sequence = events[0]["sequence"] if events else 0
+        current_hand = next(
+            (hand for hand in hands if hand["quality_status"] == "live"),
+            None,
+        )
+        if current_hand is None:
+            latest_hand_id = next(
+                (
+                    str(event["hand_id"])
+                    for event in events
+                    if event.get("hand_id")
+                ),
+                None,
+            )
+            current_hand = next(
+                (
+                    hand
+                    for hand in hands
+                    if str(hand.get("hand_id") or "") == latest_hand_id
+                ),
+                hands[0] if hands else None,
+            )
+        _apply_runtime_player_states(current_hand, events)
+        return {
+            "last_sequence": last_sequence,
+            "current_hand": current_hand,
+            "live_decision": public_decision(
+                live_decision(connection, mode=mode)
+            ),
         }
     finally:
         connection.close()
@@ -311,6 +386,134 @@ def hand_detail(data_dir: Path, hand_id: str) -> Optional[Dict[str, Any]]:
         connection.close()
 
 
+def load_player_profile_snapshot(
+    connection: sqlite3.Connection,
+    mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    try:
+        row = connection.execute(
+            """
+            SELECT schema_version, source_revision, updated_at,
+                   opponents_json, hero_json
+            FROM player_profile_snapshots
+            WHERE mode = ?
+            """,
+            (mode or "all",),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None or row["schema_version"] != PLAYER_PROFILE_SNAPSHOT_VERSION:
+        return None
+    return {
+        "source_revision": row["source_revision"],
+        "updated_at": row["updated_at"],
+        "opponents": json.loads(row["opponents_json"]),
+        "hero": json.loads(row["hero_json"]) if row["hero_json"] else None,
+    }
+
+
+def read_player_profiles(
+    data_dir: Path,
+    mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    connection = connect_readonly(data_dir)
+    try:
+        return load_player_profile_snapshot(connection, mode)
+    finally:
+        connection.close()
+
+
+def player_profile_snapshot_status(
+    data_dir: Path,
+    mode: Optional[str] = None,
+) -> Dict[str, Any]:
+    connection = connect_readonly(data_dir)
+    try:
+        cached = load_player_profile_snapshot(connection, mode)
+        revision = _player_profile_source_revision(connection, mode)
+        return {
+            "exists": cached is not None,
+            "stale": (
+                cached is None
+                or cached["source_revision"] != revision
+            ),
+            "source_revision": revision,
+        }
+    finally:
+        connection.close()
+
+
+def materialize_player_profiles(
+    data_dir: Path,
+    mode: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = data_dir / "hands.sqlite3"
+    connection = sqlite3.connect(path, timeout=30)
+    connection.execute("PRAGMA busy_timeout=30000")
+    connection.row_factory = sqlite3.Row
+    try:
+        opponents = opponent_stats(connection, mode)
+        hero = hero_stats(connection, mode)
+        revision = _player_profile_source_revision(connection, mode)
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO player_profile_snapshots(
+                    mode, schema_version, source_revision, updated_at,
+                    opponents_json, hero_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(mode) DO UPDATE SET
+                    schema_version=excluded.schema_version,
+                    source_revision=excluded.source_revision,
+                    updated_at=excluded.updated_at,
+                    opponents_json=excluded.opponents_json,
+                    hero_json=excluded.hero_json
+                """,
+                (
+                    mode or "all",
+                    PLAYER_PROFILE_SNAPSHOT_VERSION,
+                    revision,
+                    updated_at,
+                    json.dumps(opponents, ensure_ascii=False),
+                    (
+                        json.dumps(hero, ensure_ascii=False)
+                        if hero is not None
+                        else None
+                    ),
+                ),
+            )
+        return {
+            "source_revision": revision,
+            "updated_at": updated_at,
+            "opponents": opponents,
+            "hero": hero,
+        }
+    finally:
+        connection.close()
+
+
+def _player_profile_source_revision(
+    connection: sqlite3.Connection,
+    mode: Optional[str],
+) -> str:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS hand_count, COALESCE(MAX(rowid), 0) AS max_rowid,
+               COALESCE(MAX(ended_at), '') AS latest_end
+        FROM hands
+        WHERE excluded_from_stats = 0
+          AND (? IS NULL OR game_mode = ?)
+        """,
+        (mode, mode),
+    ).fetchone()
+    return (
+        f"{int(row['hand_count'])}:"
+        f"{int(row['max_rowid'])}:"
+        f"{str(row['latest_end'])}"
+    )
+
+
 def opponent_stats(
     connection: sqlite3.Connection, mode: Optional[str] = None
 ) -> List[Dict[str, Any]]:
@@ -376,12 +579,36 @@ def _player_stats(
             if (row["net"] or 0) > 0:
                 item["won_after_flop"].add(hand_id)
 
+    if not is_hero and players:
+        # Occasional identity glitches can mark the seat owner as a non-hero.
+        # Keep those seats out of the opponent list when the same user is
+        # primarily recorded as hero, so hero samples never pollute opponents.
+        alternate_counts: Dict[str, int] = defaultdict(int)
+        for row in connection.execute(
+            """
+            SELECT hp.user_id, COUNT(DISTINCT hp.hand_id) AS hands
+            FROM hand_players hp
+            JOIN hands h ON h.hand_id = hp.hand_id
+            WHERE hp.is_hero = 1 AND hp.user_id IS NOT NULL
+              AND h.excluded_from_stats = 0
+              AND (? IS NULL OR h.game_mode = ?)
+            GROUP BY hp.user_id
+            """,
+            (mode, mode),
+        ):
+            alternate_counts[row["user_id"]] = int(row["hands"])
+        for user_id in list(players):
+            if alternate_counts.get(user_id, 0) >= len(players[user_id]["hands"]):
+                del players[user_id]
+
     population: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
     for row in connection.execute(
         """
-        SELECT o.user_id, o.metric, o.success, o.position
+        SELECT o.user_id, o.metric, o.success, o.position, hp.is_hero
         FROM opportunities o
         JOIN hands h ON h.hand_id = o.hand_id
+        JOIN hand_players hp
+          ON hp.hand_id = o.hand_id AND hp.user_id = o.user_id
         WHERE o.user_id IS NOT NULL AND h.excluded_from_stats = 0
           AND (? IS NULL OR o.game_mode = ?)
         """,
@@ -389,24 +616,30 @@ def _player_stats(
     ):
         population[row["metric"]][0] += int(row["success"])
         population[row["metric"]][1] += 1
-        if row["user_id"] in players:
-            metric = players[row["user_id"]]["opportunities"][row["metric"]]
-            metric[0] += int(row["success"])
-            metric[1] += 1
-            position = row["position"] or "Unknown"
-            bucket = players[row["user_id"]]["positions"][position][row["metric"]]
-            bucket[0] += int(row["success"])
-            bucket[1] += 1
+        if row["user_id"] not in players:
+            continue
+        if int(row["is_hero"]) != int(is_hero):
+            continue
+        metric = players[row["user_id"]]["opportunities"][row["metric"]]
+        metric[0] += int(row["success"])
+        metric[1] += 1
+        position = row["position"] or "Unknown"
+        bucket = players[row["user_id"]]["positions"][position][row["metric"]]
+        bucket[0] += int(row["success"])
+        bucket[1] += 1
 
     for row in connection.execute(
         """
         SELECT d.user_id, d.street, d.chosen_action, d.bet_fraction
         FROM decision_snapshots d
         JOIN hands h ON h.hand_id = d.hand_id
+        JOIN hand_players hp
+          ON hp.hand_id = d.hand_id AND hp.user_id = d.user_id
         WHERE d.user_id IS NOT NULL AND h.excluded_from_stats = 0
+          AND hp.is_hero = ?
           AND (? IS NULL OR d.game_mode = ?)
         """,
-        (mode, mode),
+        (int(is_hero), mode, mode),
     ):
         if row["user_id"] not in players:
             continue

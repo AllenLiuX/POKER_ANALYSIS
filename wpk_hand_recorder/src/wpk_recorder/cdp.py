@@ -126,16 +126,26 @@ class CDPRecorder:
                 "Runtime.addBinding",
                 {"name": BINDING_NAME},
             )
+            hook_script = _event_hook_script()
+            await self._try_command(
+                websocket,
+                5,
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": hook_script},
+            )
             await websocket.send(
                 json.dumps(
                     {
-                        "id": 5,
+                        "id": 6,
                         "method": "Runtime.evaluate",
-                        "params": {"expression": _event_hook_script(), "awaitPromise": False},
+                        "params": {
+                            "expression": hook_script,
+                            "awaitPromise": False,
+                        },
                     }
                 )
             )
-            await self._wait_for_id(websocket, 5, "Runtime.evaluate")
+            await self._wait_for_id(websocket, 6, "Runtime.evaluate")
             if duration:
                 try:
                     await asyncio.wait_for(self._receive(websocket), timeout=duration)

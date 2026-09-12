@@ -594,7 +594,7 @@ def test_current_equity_api_uses_live_board_and_hero_range(
     )
     captured = {}
 
-    def fake_curve(context, hero_range):
+    def fake_curve(context, hero_range, _cancel_check=None):
         captured["board"] = context["decision"]["board"]
         captured["hero_range"] = hero_range
         return {
@@ -628,7 +628,7 @@ def test_current_equity_api_falls_back_to_in_progress_hand_snapshot(
     )
     captured = {}
 
-    def fake_curve(context, hero_range):
+    def fake_curve(context, hero_range, _cancel_check=None):
         captured["decision"] = context["decision"]
         captured["hero_range"] = hero_range
         return {
@@ -665,7 +665,7 @@ def test_current_equity_api_can_select_each_active_subject_seat(
     )
     captured_seats = []
 
-    def fake_curve(context, _hero_range):
+    def fake_curve(context, _hero_range, _cancel_check=None):
         captured_seats.append(context["decision"]["subject_seat"])
         return {
             "status": "ok",
@@ -1307,6 +1307,58 @@ def test_simplified_range_strategy_covers_unknown_and_known_hands():
     )
 
 
+def test_preflop_range_tightens_as_facing_raise_gets_larger():
+    decision = {
+        "street": "preflop",
+        "hero_cards": [],
+        "hero_position": "BB",
+        "legal_actions": ["fold", "call", "raise"],
+        "big_blind": 4,
+        "hero_street_contribution": 4,
+        "hero_stack_bb": 100,
+        "players_in_hand": 2,
+        "table_players": 6,
+    }
+
+    def strategy(amount_to, call_score, pot):
+        return simplified_range_strategy(
+            {
+                "decision": {
+                    **decision,
+                    "call_score": call_score,
+                    "pot": pot,
+                },
+                "action_history": [
+                    {
+                        "street": "preflop",
+                        "position": "CO",
+                        "action": "raise",
+                        "amount_to": amount_to,
+                    }
+                ],
+            }
+        )
+
+    small = strategy(8, 4, 21)
+    large = strategy(24, 20, 37)
+    small_continue = (
+        small["action_mix"].get("call", 0)
+        + small["action_mix"].get("raise", 0)
+    )
+    large_continue = (
+        large["action_mix"].get("call", 0)
+        + large["action_mix"].get("raise", 0)
+    )
+
+    assert small["scenario"] == large["scenario"] == "facing_raise"
+    assert small["range_context"]["facing_amount_to_bb"] == 2
+    assert large["range_context"]["facing_amount_to_bb"] == 6
+    assert small["range_context"]["facing_price_multiplier"] > 1
+    assert large["range_context"]["facing_price_multiplier"] < 1
+    assert small_continue > large_continue
+    assert "2.0BB" in small["spot"]["action_line"]
+
+
 def test_solver_fit_bets_vulnerable_weak_top_pair_heads_up_but_tightens_multiway():
     decision = {
         "street": "flop",
@@ -1645,7 +1697,7 @@ def test_reasoning_api_returns_range_when_hole_cards_are_missing(tmp_path):
     assert len(body["strategy"]["cells"]) == 169
     assert (
         body["strategy"]["spot"]["action_line"]
-        == "BTN/SB 加注 → BB 决策"
+        == "BTN/SB 加注 到 6 / 3.0BB → BB 决策"
     )
 
 
@@ -2126,7 +2178,7 @@ def test_reasoning_api_uses_injected_reasoner(tmp_path):
     assert response.json()["strategy"]["hero_hand"] == "AKs"
     assert (
         response.json()["money_strategy"]["engine_version"]
-        == "money-ev-dynamic-sizing-v13"
+        == "money-ev-dynamic-preflop-sizing-v15"
     )
     assert response.json()["stale"] is False
     strategy_response = client.get(f"/api/strategy/current?sequence={sequence}")
@@ -2135,7 +2187,10 @@ def test_reasoning_api_uses_injected_reasoner(tmp_path):
     assert strategy_response.json()["stale"] is False
     evaluations = client.get("/api/strategy/evaluations").json()["evaluations"]
     assert evaluations[0]["sequence"] == sequence
-    assert evaluations[0]["engine_version"] == "money-ev-dynamic-sizing-v13"
+    assert (
+        evaluations[0]["engine_version"]
+        == "money-ev-dynamic-preflop-sizing-v15"
+    )
     profile_response = client.post(
         "/api/players/villain/profile/analyze",
         json={"position": "ALL", "line": "vpip"},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 from wpk_recorder.inference_engine import (
@@ -103,6 +104,40 @@ def test_unified_contract_and_frozen_context_are_versioned_and_anonymous():
     assert advice["recommendation"]["kind"] == "full_range"
     assert advice["recommendation"]["action"] is None
     assert advice["route"]["template_id"] == "full-range-v1"
+
+
+def test_async_remote_path_uses_cancellable_reasoner_method():
+    started = asyncio.Event()
+
+    class AsyncReasoner(FakeReasoner):
+        @staticmethod
+        async def analyze_exploit_async(
+            _context,
+            _timeout,
+            reasoning_depth="light",
+            template_id=None,
+        ):
+            started.set()
+            await asyncio.sleep(60)
+
+    async def run():
+        task = asyncio.create_task(
+            InferenceEngine(AsyncReasoner()).run_remote_async(
+                _range_context(),
+                1,
+                "light",
+                "full-range-v1",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        raise AssertionError("async inference cancellation did not propagate")
+
+    asyncio.run(run())
 
 
 def test_exact_advice_keeps_offline_money_action_when_llm_disagrees():

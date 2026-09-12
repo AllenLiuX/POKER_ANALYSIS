@@ -24,7 +24,7 @@ from .squid_value import (
     squid_state_from_dict,
 )
 
-ENGINE_VERSION = "money-ev-dynamic-sizing-v13"
+ENGINE_VERSION = "money-ev-dynamic-preflop-sizing-v15"
 
 
 def evaluate_money_strategy(
@@ -89,7 +89,10 @@ def evaluate_money_strategy(
         if street != "preflop"
         else None
     )
-    preferred_preflop_raise_to = _preferred_preflop_open_to(context)
+    preflop_sizing_plan = _preflop_sizing_plan(context)
+    preferred_preflop_raise_to = preflop_sizing_plan.get(
+        "recommended_raise_to"
+    )
     fold_model = _fold_model(context, opponents)
     showdown = _showdown_stats(
         hole_cards, board, range_models, opponents, trials, uses_ranges
@@ -211,7 +214,7 @@ def evaluate_money_strategy(
             decision,
             preferred_size,
         )
-        sizing_penalty += _preflop_open_sizing_penalty(
+        sizing_penalty += _preflop_sizing_penalty(
             candidate,
             decision,
             preferred_preflop_raise_to,
@@ -229,6 +232,12 @@ def evaluate_money_strategy(
 
     confidence = _engine_confidence(decision, fold_model, squid)
     exploit_weight = {"low": 0.15, "medium": 0.30, "high": 0.45}[confidence]
+    facing_aggression = any(
+        str(action.get("street") or "") == street
+        and str(action.get("action") or "") in {"bet", "raise", "all_in"}
+        for action in context.get("action_history") or []
+    )
+    enforce_ev_guardrail = street != "preflop" or facing_aggression
     baseline_mix = _baseline_action_mix(baseline)
     baseline_fallback = False
     if not baseline_mix:
@@ -250,7 +259,24 @@ def evaluate_money_strategy(
             street == "preflop"
             or allow_postflop_all_in(context, hero_bucket)
         ),
+        enforce_ev_guardrail=enforce_ev_guardrail,
     )
+    ev_guardrail = {
+        "method": "robust-ev-dominance-v1",
+        "enabled": enforce_ev_guardrail,
+        "margin": round(
+            _ev_dominance_margin(
+                pot,
+                _number(decision.get("big_blind")) or 4.0,
+            ),
+            2,
+        ),
+        "excluded_candidate_ids": [
+            str(item.get("id"))
+            for item in policy
+            if not item.get("ev_eligible", True)
+        ],
+    }
     most_frequent = (
         max(policy, key=lambda item: item["frequency_pct"]) if policy else None
     )
@@ -273,6 +299,13 @@ def evaluate_money_strategy(
         selected,
         preferred_size,
     )
+    if (
+        street == "preflop"
+        and selected
+        and selected.get("action") == "raise"
+        and preflop_sizing_plan.get("enabled")
+    ):
+        reasons.append(str(preflop_sizing_plan["reason"]))
     reasons.extend(_opponent_model_reasons(fold_model))
     if (
         selected
@@ -318,12 +351,14 @@ def evaluate_money_strategy(
             if key != "round_ev_by_action"
         },
         "exploit_weight_pct": round(100 * exploit_weight),
+        "ev_guardrail": ev_guardrail,
         "baseline_fallback": baseline_fallback,
         "reference_action": _reference_candidate_id(candidates),
         "fit_profile": fit_profile,
         "hero_bucket": hero_bucket,
         "preferred_bet_fraction": preferred_size,
         "preferred_preflop_raise_to": preferred_preflop_raise_to,
+        "preflop_sizing_plan": preflop_sizing_plan,
         "sizing_recommendation": sizing_recommendation,
         "strategy_sources": list(PUBLIC_STRATEGY_SOURCES),
         "recommended": selected,
@@ -772,6 +807,12 @@ def _continuation_size_bucket(size_ratio: float) -> str:
 def _preferred_preflop_open_to(
     context: Mapping[str, Any],
 ) -> Optional[float]:
+    return _preflop_sizing_plan(context).get("recommended_raise_to")
+
+
+def _preflop_sizing_plan(
+    context: Mapping[str, Any],
+) -> Dict[str, Any]:
     decision = context.get("decision") or {}
     if (
         str(decision.get("street") or "preflop") != "preflop"
@@ -779,50 +820,323 @@ def _preferred_preflop_open_to(
             decision.get("legal_actions")
         )
     ):
-        return None
-    voluntary_actions = {
-        "call",
-        "raise",
-        "bet",
-        "all_in",
-        "all-in",
-        "allin",
-    }
-    if any(
-        str(action.get("action") or "").lower() in voluntary_actions
+        return {"enabled": False, "reason": "当前不是可加注的翻前节点"}
+    actions = [
+        action
         for action in context.get("action_history") or []
         if str(action.get("street") or "") == "preflop"
-    ):
-        return None
+    ]
+    normalized_actions = [
+        {
+            **action,
+            "action": str(action.get("action") or "")
+            .lower()
+            .replace("-", "_"),
+        }
+        for action in actions
+    ]
+    raises = [
+        (index, action)
+        for index, action in enumerate(normalized_actions)
+        if action.get("action") in {"raise", "all_in", "allin"}
+    ]
+    action_start = raises[-1][0] + 1 if raises else 0
+    limpers = [
+        action
+        for action in normalized_actions[action_start:]
+        if action.get("action") == "call"
+    ]
     big_blind = _number(decision.get("big_blind")) or 0.0
     if big_blind <= 0:
-        return None
+        return {"enabled": False, "reason": "缺少大盲金额，无法动态定尺"}
     position = str(decision.get("hero_position") or "").upper()
     position = {
         "SMALL_BLIND": "SB",
-        "BTN/SB": "SB",
         "BIG_BLIND": "BB",
+        "DEALER": "BTN",
+        "BUTTON": "BTN",
     }.get(position, position)
-    if position == "BB":
-        return None
     table_players = max(
         2,
         min(9, int(decision.get("table_players") or 6)),
     )
     ante = max(0.0, _number(decision.get("ante")) or 0.0)
     total_ante_bb = ante * table_players / big_blind
-    if position == "SB":
-        multiple = 3.5 if total_ante_bb > 0 else 3.0
+    effective_stack_bb = _preflop_effective_stack_bb(decision, big_blind)
+    response = _preflop_response_sizing_adjustment(context)
+
+    if raises:
+        last_raise = raises[-1][1]
+        previous_raise_to = _number(last_raise.get("amount_to"))
+        if previous_raise_to is None or previous_raise_to <= 0:
+            return {
+                "enabled": False,
+                "spot": "reraise",
+                "reason": "前序加注缺少 raise-to 金额，保留多尺度 EV 比较",
+            }
+        previous_raise_bb = previous_raise_to / big_blind
+        in_position = _preflop_in_position(position, last_raise.get("position"))
+        base_multiple = 3.0 if in_position else 4.0
+        cold_callers = len(limpers)
+        balanced_bb = (
+            previous_raise_bb * base_multiple
+            + cold_callers * previous_raise_bb
+        )
+        depth_scale = (
+            1.12
+            if effective_stack_bb >= 250
+            else 1.07
+            if effective_stack_bb >= 150
+            else 0.90
+            if effective_stack_bb < 50
+            else 1.0
+        )
+        target_bb = balanced_bb * depth_scale
+        target_bb += float(response["adjustment_bb"])
+        spot = "squeeze" if cold_callers else (
+            "three_bet" if len(raises) == 1 else "four_bet_plus"
+        )
+        base_description = (
+            f"{'有位置' if in_position else '无位置'}按前次加注的"
+            f" {base_multiple:.0f}x"
+            + (f"，另计 {cold_callers} 名冷跟者死钱" if cold_callers else "")
+        )
     else:
-        multiple = 3.0 if total_ante_bb > 0 else 2.5
-    target = multiple * big_blind
+        limper_count = len(limpers)
+        if limper_count:
+            balanced_bb = 3.0 + limper_count
+            if position in {"SB", "BB"}:
+                balanced_bb += 0.5
+            if total_ante_bb >= 1.0:
+                balanced_bb += 0.25
+            depth_adjustment = (
+                1.0
+                if effective_stack_bb >= 250
+                else 0.5
+                if effective_stack_bb >= 150
+                else -0.5
+                if effective_stack_bb < 50
+                else 0.0
+            )
+            target_bb = (
+                balanced_bb
+                + depth_adjustment
+                + 1.3 * float(response["adjustment_bb"])
+            )
+            spot = "isolation"
+            base_description = (
+                f"隔离 {limper_count} 名 limper，采用 3BB + 每人 1BB"
+            )
+        else:
+            if position in {"SB", "BTN/SB"}:
+                balanced_bb = 3.5 if total_ante_bb > 0 else 3.0
+            else:
+                balanced_bb = 3.0 if total_ante_bb > 0 else 2.5
+            if total_ante_bb >= 1.0:
+                balanced_bb += 0.25
+            late_or_blind = position in {
+                "CO",
+                "BTN",
+                "BTN/SB",
+                "SB",
+            }
+            depth_adjustment = (
+                0.5
+                if effective_stack_bb >= 250 and late_or_blind
+                else 0.25
+                if effective_stack_bb >= 150 and late_or_blind
+                else -0.5
+                if effective_stack_bb < 40
+                else 0.0
+            )
+            target_bb = (
+                balanced_bb
+                + depth_adjustment
+                + float(response["adjustment_bb"])
+            )
+            spot = "open"
+            base_description = (
+                "ante 均衡基线约 3BB"
+                if total_ante_bb > 0
+                else "常规均衡基线约 2.5BB"
+            )
+
+    target_bb = max(2.0, min(16.0, target_bb))
+    target = target_bb * big_blind
     minimum = _number(decision.get("min_raise_to"))
     maximum = _number(decision.get("max_raise_to"))
     if minimum is not None:
         target = max(target, minimum)
     if maximum is not None:
         target = min(target, maximum)
-    return round(target, 2)
+    target = round(target, 2)
+    target_bb = target / big_blind
+    projected_spr = _projected_heads_up_spr(decision, target)
+    response_text = (
+        f"；对手后验 call {response['call_pct']:.0f}% / "
+        f"reraise {response['raise_pct']:.0f}%"
+        if response.get("enabled")
+        else "；对手尺度响应样本不足，未做个体放大"
+    )
+    return {
+        "enabled": True,
+        "spot": spot,
+        "recommended_raise_to": target,
+        "recommended_raise_to_bb": round(target_bb, 2),
+        "balanced_raise_to_bb": round(balanced_bb, 2),
+        "effective_stack_bb": round(effective_stack_bb, 1),
+        "total_ante_bb": round(total_ante_bb, 2),
+        "limper_count": len(limpers),
+        "response_adjustment": response,
+        "projected_heads_up_spr": projected_spr,
+        "source": (
+            "validated-opponent-response"
+            if response.get("enabled")
+            else "public-theory-baseline"
+        ),
+        "reason": (
+            f"{base_description}{response_text}，建议约 {target_bb:.1f}BB"
+            + (
+                f"，单人跟注后预计 SPR {projected_spr:.1f}"
+                if projected_spr is not None
+                else ""
+            )
+        ),
+    }
+
+
+def _preflop_effective_stack_bb(
+    decision: Mapping[str, Any],
+    big_blind: float,
+) -> float:
+    effective_stacks = [
+        _number(player.get("effective_stack_to_hero"))
+        for player in decision.get("players") or []
+        if isinstance(player, Mapping)
+        and player.get("active")
+        and not player.get("is_hero")
+    ]
+    known = [value for value in effective_stacks if value is not None]
+    if known:
+        return max(1.0, min(known) / big_blind)
+    stack_bb = _number(decision.get("hero_stack_bb"))
+    if stack_bb is not None:
+        return max(1.0, stack_bb)
+    hero_stack = _number(decision.get("hero_stack"))
+    return max(1.0, hero_stack / big_blind) if hero_stack is not None else 100.0
+
+
+def _preflop_response_sizing_adjustment(
+    context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    weighted_call = 0.0
+    weighted_raise = 0.0
+    total_weight = 0.0
+    samples = 0.0
+    used_players = 0
+    confidence_weight = {
+        "very_low": 0.0,
+        "low": 0.35,
+        "medium": 0.70,
+        "high": 1.0,
+    }
+    for profile in context.get("active_opponent_profiles") or []:
+        model = profile.get("response_model") or {}
+        probabilities = model.get("probabilities_pct") or {}
+        call = _number(probabilities.get("call"))
+        raise_rate = _number(probabilities.get("raise"))
+        evidence = max(
+            0.0,
+            _number(model.get("effective_samples"))
+            or _number(model.get("player_evidence_samples"))
+            or 0.0,
+        )
+        confidence = str(model.get("confidence") or "very_low")
+        weight = confidence_weight.get(confidence, 0.0) * min(
+            1.0, evidence / 20.0
+        )
+        if call is None or raise_rate is None or weight <= 0:
+            continue
+        weighted_call += weight * call
+        weighted_raise += weight * raise_rate
+        total_weight += weight
+        samples += evidence
+        used_players += 1
+    if total_weight <= 0:
+        return {
+            "enabled": False,
+            "adjustment_bb": 0.0,
+            "players": 0,
+            "effective_samples": 0.0,
+        }
+    call_pct = weighted_call / total_weight
+    raise_pct = weighted_raise / total_weight
+    expected_callers = used_players * call_pct / 100.0
+    expected_raisers = used_players * raise_pct / 100.0
+    sticky = max(
+        max(0.0, min(1.0, (call_pct - 42.0) / 25.0)),
+        0.7 * max(0.0, min(1.0, (expected_callers - 1.0) / 1.5)),
+    )
+    aggressive = max(
+        max(0.0, min(1.0, (raise_pct - 14.0) / 18.0)),
+        max(0.0, min(1.0, (expected_raisers - 0.35) / 0.65)),
+    )
+    adjustment = max(-1.0, min(1.5, 1.5 * sticky - aggressive))
+    return {
+        "enabled": True,
+        "adjustment_bb": round(adjustment, 2),
+        "call_pct": round(call_pct, 1),
+        "raise_pct": round(raise_pct, 1),
+        "expected_callers": round(expected_callers, 2),
+        "expected_raisers": round(expected_raisers, 2),
+        "players": used_players,
+        "effective_samples": round(samples, 1),
+        "method": "validated-contextual-response-v1",
+    }
+
+
+def _preflop_in_position(hero_position: str, villain_position: Any) -> bool:
+    rank = {
+        "SB": 0,
+        "SMALL_BLIND": 0,
+        "BB": 1,
+        "BIG_BLIND": 1,
+        "UTG": 2,
+        "UTG+1": 3,
+        "MP": 4,
+        "MP+1": 5,
+        "HJ": 6,
+        "CO": 7,
+        "BTN": 8,
+        "BUTTON": 8,
+        "DEALER": 8,
+        "BTN/SB": 8,
+    }
+    hero_rank = rank.get(hero_position, 0)
+    villain_rank = rank.get(str(villain_position or "").upper(), 8)
+    return hero_rank > villain_rank
+
+
+def _projected_heads_up_spr(
+    decision: Mapping[str, Any],
+    target: float,
+) -> Optional[float]:
+    pot = max(0.0, _number(decision.get("pot")) or 0.0)
+    contribution = max(
+        0.0,
+        _number(decision.get("hero_street_contribution")) or 0.0,
+    )
+    hero_stack = _number(decision.get("hero_stack"))
+    if hero_stack is None:
+        return None
+    hero_cost = max(0.0, target - contribution)
+    remaining = max(0.0, hero_stack - hero_cost)
+    projected_pot = pot + hero_cost + target
+    return (
+        round(remaining / projected_pot, 2)
+        if projected_pot > 0
+        else None
+    )
 
 
 def _candidate_actions(
@@ -1827,6 +2141,7 @@ def _mixed_policy(
     big_blind: float,
     *,
     allow_all_in: bool = True,
+    enforce_ev_guardrail: bool = True,
 ) -> List[Dict[str, Any]]:
     if not candidates:
         return []
@@ -1844,13 +2159,27 @@ def _mixed_policy(
         )
     ]
     maximum = max(float(item["robust_ev"]) for item in eligible or candidates)
+    dominance_margin = _ev_dominance_margin(pot, big_blind)
+    ev_eligible_ids = (
+        {
+            str(item["id"])
+            for item in eligible
+            if maximum - float(item["robust_ev"]) <= dominance_margin
+        }
+        if enforce_ev_guardrail
+        else {str(item["id"]) for item in eligible}
+    )
+    if not ev_eligible_ids:
+        ev_eligible_ids = {
+            str(max(eligible or candidates, key=lambda item: item["robust_ev"])["id"])
+        }
     weights = []
     for item in candidates:
         if (
             item.get("action") == "all_in"
             and not allow_all_in
             and legal_non_all_in
-        ):
+        ) or str(item["id"]) not in ev_eligible_ids:
             weights.append(0.0)
             continue
         weights.append(
@@ -1873,6 +2202,8 @@ def _mixed_policy(
         baseline_probability = float(baseline.get(action, 0.0))
         if action == "raise" and candidate is not best_raise:
             baseline_probability = 0.0
+        if str(candidate["id"]) not in ev_eligible_ids:
+            baseline_probability = 0.0
         probability = (
             (1.0 - exploit_weight) * baseline_probability
             + exploit_weight * weight / normalizer
@@ -1884,6 +2215,11 @@ def _mixed_policy(
                 "raise_to": candidate.get("raise_to"),
                 "_probability": probability,
                 "robust_ev": candidate["robust_ev"],
+                "ev_gap": round(
+                    maximum - float(candidate["robust_ev"]),
+                    2,
+                ),
+                "ev_eligible": str(candidate["id"]) in ev_eligible_ids,
             }
         )
     total = sum(item["_probability"] for item in rows)
@@ -1911,6 +2247,12 @@ def _mixed_policy(
         rounded,
         key=lambda item: (-item["frequency_pct"], -item["robust_ev"], item["id"]),
     )
+
+
+def _ev_dominance_margin(pot: float, big_blind: float) -> float:
+    """Keep near-indifferent mixes but remove clearly inferior actions."""
+
+    return max(1.0, 0.5 * max(0.0, big_blind), 0.05 * max(0.0, pot))
 
 
 def _weighted_random_selection(
@@ -1981,7 +2323,7 @@ def _sizing_penalty(
     return 0.35 * pot * distance
 
 
-def _preflop_open_sizing_penalty(
+def _preflop_sizing_penalty(
     candidate: Mapping[str, Any],
     decision: Mapping[str, Any],
     preferred_raise_to: Optional[float],
@@ -2007,6 +2349,10 @@ def _uncertainty_penalty(
     fold_model: Mapping[str, Any],
     squid_calibrated: bool,
 ) -> float:
+    if candidate.get("action") == "fold":
+        # Folding has no future chip variance at the decision point. Chips
+        # already invested are sunk, so its incremental EV is exactly zero.
+        return 0.0
     pot = _number(decision.get("pot")) or 0.0
     sample_penalty = pot / math.sqrt(max(1, trials))
     evidence_penalty = (

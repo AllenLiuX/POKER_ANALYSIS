@@ -1,5 +1,10 @@
+import pytest
+
 import wpk_recorder.equity_curve as equity_curve_module
-from wpk_recorder.equity_curve import build_range_equity_curve
+from wpk_recorder.equity_curve import (
+    EquityCurveCancelled,
+    build_range_equity_curve,
+)
 from wpk_recorder.reasoning import hero_preflop_range
 
 
@@ -81,6 +86,17 @@ def test_range_equity_curve_waits_for_a_flop():
     curve = build_range_equity_curve(context, hero_preflop_range(context))
 
     assert curve["status"] == "unavailable"
+
+
+def test_range_equity_curve_stops_when_superseded():
+    context = _context()
+
+    with pytest.raises(EquityCurveCancelled):
+        build_range_equity_curve(
+            context,
+            hero_preflop_range(context),
+            cancel_check=lambda: True,
+        )
 
 
 def test_observer_curve_excludes_acting_player_from_opponent_ranges(

@@ -1,5 +1,6 @@
 import hashlib
 import asyncio
+import json
 import sqlite3
 
 from fastapi.testclient import TestClient
@@ -338,6 +339,9 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
     db = sqlite3.connect(tmp_path / "hands.sqlite3")
     assert db.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 2
     assert db.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0] >= 4
+    assert db.execute(
+        "SELECT COUNT(*) FROM player_profile_snapshots"
+    ).fetchone()[0] >= 1
     db.close()
 
     class ConnectedRequest:
@@ -353,6 +357,148 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
         return event
 
     assert "event: snapshot" in asyncio.run(first_sse_event())
+
+    async def first_live_sse_event():
+        stream = _event_stream(
+            ConnectedRequest(),
+            tmp_path,
+            create_app(tmp_path),
+        )
+        event = await stream.__anext__()
+        await stream.aclose()
+        return event
+
+    live_event = asyncio.run(first_live_sse_event())
+    live_payload = json.loads(live_event.split("data: ", 1)[1])
+    assert live_payload["opponents"][0]["alias"] == "Villain"
+    assert live_payload["hero"]["alias"] == "Hero"
+
+
+def test_opponent_stats_do_not_mix_hero_opportunity_samples(tmp_path):
+    store = RecorderStore(tmp_path)
+    for index in range(3):
+        hand = HandHistory(
+            hand_id=f"hero-main-{index}",
+            table_id="T-mix",
+            started_at="2026-01-01T00:00:00+00:00",
+            ended_at="2026-01-01T00:01:00+00:00",
+            button_seat=2,
+            big_blind=2,
+            board=["As", "Kh", "2c"],
+            pot=20,
+            status="completed",
+        )
+        hand.players = {
+            1: Player(
+                1,
+                user_id="88671540",
+                alias="先清清兵",
+                is_hero=True,
+                net=2,
+            ),
+            2: Player(
+                2,
+                user_id="villain",
+                alias="Villain",
+                net=-2,
+            ),
+        }
+        hand.actions = [
+            Action(
+                "preflop",
+                2,
+                "Villain",
+                "raise",
+                5,
+                6,
+                "villain",
+                f"v{index}",
+                94,
+                1,
+                1,
+            ),
+            Action(
+                "preflop",
+                1,
+                "先清清兵",
+                "call",
+                4,
+                6,
+                "88671540",
+                f"h{index}",
+                94,
+                1,
+                2,
+            ),
+        ]
+        store.save_hand(hand)
+
+    mistagged = HandHistory(
+        hand_id="hero-mistagged",
+        table_id="T-mix",
+        started_at="2026-01-01T00:02:00+00:00",
+        ended_at="2026-01-01T00:03:00+00:00",
+        button_seat=1,
+        big_blind=2,
+        board=["As", "Kh", "2c"],
+        pot=12,
+        status="completed",
+    )
+    mistagged.players = {
+        1: Player(
+            1,
+            user_id="88671540",
+            alias="先清清兵",
+            is_hero=False,
+            net=-2,
+        ),
+        2: Player(
+            2,
+            user_id="other",
+            alias="Other",
+            is_hero=True,
+            net=2,
+        ),
+    }
+    mistagged.actions = [
+        Action(
+            "preflop",
+            1,
+            "先清清兵",
+            "raise",
+            5,
+            6,
+            "88671540",
+            "mistag-raise",
+            94,
+            1,
+            1,
+        ),
+        Action(
+            "preflop",
+            2,
+            "Other",
+            "fold",
+            0,
+            0,
+            "other",
+            "mistag-fold",
+            94,
+            1,
+            2,
+        ),
+    ]
+    store.save_hand(mistagged)
+    store.close()
+
+    data = snapshot(tmp_path)
+    assert data["hero"]["user_id"] == "88671540"
+    assert data["hero"]["hands"] == 3
+    assert data["hero"]["metrics"]["vpip"]["opportunities"] == 3
+    assert all(player["user_id"] != "88671540" for player in data["opponents"])
+    villain = next(player for player in data["opponents"] if player["user_id"] == "villain")
+    assert villain["hands"] == 3
+    assert villain["metrics"]["vpip"]["opportunities"] == 3
 
 
 def test_range_at_node_contract_and_stale_hash(tmp_path):

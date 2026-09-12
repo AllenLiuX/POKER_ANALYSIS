@@ -326,6 +326,14 @@ class RecorderStore:
             );
             CREATE INDEX IF NOT EXISTS idx_profile_analyses_latest
                 ON profile_analyses(user_id, mode, position, line, created_at);
+            CREATE TABLE IF NOT EXISTS player_profile_snapshots (
+                mode TEXT PRIMARY KEY,
+                schema_version TEXT NOT NULL,
+                source_revision TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                opponents_json TEXT NOT NULL,
+                hero_json TEXT
+            );
             CREATE TABLE IF NOT EXISTS showdown_observations (
                 hand_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,

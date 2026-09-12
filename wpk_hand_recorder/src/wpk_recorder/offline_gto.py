@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .poker import best_rank, hand_features
 
 
-FIT_VERSION = "public-solver-fit-v5"
+FIT_VERSION = "public-solver-fit-v6"
 RANK_VALUE = {
     rank: value for value, rank in enumerate("23456789TJQKA", start=2)
 }
@@ -56,6 +56,10 @@ PUBLIC_STRATEGY_SOURCES = (
     {
         "title": "Upswing Poker — Small Blind Strategy",
         "url": "https://upswingpoker.com/small-blind-poker-strategy-tips/",
+    },
+    {
+        "title": "Upswing Poker — Playing Versus Multiple Limpers",
+        "url": "https://upswingpoker.com/vs-multiple-limpers/",
     },
     {
         "title": "AHTOOOXA/poker-charts — MIT 6-max preflop charts",
@@ -214,7 +218,10 @@ def postflop_profile(context: Mapping[str, Any]) -> Dict[str, Any]:
         "pot_type": pot_type,
         "hero_is_preflop_aggressor": hero_aggressor,
         "facing_bet": call > 0 and "call" in legal_actions_from(decision),
+        "call_amount": round(call, 2),
+        "call_to_pot_ratio": round(call / pot, 4) if pot > 0 else None,
         "required_equity": round(required, 4),
+        "price_bucket": _price_bucket(required),
         "spr": round(effective_stack / pot, 2) if pot > 0 else None,
         "texture": texture,
         "profile_id": (
@@ -442,37 +449,86 @@ def _facing_bet_mix(
         raise_rate = 48 if multiway else 58
         return [(aggressive, raise_rate), (passive, 100 - raise_rate)]
     if bucket == "top_pair_strong":
-        call = 68 if multiway else 84
+        raise_rate = 4 if multiway else 9
+        call = _interpolate_price_rate(
+            required,
+            ((0.0, 94), (0.25, 84), (0.40, 72), (0.55, 52), (0.70, 24)),
+        )
+        if multiway:
+            call -= 16
+        call = max(0, min(100 - raise_rate, call))
         return [
-            (aggressive, 4 if multiway else 9),
+            (aggressive, raise_rate),
             (passive, call),
-            (decline, 96 - call if multiway else 91 - call),
+            (decline, 100 - raise_rate - call),
         ]
     if bucket == "top_pair_weak":
-        call = 76 if required <= 0.20 else 60 if required <= 0.33 else 36
+        call = _interpolate_price_rate(
+            required,
+            ((0.0, 94), (0.20, 76), (0.33, 60), (0.50, 32), (0.70, 8)),
+        )
         if multiway:
             call -= 20
         return [(aggressive, 2), (passive, call), (decline, 98 - call)]
     if bucket == "showdown":
-        call = 56 if required <= 0.20 else 38 if required <= 0.33 else 18
+        call = _interpolate_price_rate(
+            required,
+            ((0.0, 82), (0.20, 56), (0.33, 38), (0.50, 16), (0.70, 3)),
+        )
         if multiway:
             call -= 12
         return [(passive, max(6, call)), (decline, 100 - max(6, call))]
     if bucket == "strong_draw":
-        call = 62 if required <= 0.25 else 44 if required <= 0.38 else 20
         raise_rate = 12 if multiway else 24
+        call = _interpolate_price_rate(
+            required,
+            ((0.0, 88), (0.25, 62), (0.38, 44), (0.55, 18), (0.70, 4)),
+        )
+        call = max(0, min(100 - raise_rate, call))
         return [
             (aggressive, raise_rate),
             (passive, call),
             (decline, 100 - raise_rate - call),
         ]
     if bucket == "weak_draw":
-        call = 38 if required <= 0.18 else 20 if required <= 0.28 else 6
+        call = _interpolate_price_rate(
+            required,
+            ((0.0, 72), (0.18, 38), (0.28, 20), (0.45, 6), (0.70, 2)),
+        )
         if multiway:
             call -= 6
         return [(passive, max(3, call)), (decline, 100 - max(3, call))]
     bluff_raise = 2 if multiway else 7
     return [(aggressive, bluff_raise), (decline, 100 - bluff_raise)]
+
+
+def _interpolate_price_rate(
+    required_equity: float,
+    points: Sequence[Tuple[float, int]],
+) -> int:
+    """Interpolate continue frequency so every change in price is reflected."""
+
+    required = max(0.0, min(1.0, required_equity))
+    if required <= points[0][0]:
+        return int(points[0][1])
+    for (left_x, left_y), (right_x, right_y) in zip(points, points[1:]):
+        if required <= right_x:
+            span = max(1e-9, right_x - left_x)
+            weight = (required - left_x) / span
+            return int(round(left_y + weight * (right_y - left_y)))
+    return int(points[-1][1])
+
+
+def _price_bucket(required_equity: float) -> str:
+    if required_equity <= 0:
+        return "free"
+    if required_equity <= 0.20:
+        return "cheap"
+    if required_equity <= 0.30:
+        return "standard"
+    if required_equity <= 0.42:
+        return "expensive"
+    return "very_expensive"
 
 
 def _role_actions(legal: Sequence[str]) -> Tuple[str, str, str]:

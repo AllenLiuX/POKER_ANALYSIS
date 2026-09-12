@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlsplit
 
+import httpx
+
 from .decision_state import (
     canonical_legal_actions,
     decision_state_contract,
@@ -736,6 +738,7 @@ def reasoning_context(
         players_in_hand=int(decision.get("players_in_hand") or 0) or None,
         spr=current_spr,
         faced_bet=True,
+        bet_fraction=_current_facing_bet_fraction(decision),
         facing_action=(
             "raise"
             if (_number(decision.get("call_score")) or 0) > 0
@@ -853,6 +856,16 @@ def _opponent_is_ip(
     ):
         return not bool(decision.get("is_ip"))
     return None
+
+
+def _current_facing_bet_fraction(
+    decision: Dict[str, Any],
+) -> Optional[float]:
+    if str(decision.get("street") or "preflop") == "preflop":
+        return None
+    call = max(0.0, _number(decision.get("call_score")) or 0.0)
+    pot = max(0.0, _number(decision.get("pot")) or 0.0)
+    return call / pot if call > 0 and pot > 0 else None
 
 
 def _build_opponent_node_profile(
@@ -1101,6 +1114,7 @@ def opponent_node_profile(
             ),
             spr=current_spr,
             faced_bet=True,
+            bet_fraction=_current_facing_bet_fraction(decision),
             facing_action=(
                 "raise"
                 if (_number(decision.get("call_score")) or 0) > 0
@@ -1793,7 +1807,7 @@ def _strategy_spot(context: Dict[str, Any]) -> Dict[str, Any]:
     ]
     visible_line = actions[-5:]
     line_parts = [
-        f"{action.get('position') or '未知位置'} {_action_text(action.get('action'))}"
+        _strategy_action_text(action, decision)
         for action in visible_line
     ]
     hero_position = str(decision.get("hero_position") or "未知位置")
@@ -1819,6 +1833,7 @@ def _strategy_spot(context: Dict[str, Any]) -> Dict[str, Any]:
         if call > 0 and pot is not None and pot >= 0
         else 0.0
     )
+    facing_price = _preflop_facing_price(decision, actions)
     return {
         "hero_position": hero_position,
         "facing_position": (aggressive or {}).get("position"),
@@ -1828,7 +1843,36 @@ def _strategy_spot(context: Dict[str, Any]) -> Dict[str, Any]:
         "limper_count": limper_count,
         "call_score": call,
         "required_equity_pct": required,
+        "facing_amount_to": facing_price.get("facing_amount_to"),
+        "facing_amount_to_bb": facing_price.get(
+            "facing_amount_to_bb"
+        ),
     }
+
+
+def _strategy_action_text(
+    action: Dict[str, Any],
+    decision: Dict[str, Any],
+) -> str:
+    label = (
+        f"{action.get('position') or '未知位置'} "
+        f"{_action_text(action.get('action'))}"
+    )
+    if action.get("action") not in {"bet", "raise", "all_in"}:
+        return label
+    amount_to = _number(action.get("amount_to"))
+    amount = _number(action.get("amount"))
+    value = amount_to if amount_to is not None and amount_to > 0 else amount
+    if value is None or value <= 0:
+        return label
+    big_blind = _number(decision.get("big_blind")) or 0.0
+    bb_text = (
+        f" / {value / big_blind:.1f}BB"
+        if big_blind > 0
+        else ""
+    )
+    prefix = "到 " if amount_to is not None and amount_to > 0 else ""
+    return f"{label} {prefix}{value:g}{bb_text}"
 
 
 def _preflop_strategy_cells(
@@ -1889,11 +1933,37 @@ def _preflop_strategy_cells(
         * float(range_context["width_multiplier"]),
     )
     if scenario == "facing_raise":
-        continue_fraction = max(0.12, min(0.22, open_fraction * 0.55))
-        aggressive_fraction = max(0.05, continue_fraction * 0.42)
+        base_continue = max(0.12, min(0.22, open_fraction * 0.55))
+        price_multiplier = float(
+            range_context.get("facing_price_multiplier") or 1.0
+        )
+        continue_fraction = max(
+            0.06,
+            min(0.32, base_continue * price_multiplier),
+        )
+        aggressive_fraction = max(
+            0.025,
+            min(
+                continue_fraction,
+                max(0.05, base_continue * 0.42)
+                * price_multiplier**0.65,
+            ),
+        )
     elif scenario == "facing_reraise":
-        continue_fraction = 0.10
-        aggressive_fraction = 0.035
+        price_multiplier = float(
+            range_context.get("facing_price_multiplier") or 1.0
+        )
+        continue_fraction = max(
+            0.045,
+            min(0.16, 0.10 * price_multiplier),
+        )
+        aggressive_fraction = max(
+            0.018,
+            min(
+                continue_fraction,
+                0.035 * price_multiplier**0.65,
+            ),
+        )
     elif scenario == "facing_limp":
         (
             continue_fraction,
@@ -2178,6 +2248,12 @@ def _preflop_range_context(
     position = str(decision.get("hero_position") or "").upper()
     early_position = position in {"UTG", "UTG+1", "MP", "MP+1"}
     pressure = _table_preflop_pressure(context)
+    preflop_actions = [
+        action
+        for action in context.get("action_history") or []
+        if action.get("street") == "preflop" and action.get("action")
+    ]
+    facing_price = _preflop_facing_price(decision, preflop_actions)
     squid_round = context.get("squid_round") or {}
     squid_count = None
     zero_squid_players = None
@@ -2229,6 +2305,14 @@ def _preflop_range_context(
         notes.append(f"总前注 {total_ante_bb:.2f}BB 扩大争夺范围")
     if pressure >= 0.25:
         notes.append("后方 3bet 压力高，削减边缘开池与低同花连张")
+    if scenario in {"facing_raise", "facing_reraise"}:
+        amount_to_bb = facing_price.get("amount_to_bb")
+        required_equity_pct = facing_price.get("required_equity_pct")
+        if amount_to_bb is not None:
+            notes.append(
+                f"面对加注到 {amount_to_bb:.1f}BB，"
+                f"跟注需约 {required_equity_pct:.1f}% 胜率"
+            )
     if squid_pressure == "medium":
         notes.append("本人尚无鱿鱼，温和扩大主动争池范围")
     elif squid_pressure == "high":
@@ -2250,7 +2334,65 @@ def _preflop_range_context(
         "width_multiplier": round(
             max(0.82, min(1.20, width_multiplier)), 3
         ),
+        **facing_price,
         "notes": notes,
+    }
+
+
+def _preflop_facing_price(
+    decision: Dict[str, Any],
+    actions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    call = max(0.0, _number(decision.get("call_score")) or 0.0)
+    pot = max(0.0, _number(decision.get("pot")) or 0.0)
+    big_blind = max(0.0, _number(decision.get("big_blind")) or 0.0)
+    contribution = max(
+        0.0,
+        _number(decision.get("hero_street_contribution")) or 0.0,
+    )
+    aggressive_actions = [
+        action
+        for action in actions
+        if action.get("action") in {"raise", "all_in"}
+    ]
+    latest = aggressive_actions[-1] if aggressive_actions else {}
+    amount_to = _number(latest.get("amount_to"))
+    if amount_to is None or amount_to <= 0:
+        amount_to = contribution + call if call > 0 else None
+    amount_to_bb = (
+        amount_to / big_blind
+        if amount_to is not None and big_blind > 0
+        else None
+    )
+    required = call / (pot + call) if call > 0 and pot + call > 0 else 0.0
+    raises = len(aggressive_actions)
+    reference_required = 0.30 if raises <= 1 else 0.34
+    if required > 0:
+        price_multiplier = max(
+            0.50,
+            min(1.45, (reference_required / required) ** 0.85),
+        )
+    else:
+        price_multiplier = 1.0
+    if required <= 0.22:
+        price_bucket = "cheap"
+    elif required <= 0.32:
+        price_bucket = "standard"
+    elif required <= 0.42:
+        price_bucket = "expensive"
+    else:
+        price_bucket = "very_expensive"
+    return {
+        "facing_amount_to": (
+            round(amount_to, 2) if amount_to is not None else None
+        ),
+        "facing_amount_to_bb": (
+            round(amount_to_bb, 2) if amount_to_bb is not None else None
+        ),
+        "call_amount": round(call, 2),
+        "required_equity_pct": round(100 * required, 1),
+        "facing_price_bucket": price_bucket,
+        "facing_price_multiplier": round(price_multiplier, 3),
     }
 
 
@@ -3018,6 +3160,61 @@ class LLMReasoner:
         )
         return validated
 
+    async def analyze_async(
+        self,
+        context: Dict[str, Any],
+        timeout_seconds: Optional[float] = None,
+        reasoning_depth: str = "light",
+        template_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.configured:
+            raise ReasoningError(
+                "LLM 未配置：请设置 WPK_LLM_API_KEY 或 MODEL_GATEWAY_KEY"
+            )
+        deep = reasoning_depth == "deep"
+        template = (
+            get_template(template_id, subject="exact_hand")
+            if template_id
+            else active_template("exact_hand")
+        )
+        user_prompt = build_prompt(
+            context,
+            reasoning_depth,
+            template.template_id,
+        )
+        parsed, latency_ms = await self._complete_json_async(
+            SYSTEM_PROMPT,
+            user_prompt,
+            timeout_seconds,
+            "wpk-reasoning",
+            timeout_cap=(
+                self.deep_timeout_seconds if deep else self.timeout_seconds
+            ),
+            max_completion_tokens=(
+                self.deep_max_completion_tokens if deep else 700
+            ),
+            json_mode=True,
+            reasoning_effort=(
+                self.deep_reasoning_effort if deep else self.reasoning_effort
+            ),
+        )
+        validated = _validate_result(
+            parsed,
+            context,
+            latency_ms,
+            self.model,
+            reasoning_depth=reasoning_depth,
+        )
+        validated.update(
+            {
+                "template_id": template.template_id,
+                "template_hash": template.template_hash,
+                "prompt_hash": _prompt_hash(SYSTEM_PROMPT, user_prompt),
+                "context_version": CONTEXT_SCHEMA_VERSION,
+            }
+        )
+        return validated
+
     def analyze_exploit(
         self,
         context: Dict[str, Any],
@@ -3041,6 +3238,64 @@ class LLMReasoner:
             template.template_id,
         )
         parsed, latency_ms = self._complete_json(
+            EXPLOIT_SYSTEM_PROMPT,
+            user_prompt,
+            timeout_seconds,
+            "wpk-exploit",
+            timeout_cap=(
+                self.deep_timeout_seconds if deep else self.timeout_seconds
+            ),
+            max_completion_tokens=(
+                self.deep_max_completion_tokens if deep else 600
+            ),
+            json_mode=True,
+            reasoning_effort=(
+                self.deep_reasoning_effort if deep else self.reasoning_effort
+            ),
+        )
+        validated = _validate_exploit_result(
+            parsed,
+            context,
+            latency_ms,
+            self.model,
+            reasoning_depth=reasoning_depth,
+        )
+        validated.update(
+            {
+                "template_id": template.template_id,
+                "template_hash": template.template_hash,
+                "prompt_hash": _prompt_hash(
+                    EXPLOIT_SYSTEM_PROMPT,
+                    user_prompt,
+                ),
+                "context_version": CONTEXT_SCHEMA_VERSION,
+            }
+        )
+        return validated
+
+    async def analyze_exploit_async(
+        self,
+        context: Dict[str, Any],
+        timeout_seconds: Optional[float] = None,
+        reasoning_depth: str = "light",
+        template_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.configured:
+            raise ReasoningError(
+                "LLM 未配置：请设置 WPK_LLM_API_KEY 或 MODEL_GATEWAY_KEY"
+            )
+        deep = reasoning_depth == "deep"
+        template = (
+            get_template(template_id, subject="full_range")
+            if template_id
+            else active_template("full_range")
+        )
+        user_prompt = build_exploit_prompt(
+            context,
+            reasoning_depth,
+            template.template_id,
+        )
+        parsed, latency_ms = await self._complete_json_async(
             EXPLOIT_SYSTEM_PROMPT,
             user_prompt,
             timeout_seconds,
@@ -3188,6 +3443,74 @@ class LLMReasoner:
         except urllib.error.HTTPError as error:
             raise ReasoningError(f"LLM 网关返回 HTTP {error.code}") from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise ReasoningError("LLM 网关连接失败或超时") from error
+        latency_ms = round((time.perf_counter() - started) * 1000)
+        try:
+            envelope = json.loads(body)
+            choice = envelope["choices"][0]
+            content = choice["message"]["content"]
+            finish_reason = str(choice.get("finish_reason") or "unknown")
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
+            raise ReasoningError("LLM 网关响应格式无法识别") from error
+        try:
+            parsed = _parse_model_json(str(content or ""))
+        except ReasoningError as error:
+            raise _ModelJSONError(
+                finish_reason,
+                latency_ms,
+            ) from error
+        return parsed, latency_ms
+
+    async def _complete_json_async(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        timeout_seconds: Optional[float],
+        log_prefix: str,
+        timeout_cap: Optional[float] = None,
+        max_completion_tokens: Optional[int] = None,
+        json_mode: bool = False,
+        reasoning_effort: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], int]:
+        request_payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_completion_tokens": max(
+                256,
+                min(
+                    max_completion_tokens or self.max_completion_tokens,
+                    6000,
+                ),
+            ),
+            "reasoning_effort": (
+                reasoning_effort or self.reasoning_effort
+            ),
+        }
+        if json_mode:
+            request_payload["response_format"] = {"type": "json_object"}
+        cap = timeout_cap or self.timeout_seconds
+        timeout = min(cap, timeout_seconds or cap)
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    self.endpoint,
+                    json=request_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "api-key": self.api_key,
+                        "X-TT-LOGID": f"{log_prefix}-{time.time_ns()}",
+                    },
+                )
+                response.raise_for_status()
+                body = response.content
+        except httpx.HTTPStatusError as error:
+            raise ReasoningError(
+                f"LLM 网关返回 HTTP {error.response.status_code}"
+            ) from error
+        except (httpx.RequestError, TimeoutError, OSError) as error:
             raise ReasoningError("LLM 网关连接失败或超时") from error
         latency_ms = round((time.perf_counter() - started) * 1000)
         try:

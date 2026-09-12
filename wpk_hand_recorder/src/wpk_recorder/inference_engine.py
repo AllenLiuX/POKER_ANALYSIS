@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -101,6 +102,57 @@ class InferenceEngine:
         if "template_id" in parameters:
             kwargs["template_id"] = template.template_id
         analysis = method(context, timeout_seconds, **kwargs)
+        analysis.setdefault("template_id", template.template_id)
+        analysis.setdefault("template_hash", template.template_hash)
+        analysis.setdefault("context_version", CONTEXT_SCHEMA_VERSION)
+        return {
+            "subject": subject,
+            "template": template,
+            "analysis": analysis,
+        }
+
+    async def run_remote_async(
+        self,
+        context: Dict[str, Any],
+        timeout_seconds: float,
+        reasoning_depth: str,
+        template_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        subject = inference_subject(context)
+        template = (
+            get_template(template_id, subject=subject)
+            if template_id
+            else active_template(subject)
+        )
+        async_method = getattr(
+            self.reasoner,
+            (
+                "analyze_async"
+                if subject == "exact_hand"
+                else "analyze_exploit_async"
+            ),
+            None,
+        )
+        method = async_method or (
+            self.reasoner.analyze
+            if subject == "exact_hand"
+            else self.reasoner.analyze_exploit
+        )
+        parameters = inspect.signature(method).parameters
+        kwargs: Dict[str, Any] = {}
+        if "reasoning_depth" in parameters:
+            kwargs["reasoning_depth"] = reasoning_depth
+        if "template_id" in parameters:
+            kwargs["template_id"] = template.template_id
+        if async_method is not None:
+            analysis = await method(context, timeout_seconds, **kwargs)
+        else:
+            analysis = await asyncio.to_thread(
+                method,
+                context,
+                timeout_seconds,
+                **kwargs,
+            )
         analysis.setdefault("template_id", template.template_id)
         analysis.setdefault("template_hash", template.template_hash)
         analysis.setdefault("context_version", CONTEXT_SCHEMA_VERSION)

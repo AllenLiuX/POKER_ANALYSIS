@@ -13,18 +13,22 @@ const state = {
   reasoningInFlight: null,
   reasoningModeInFlight: null,
   reasoningDepthInFlight: null,
+  reasoningRequest: null,
   lastAutoSequence: null,
   reasoningResults: new Map(),
   strategyInFlight: null,
+  strategyRequest: null,
   strategyResults: new Map(),
   preflopPreview: null,
   preflopPreviewKey: "",
   preflopPreviewInFlight: "",
   equityCurves: new Map(),
   equityInFlight: new Set(),
+  equityControllers: new Map(),
   allEquityGeneration: 0,
   allEquityViewKey: "",
   allEquityRequests: new Map(),
+  allEquityControllers: new Map(),
   pinnedReasoning: null,
   expandedOpponents: new Set(),
   playerContexts: new Map(),
@@ -54,6 +58,7 @@ const state = {
   historyRevealed: false,
   opponentSearch: "",
   opponentSort: "hands_desc",
+  opponentRenderKey: "",
 };
 const suits = { s: "♠", h: "♥", c: "♣", d: "♦" };
 const actionNames = {
@@ -1027,10 +1032,22 @@ function currentEquitySeat(decision, hand, activePlayers) {
   );
   return lastActor ? Number(lastActor.seat) : Number(activePlayers[0]?.seat);
 }
+function abortEquityRequests(controllers, keepKey = null) {
+  for (const [key, controller] of controllers) {
+    if (key === keepKey) continue;
+    controller.abort();
+    controllers.delete(key);
+  }
+}
+function abortAllEquityRequests() {
+  abortEquityRequests(state.allEquityControllers);
+  state.allEquityRequests.clear();
+}
 async function loadAllEquityCurves(decision, hand) {
   const container = document.querySelector("#all-equity-curves");
   if (!container) return;
   if (!state.allEquityEnabled) {
+    abortAllEquityRequests();
     state.allEquityGeneration += 1;
     state.allEquityViewKey = "";
     container.hidden = true;
@@ -1045,12 +1062,14 @@ async function loadAllEquityCurves(decision, hand) {
     !(hand.players || []).some(player => player.is_hero)
   );
   if (observingSnapshot && !state.observerLiveEnabled) {
+    abortAllEquityRequests();
     state.allEquityGeneration += 1;
     state.allEquityViewKey = "";
     container.innerHTML = `<div class="all-equity-status">请先开启“观战实时范围”。</div>`;
     return;
   }
   if (!hand?.hand_id || hand.status !== "in_progress" || board.length < 3) {
+    abortAllEquityRequests();
     state.allEquityGeneration += 1;
     state.allEquityViewKey = "";
     container.innerHTML = `<div class="all-equity-status">翻牌后显示其他在局玩家的范围权益曲线。</div>`;
@@ -1073,6 +1092,7 @@ async function loadAllEquityCurves(decision, hand) {
       container.querySelector(`[data-equity-seat="${Number(player.seat)}"]`)
     ))
   ) return;
+  abortAllEquityRequests();
   state.allEquityViewKey = viewKey;
   const generation = ++state.allEquityGeneration;
   if (!otherPlayers.length) {
@@ -1092,13 +1112,18 @@ async function loadAllEquityCurves(decision, hand) {
     let data = state.equityCurves.get(cacheKey);
     if (!data) {
       let request = state.allEquityRequests.get(cacheKey);
+      let controller = state.allEquityControllers.get(cacheKey);
       if (!request) {
+        controller = new AbortController();
+        state.allEquityControllers.set(cacheKey, controller);
         request = (async () => {
           const query = new URLSearchParams({
             hand_id: hand.hand_id,
             subject_seat: String(seat),
           });
-          const response = await fetch(`/api/equity/current?${query}`);
+          const response = await fetch(`/api/equity/current?${query}`, {
+            signal: controller.signal,
+          });
           const responseData = await response.json();
           if (!response.ok) {
             throw new Error(responseData.detail || `HTTP ${response.status}`);
@@ -1114,11 +1139,18 @@ async function loadAllEquityCurves(decision, hand) {
       try {
         data = await request;
       } catch (error) {
+        if (error.name === "AbortError") return;
         data = {
           status: "unavailable",
           reason: `${player.alias || `座位 ${seat}`}的权益曲线不可用：${error.message}`,
         };
       } finally {
+        if (
+          controller &&
+          state.allEquityControllers.get(cacheKey) === controller
+        ) {
+          state.allEquityControllers.delete(cacheKey);
+        }
         if (state.allEquityRequests.get(cacheKey) === request) {
           state.allEquityRequests.delete(cacheKey);
         }
@@ -1143,6 +1175,7 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
     !(hand.players || []).some(player => player.is_hero)
   );
   if (observingSnapshot && !state.observerLiveEnabled) {
+    abortEquityRequests(state.equityControllers);
     renderEquityCurve({
       status: "unavailable",
       reason: "观战实时范围已关闭；开启后会生成当前行动者的范围权益曲线。",
@@ -1153,6 +1186,7 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
     board.length < 3 ||
     (!decision && hand?.status !== "in_progress")
   ) {
+    abortEquityRequests(state.equityControllers);
     renderEquityCurve({
       status: "unavailable",
       reason: decision?.decision_subject === "observer" || observingSnapshot
@@ -1162,6 +1196,7 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
     return;
   }
   const cacheKey = equityCacheKey(decision, hand);
+  abortEquityRequests(state.equityControllers, cacheKey);
   const cached = state.equityCurves.get(cacheKey);
   if (cached) {
     renderEquityCurve(cached);
@@ -1169,6 +1204,8 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
   }
   if (state.equityInFlight.has(cacheKey)) return;
   state.equityInFlight.add(cacheKey);
+  const controller = new AbortController();
+  state.equityControllers.set(cacheKey, controller);
   target.className = "equity-curve loading";
   target.innerHTML = `<small>正在按当前 board、${observingSnapshot ? "行动者" : "英雄"}行动线和对手范围计算权益分布…</small>`;
   try {
@@ -1177,6 +1214,7 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
       : `hand_id=${encodeURIComponent(hand.hand_id)}`;
     const response = await fetch(
       `/api/equity/current?${query}`,
+      { signal: controller.signal },
     );
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
@@ -1191,6 +1229,7 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
       renderEquityCurve(data);
     }
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (
       equityCacheKey(state.liveDecision, state.data?.current_hand) === cacheKey
     ) {
@@ -1200,6 +1239,9 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
       });
     }
   } finally {
+    if (state.equityControllers.get(cacheKey) === controller) {
+      state.equityControllers.delete(cacheKey);
+    }
     state.equityInFlight.delete(cacheKey);
   }
 }
@@ -1357,13 +1399,44 @@ function confidenceLabel(value) {
 function qualityLabel(status) {
   return { good: "有效", bad: "坏数据", partial: "不完整", live: "录制中", unknown: "待检查" }[status] || "待检查";
 }
+function profileMatchesSearch(player, needle) {
+  if (!needle) return true;
+  return (
+    String(player.alias || "").toLocaleLowerCase().includes(needle) ||
+    String(player.user_id || "").toLocaleLowerCase().includes(needle) ||
+    (player.is_self && "本人".includes(needle))
+  );
+}
+function renderPlayerProfileRow(player, { isSelf = false } = {}) {
+  const userId = String(player.user_id);
+  const expanded = state.expandedOpponents.has(userId);
+  const title = isSelf
+    ? `<strong>${esc(player.alias)} · 本人</strong><br><small>ID ${esc(player.user_id)} · 不计入对手列表</small>`
+    : `<strong>${esc(player.alias)}</strong><br><small>ID ${esc(player.user_id)}</small>`;
+  return `
+    <article class="opponent-row${isSelf ? " hero-row" : ""}${expanded ? " expanded" : ""}">
+      <button class="opponent-summary" type="button" aria-expanded="${expanded}" data-user="${esc(userId)}">
+        <span>${title}</span>
+        <span class="metric"><small>手数</small>${esc(player.hands)}</span>
+        ${summaryMetric(player, "vpip")}
+        ${summaryMetric(player, "pfr")}
+        ${summaryMetric(player, "three_bet")}
+        <span class="metric"><small>WTSD</small>${esc(player.wtsd_pct)}%</span>
+        <span class="metric"><small>净额</small>${player.net >= 0 ? "+" : ""}${esc(player.net)}</span>
+      </button>
+      <div class="profile-detail">
+        ${renderProfile(player)}
+      </div>
+    </article>`;
+}
 function renderOpponents(opponents = []) {
   const needle = state.opponentSearch.trim().toLocaleLowerCase();
-  const visible = opponents.filter(player => (
-    !needle ||
-    String(player.alias || "").toLocaleLowerCase().includes(needle) ||
-    String(player.user_id || "").toLocaleLowerCase().includes(needle)
-  ));
+  const hero = state.data?.hero;
+  const heroRow = hero?.user_id
+    ? { ...hero, is_self: true }
+    : null;
+  const showHero = Boolean(heroRow && profileMatchesSearch(heroRow, needle));
+  const visible = opponents.filter(player => profileMatchesSearch(player, needle));
   const numeric = value => Number(value || 0);
   visible.sort((left, right) => {
     if (state.opponentSort === "revealed_desc") {
@@ -1384,26 +1457,20 @@ function renderOpponents(opponents = []) {
     return numeric(right.hands) - numeric(left.hands);
   });
   const count = document.querySelector("#opponent-count");
-  if (count) count.textContent = `显示 ${visible.length} / ${opponents.length}`;
-  document.querySelector("#opponents-list").innerHTML = visible.length ? visible.map(p => {
-    const userId = String(p.user_id);
-    const expanded = state.expandedOpponents.has(userId);
-    return `
-    <article class="opponent-row${expanded ? " expanded" : ""}">
-      <button class="opponent-summary" type="button" aria-expanded="${expanded}" data-user="${esc(userId)}">
-        <span><strong>${esc(p.alias)}</strong><br><small>ID ${esc(p.user_id)}</small></span>
-        <span class="metric"><small>手数</small>${esc(p.hands)}</span>
-        ${summaryMetric(p, "vpip")}
-        ${summaryMetric(p, "pfr")}
-        ${summaryMetric(p, "three_bet")}
-        <span class="metric"><small>WTSD</small>${esc(p.wtsd_pct)}%</span>
-        <span class="metric"><small>净额</small>${p.net >= 0 ? "+" : ""}${esc(p.net)}</span>
-      </button>
-      <div class="profile-detail">
-        ${renderProfile(p)}
-      </div>
-    </article>`;
-  }).join("") : `<div class="empty-result">没有匹配的对手</div>`;
+  if (count) {
+    const shown = visible.length + (showHero ? 1 : 0);
+    const total = opponents.length + (heroRow ? 1 : 0);
+    count.textContent = showHero
+      ? `显示 ${shown} / ${total} · 含本人`
+      : `显示 ${visible.length} / ${opponents.length}`;
+  }
+  const rows = [
+    ...(showHero ? [renderPlayerProfileRow(heroRow, { isSelf: true })] : []),
+    ...visible.map(player => renderPlayerProfileRow(player)),
+  ];
+  document.querySelector("#opponents-list").innerHTML = rows.length
+    ? rows.join("")
+    : `<div class="empty-result">${needle ? "没有匹配的玩家" : "没有匹配的对手"}</div>`;
   document.querySelectorAll(".opponent-summary").forEach(button => {
     button.addEventListener("click", () => {
       const row = button.closest(".opponent-row");
@@ -2648,6 +2715,43 @@ function renderPinnedReasoning() {
     ${renderReasoningAnalysis(pinned.result || {})}`;
   return true;
 }
+function cancelServerReasoning(request) {
+  if (!request?.sequence || !request.stateHash) return;
+  fetch("/api/inference/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    keepalive: true,
+    body: JSON.stringify({
+      sequence: request.sequence,
+      state_hash: request.stateHash,
+    }),
+  }).catch(() => {});
+}
+function cancelSupersededLiveRequests(decision) {
+  const cacheKey = decision ? decisionCacheKey(decision) : null;
+  if (
+    state.strategyRequest &&
+    state.strategyRequest.cacheKey !== cacheKey
+  ) {
+    const previous = state.strategyRequest;
+    state.strategyRequest = null;
+    state.strategyInFlight = null;
+    previous.controller.abort();
+  }
+  if (
+    state.reasoningRequest &&
+    !state.reasoningRequest.force &&
+    state.reasoningRequest.cacheKey !== cacheKey
+  ) {
+    const previous = state.reasoningRequest;
+    state.reasoningRequest = null;
+    state.reasoningInFlight = null;
+    state.reasoningModeInFlight = null;
+    state.reasoningDepthInFlight = null;
+    previous.controller.abort();
+    cancelServerReasoning(previous);
+  }
+}
 function handleLiveDecision(decision) {
   state.serverLiveDecision = decision || null;
   const observerSuppressed = (
@@ -2656,6 +2760,7 @@ function handleLiveDecision(decision) {
   );
   state.liveDecision = observerSuppressed ? null : (decision || null);
   decision = state.liveDecision;
+  cancelSupersededLiveRequests(decision);
   if (observerSuppressed) {
     renderEquityCurve({
       status: "unavailable",
@@ -2777,9 +2882,19 @@ function decisionCacheKey(decision) {
 async function runCurrentStrategy(decision) {
   const sequence = decision.sequence;
   const cacheKey = decisionCacheKey(decision);
+  if (state.strategyRequest?.cacheKey === cacheKey) return;
+  if (state.strategyRequest?.cacheKey !== cacheKey) {
+    state.strategyRequest?.controller.abort();
+  }
+  const controller = new AbortController();
+  const strategyRequest = { cacheKey, controller };
+  state.strategyRequest = strategyRequest;
   state.strategyInFlight = sequence;
   try {
-    const response = await fetch(`/api/strategy/current?sequence=${encodeURIComponent(sequence)}`);
+    const response = await fetch(
+      `/api/strategy/current?sequence=${encodeURIComponent(sequence)}`,
+      { signal: controller.signal },
+    );
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
     if (data.stale) return;
@@ -2795,10 +2910,14 @@ async function runCurrentStrategy(decision) {
       // recommendation must not wait for the next SSE snapshot.
       handleLiveDecision(state.liveDecision);
     }
-  } catch (_) {
+  } catch (error) {
+    if (error.name === "AbortError") return;
     // The live action line remains usable even if the experimental EV path is unavailable.
   } finally {
-    if (state.strategyInFlight === sequence) state.strategyInFlight = null;
+    if (state.strategyRequest === strategyRequest) {
+      state.strategyRequest = null;
+      state.strategyInFlight = null;
+    }
   }
 }
 async function runReasoning(force, analysisMode = "auto") {
@@ -2810,6 +2929,25 @@ async function runReasoning(force, analysisMode = "auto") {
   ) return;
   const sequence = decision.sequence;
   const cacheKey = decisionCacheKey(decision);
+  if (state.reasoningRequest?.cacheKey === cacheKey) return;
+  if (!force && state.reasoningRequest?.force) return;
+  if (
+    state.reasoningRequest &&
+    state.reasoningRequest.cacheKey !== cacheKey
+  ) {
+    const previous = state.reasoningRequest;
+    previous.controller.abort();
+    if (!previous.force) cancelServerReasoning(previous);
+  }
+  const controller = new AbortController();
+  const reasoningRequest = {
+    cacheKey,
+    controller,
+    force,
+    sequence,
+    stateHash: String(decision.state_hash || ""),
+  };
+  state.reasoningRequest = reasoningRequest;
   const reasoningDepth = (
     force && analysisMode === "llm" ? state.llmDepth : "light"
   );
@@ -2833,6 +2971,7 @@ async function runReasoning(force, analysisMode = "auto") {
     const response = await fetch("/api/inference/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         sequence,
         state_hash: decision.state_hash || null,
@@ -2877,6 +3016,7 @@ async function runReasoning(force, analysisMode = "auto") {
     target.className = "reasoning-result";
     target.innerHTML = renderReasoningAnalysis(data);
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (force) {
       state.pinnedReasoning = {
         ...state.pinnedReasoning,
@@ -2890,10 +3030,13 @@ async function runReasoning(force, analysisMode = "auto") {
       target.textContent = `${analysisMode === "local" ? "本地分析" : "GPT‑5.6 推理"}不可用：${error.message}`;
     }
   } finally {
-    if (state.reasoningInFlight === sequence) state.reasoningInFlight = null;
-    state.reasoningModeInFlight = null;
-    state.reasoningDepthInFlight = null;
-    updateReasoningControls();
+    if (state.reasoningRequest === reasoningRequest) {
+      state.reasoningRequest = null;
+      state.reasoningInFlight = null;
+      state.reasoningModeInFlight = null;
+      state.reasoningDepthInFlight = null;
+      updateReasoningControls();
+    }
   }
 }
 async function loadReasoningStatus() {
@@ -2914,6 +3057,14 @@ async function loadReasoningStatus() {
   handleLiveDecision(state.serverLiveDecision);
 }
 function update(data) {
+  const previousOpponents = state.data?.opponents || [];
+  const previousHero = state.data?.hero;
+  if (!(data.opponents || []).length && previousOpponents.length) {
+    data = { ...data, opponents: previousOpponents };
+  }
+  if (!data.hero && previousHero) {
+    data = { ...data, hero: previousHero };
+  }
   state.data = data;
   state.assistancePolicy = data.assistance_policy || state.assistancePolicy;
   document.querySelector("#sequence").textContent = `#${data.last_sequence || 0}`;
@@ -2954,8 +3105,13 @@ function update(data) {
     state.historyHasMore = false;
     renderHands(state.historyHands);
   }
-  renderOpponents(data.opponents);
-  renderSquid(data.squid); renderRaw(data.events);
+  const opponentKey = `${(data.opponents || []).length}:${data.hero?.hands || 0}`;
+  if (opponentKey !== state.opponentRenderKey) {
+    state.opponentRenderKey = opponentKey;
+    renderOpponents(data.opponents);
+  }
+  renderSquid(data.squid);
+  renderRaw(data.events);
   loadPreflopPreview(displayedHand, data.live_decision, data.last_sequence);
   handleLiveDecision(data.live_decision);
 }
@@ -3443,6 +3599,7 @@ let source;
 function connectStream() {
   if (source) source.close();
   const suffix = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : "";
+  state.opponentRenderKey = "";
   fetch(`/api/snapshot${suffix}`).then(r => r.json()).then(update).catch(() => {});
   source = new EventSource(`/api/events${suffix}`);
   source.addEventListener("snapshot", event => {

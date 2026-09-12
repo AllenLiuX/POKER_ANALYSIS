@@ -24,6 +24,9 @@ from wpk_recorder.strategy import (
     _candidate_response_totals,
     _candidate_size_ratio,
     _engine_confidence,
+    _mixed_policy,
+    _preflop_sizing_plan,
+    _uncertainty_penalty,
     _weighted_random_selection,
     evaluate_money_strategy,
 )
@@ -42,6 +45,93 @@ def test_short_stack_all_in_uses_only_remaining_stack_as_cost():
     )
 
     assert ratio == 66 / 2000
+
+
+def test_postflop_range_uses_continuous_call_price():
+    decision = {
+        "street": "turn",
+        "hero_cards": [],
+        "hero_position": "BB",
+        "board": ["Ks", "7h", "2d", "3c"],
+        "legal_actions": ["fold", "call", "raise"],
+        "pot": 100,
+        "players_in_hand": 2,
+        "table_players": 6,
+    }
+    cheap = postflop_strategy(
+        {
+            "decision": {**decision, "call_score": 10},
+            "action_history": [
+                {"street": "turn", "action": "bet", "amount": 10}
+            ],
+        },
+        decision["legal_actions"],
+    )
+    expensive = postflop_strategy(
+        {
+            "decision": {**decision, "call_score": 100},
+            "action_history": [
+                {"street": "turn", "action": "bet", "amount": 100}
+            ],
+        },
+        decision["legal_actions"],
+    )
+    cheap_top_pair = next(
+        item for item in cheap["buckets"] if item["key"] == "top_pair_weak"
+    )
+    expensive_top_pair = next(
+        item
+        for item in expensive["buckets"]
+        if item["key"] == "top_pair_weak"
+    )
+
+    assert cheap["fit_profile"]["price_bucket"] == "cheap"
+    assert expensive["fit_profile"]["price_bucket"] == "very_expensive"
+    assert (
+        cheap_top_pair["frequencies"]["call"]
+        > expensive_top_pair["frequencies"]["call"]
+    )
+    assert (
+        cheap_top_pair["frequencies"]["fold"]
+        < expensive_top_pair["frequencies"]["fold"]
+    )
+
+
+def test_ev_guardrail_removes_clearly_dominated_baseline_action():
+    policy = _mixed_policy(
+        [
+            {"id": "fold", "action": "fold", "robust_ev": 0.0},
+            {"id": "call", "action": "call", "robust_ev": 3.0},
+            {
+                "id": "raise:100",
+                "action": "raise",
+                "raise_to": 100,
+                "robust_ev": -10.0,
+            },
+        ],
+        {"raise": 1.0},
+        exploit_weight=0.15,
+        pot=100,
+        big_blind=2,
+    )
+    by_action = {item["action"]: item for item in policy}
+
+    assert by_action["raise"]["frequency_pct"] == 0
+    assert by_action["raise"]["ev_eligible"] is False
+    assert by_action["call"]["frequency_pct"] > by_action["fold"]["frequency_pct"]
+
+
+def test_fold_has_zero_incremental_ev_uncertainty_penalty():
+    assert (
+        _uncertainty_penalty(
+            {"pot": 100},
+            {"action": "fold"},
+            trials=24,
+            fold_model={"evidence_trials": 0},
+            squid_calibrated=False,
+        )
+        == 0
+    )
 
 
 def test_money_strategy_separates_chip_and_squid_edges():
@@ -305,6 +395,7 @@ def test_contextual_action_response_learns_any_player_type_and_size():
         players_in_hand=2,
         spr=8,
         faced_bet=True,
+        bet_fraction=0.5,
         facing_action="bet",
         quality=quality,
     )
@@ -365,6 +456,7 @@ def test_contextual_action_response_learns_any_player_type_and_size():
     assert quality["model_log_loss"] < quality["population_log_loss"]
     assert quality["enabled_coverage_pct"] > 0
     assert gated["sticky"]["player_residual_enabled"] is True
+    assert gated["sticky"]["context"]["size_bucket"] == "small"
     assert response_probability(
         gated["sticky"], "fold"
     ) < response_probability(gated["nit"], "fold")
@@ -1237,8 +1329,8 @@ def test_preflop_rfi_fit_changes_with_table_size_and_ante():
 
 def test_ante_open_sizing_uses_three_bb_and_larger_from_small_blind():
     for position, contribution, call_score, expected in (
-        ("UTG", 0, 4, 12),
-        ("SB", 2, 2, 14),
+        ("UTG", 0, 4, 13),
+        ("SB", 2, 2, 16),
     ):
         decision = {
             "street": "preflop",
@@ -1285,6 +1377,177 @@ def test_ante_open_sizing_uses_three_bb_and_larger_from_small_blind():
             if item["action"] == "raise"
         ]
         assert min(raise_sizes) >= (12 if position == "SB" else 10)
+
+
+def test_deep_sticky_ante_game_scales_isolation_raise_to_eight_plus_bb():
+    profiles = [
+        {
+            "player": f"seat_{seat}",
+            "response_model": {
+                "probabilities_pct": {
+                    "fold": 20,
+                    "call": 75,
+                    "raise": 5,
+                },
+                "effective_samples": 40,
+                "confidence": "high",
+            },
+        }
+        for seat in range(2, 5)
+    ]
+    decision = {
+        "street": "preflop",
+        "hero_position": "HJ",
+        "legal_actions": ["fold", "call", "raise"],
+        "pot": 25,
+        "call_score": 4,
+        "hero_street_contribution": 0,
+        "hero_stack": 1000,
+        "hero_stack_bb": 250,
+        "big_blind": 4,
+        "ante": 1,
+        "players_in_hand": 4,
+        "table_players": 9,
+        "min_raise_to": 8,
+        "max_raise_to": 1000,
+        "players": [
+            {
+                "active": True,
+                "is_hero": False,
+                "effective_stack_to_hero": 1000,
+            }
+            for _ in range(3)
+        ],
+    }
+    actions = [
+        {
+            "street": "preflop",
+            "position": position,
+            "action": "call",
+            "amount": 4,
+            "amount_to": 4,
+        }
+        for position in ("UTG", "MP", "CO")
+    ]
+    deep = _preflop_sizing_plan(
+        {
+            "decision": decision,
+            "action_history": actions,
+            "active_opponent_profiles": profiles,
+        }
+    )
+    short = _preflop_sizing_plan(
+        {
+            "decision": {
+                **decision,
+                "hero_stack": 160,
+                "hero_stack_bb": 40,
+                "players": [
+                    {
+                        "active": True,
+                        "is_hero": False,
+                        "effective_stack_to_hero": 160,
+                    }
+                    for _ in range(3)
+                ],
+            },
+            "action_history": actions,
+            "active_opponent_profiles": profiles,
+        }
+    )
+
+    assert deep["spot"] == "isolation"
+    assert 8 <= deep["recommended_raise_to_bb"] <= 10
+    assert deep["response_adjustment"]["enabled"] is True
+    assert deep["projected_heads_up_spr"] is not None
+    assert deep["recommended_raise_to_bb"] > short["recommended_raise_to_bb"]
+
+
+def test_lag_reraise_pressure_shrinks_open_instead_of_blindly_sizing_up():
+    decision = {
+        "street": "preflop",
+        "hero_position": "BTN",
+        "legal_actions": ["fold", "call", "raise"],
+        "pot": 13,
+        "call_score": 4,
+        "hero_street_contribution": 0,
+        "hero_stack": 800,
+        "hero_stack_bb": 200,
+        "big_blind": 4,
+        "ante": 1,
+        "players_in_hand": 9,
+        "table_players": 9,
+        "min_raise_to": 8,
+        "max_raise_to": 800,
+    }
+
+    def plan(call_pct, raise_pct):
+        return _preflop_sizing_plan(
+            {
+                "decision": decision,
+                "action_history": [],
+                "active_opponent_profiles": [
+                    {
+                        "response_model": {
+                            "probabilities_pct": {
+                                "fold": 100 - call_pct - raise_pct,
+                                "call": call_pct,
+                                "raise": raise_pct,
+                            },
+                            "effective_samples": 50,
+                            "confidence": "high",
+                        }
+                    }
+                ],
+            }
+        )
+
+    sticky = plan(75, 5)
+    lag = plan(30, 40)
+
+    assert sticky["recommended_raise_to_bb"] > lag["recommended_raise_to_bb"]
+    assert sticky["response_adjustment"]["adjustment_bb"] > 0
+    assert lag["response_adjustment"]["adjustment_bb"] < 0
+
+
+def test_preflop_three_bet_sizes_larger_out_of_position():
+    decision = {
+        "street": "preflop",
+        "legal_actions": ["fold", "call", "raise"],
+        "pot": 17,
+        "call_score": 12,
+        "hero_street_contribution": 0,
+        "hero_stack": 800,
+        "hero_stack_bb": 200,
+        "big_blind": 4,
+        "ante": 1,
+        "players_in_hand": 2,
+        "table_players": 6,
+        "min_raise_to": 20,
+        "max_raise_to": 800,
+    }
+    action = {
+        "street": "preflop",
+        "position": "CO",
+        "action": "raise",
+        "amount": 12,
+        "amount_to": 12,
+    }
+    ip = _preflop_sizing_plan(
+        {
+            "decision": {**decision, "hero_position": "BTN"},
+            "action_history": [action],
+        }
+    )
+    oop = _preflop_sizing_plan(
+        {
+            "decision": {**decision, "hero_position": "SB"},
+            "action_history": [action],
+        }
+    )
+
+    assert ip["spot"] == oop["spot"] == "three_bet"
+    assert oop["recommended_raise_to_bb"] > ip["recommended_raise_to_bb"]
 
 
 def test_postflop_fit_keeps_legal_normalized_mixes_across_formats():

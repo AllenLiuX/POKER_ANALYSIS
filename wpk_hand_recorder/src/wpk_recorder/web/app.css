@@ -1402,6 +1402,13 @@ main { position: relative; padding: 18px 2vw 48px; }
   background: var(--panel);
   scroll-margin-top: 74px;
 }
+.opponent-row.hero-row {
+  background: linear-gradient(180deg, #14241d 0%, var(--panel) 100%);
+  box-shadow: inset 3px 0 0 var(--signal);
+}
+.opponent-row.hero-row .opponent-summary strong {
+  color: var(--signal);
+}
 .opponent-row.profile-jump {
   outline: 2px solid var(--signal);
   outline-offset: 2px;
