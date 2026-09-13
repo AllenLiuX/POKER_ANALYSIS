@@ -339,9 +339,6 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
     db = sqlite3.connect(tmp_path / "hands.sqlite3")
     assert db.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0] == 2
     assert db.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0] >= 4
-    assert db.execute(
-        "SELECT COUNT(*) FROM player_profile_snapshots"
-    ).fetchone()[0] >= 1
     db.close()
 
     class ConnectedRequest:
@@ -370,8 +367,13 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
 
     live_event = asyncio.run(first_live_sse_event())
     live_payload = json.loads(live_event.split("data: ", 1)[1])
-    assert live_payload["opponents"][0]["alias"] == "Villain"
-    assert live_payload["hero"]["alias"] == "Hero"
+    assert set(live_payload) == {
+        "last_sequence",
+        "current_hand",
+        "live_decision",
+        "assistance_policy",
+    }
+    assert "opponents" not in live_payload
 
 
 def test_opponent_stats_do_not_mix_hero_opportunity_samples(tmp_path):

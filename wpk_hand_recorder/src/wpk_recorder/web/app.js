@@ -58,7 +58,8 @@ const state = {
   historyRevealed: false,
   opponentSearch: "",
   opponentSort: "hands_desc",
-  opponentRenderKey: "",
+  snapshotRefreshInFlight: null,
+  profileRefreshKey: "",
 };
 const suits = { s: "♠", h: "♥", c: "♣", d: "♦" };
 const actionNames = {
@@ -522,6 +523,11 @@ function playerRangeMiniPlaceholder(player, options) {
   if (options.street === "preflop") {
     return `<div class="player-range-mini waiting">
       <div><strong>范围构成</strong><small>暂无翻后数据</small></div>
+    </div>`;
+  }
+  if (options.nodeScope === "live") {
+    return `<div class="player-range-mini waiting">
+      <div><strong>范围构成</strong><small>点击当前节点范围加载</small></div>
     </div>`;
   }
   const key = [
@@ -3056,15 +3062,49 @@ async function loadReasoningStatus() {
   updateReasoningControls();
   handleLiveDecision(state.serverLiveDecision);
 }
+function refreshFullSnapshot() {
+  if (state.snapshotRefreshInFlight) return state.snapshotRefreshInFlight;
+  const suffix = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : "";
+  const request = fetch(`/api/snapshot${suffix}`)
+    .then(async response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      update(await response.json());
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (state.snapshotRefreshInFlight === request) {
+        state.snapshotRefreshInFlight = null;
+      }
+    });
+  state.snapshotRefreshInFlight = request;
+  return request;
+}
 function update(data) {
-  const previousOpponents = state.data?.opponents || [];
-  const previousHero = state.data?.hero;
-  if (!(data.opponents || []).length && previousOpponents.length) {
-    data = { ...data, opponents: previousOpponents };
-  }
-  if (!data.hero && previousHero) {
-    data = { ...data, hero: previousHero };
-  }
+  const included = {
+    hands: Object.prototype.hasOwnProperty.call(data, "hands"),
+    opponents: Object.prototype.hasOwnProperty.call(data, "opponents"),
+    hero: Object.prototype.hasOwnProperty.call(data, "hero"),
+    squid: Object.prototype.hasOwnProperty.call(data, "squid"),
+    events: Object.prototype.hasOwnProperty.call(data, "events"),
+  };
+  const previousHand = state.data?.current_hand;
+  const incomingHand = data.current_hand;
+  const shouldRefreshProfiles = Boolean(
+    !included.opponents &&
+    previousHand?.hand_id &&
+    incomingHand?.hand_id &&
+    (
+      incomingHand.hand_id !== previousHand.hand_id ||
+      (
+        previousHand.status === "in_progress" &&
+        incomingHand.status !== "in_progress"
+      )
+    )
+  );
+  const profileRefreshKey = shouldRefreshProfiles
+    ? `${incomingHand.hand_id}:${incomingHand.status || "unknown"}`
+    : "";
+  data = { ...(state.data || {}), ...data };
   state.data = data;
   state.assistancePolicy = data.assistance_policy || state.assistancePolicy;
   document.querySelector("#sequence").textContent = `#${data.last_sequence || 0}`;
@@ -3083,7 +3123,9 @@ function update(data) {
       nodeScope: displayedHand?.status === "in_progress" ? "live" : "review",
     },
   );
-  loadPlayerCardRanges(currentHandTarget);
+  if (displayedHand?.status !== "in_progress") {
+    loadPlayerCardRanges(currentHandTarget);
+  }
   const actionLog = currentHandTarget.querySelector(".action-log-disclosure");
   actionLog?.addEventListener("toggle", () => {
     state.actionLogExpanded = actionLog.open;
@@ -3099,21 +3141,31 @@ function update(data) {
     state.allEquityViewKey = "";
     loadAllEquityCurves(state.liveDecision, state.data?.current_hand);
   });
-  if (!state.historyLoaded && !state.historyLoading && !state.historyPlayer) {
+  if (
+    included.hands &&
+    !state.historyLoaded &&
+    !state.historyLoading &&
+    !state.historyPlayer
+  ) {
     state.historyHands = data.hands || [];
     state.historyTotal = null;
     state.historyHasMore = false;
     renderHands(state.historyHands);
   }
-  const opponentKey = `${(data.opponents || []).length}:${data.hero?.hands || 0}`;
-  if (opponentKey !== state.opponentRenderKey) {
-    state.opponentRenderKey = opponentKey;
+  if (included.opponents || included.hero) {
     renderOpponents(data.opponents);
   }
-  renderSquid(data.squid);
-  renderRaw(data.events);
+  if (included.squid) renderSquid(data.squid);
+  if (included.events) renderRaw(data.events);
   loadPreflopPreview(displayedHand, data.live_decision, data.last_sequence);
   handleLiveDecision(data.live_decision);
+  if (
+    shouldRefreshProfiles &&
+    state.profileRefreshKey !== profileRefreshKey
+  ) {
+    state.profileRefreshKey = profileRefreshKey;
+    refreshFullSnapshot();
+  }
 }
 function nodeRangeCacheKey(selection) {
   return [
@@ -3599,8 +3651,7 @@ let source;
 function connectStream() {
   if (source) source.close();
   const suffix = state.mode ? `?mode=${encodeURIComponent(state.mode)}` : "";
-  state.opponentRenderKey = "";
-  fetch(`/api/snapshot${suffix}`).then(r => r.json()).then(update).catch(() => {});
+  refreshFullSnapshot();
   source = new EventSource(`/api/events${suffix}`);
   source.addEventListener("snapshot", event => {
     document.querySelector("#connection-dot").classList.add("online");

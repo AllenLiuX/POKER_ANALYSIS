@@ -23,10 +23,8 @@ from .analytics import (
     connect_readonly,
     hand_detail,
     hand_summaries,
-    materialize_player_profiles,
+    live_snapshot,
     opponent_stats,
-    player_profile_snapshot_status,
-    read_player_profiles,
     snapshot,
 )
 from .equity_curve import EquityCurveCancelled, build_range_equity_curve
@@ -127,8 +125,8 @@ def create_app(
     app.state.opponent_range_cache = {}
     app.state.snapshot_cache = {}
     app.state.snapshot_locks = {}
-    app.state.snapshot_tasks = {}
-    app.state.profile_snapshot_tasks = {}
+    app.state.live_snapshot_cache = {}
+    app.state.live_snapshot_locks = {}
     app.state.inference_backtest_cache = None
     app.state.inference_backtest_lock = None
     app.state.live_hand_provider = live_hand_provider
@@ -269,9 +267,6 @@ def create_app(
         mode: Optional[str] = Query(default=None, pattern="^(holdem|squid)$")
     ) -> dict:
         try:
-            await _ensure_player_profile_snapshot(
-                app, data_dir, mode, wait_if_missing=True
-            )
             result = dict(await _cached_snapshot(app, data_dir, mode))
             live_hand = _live_hand_snapshot(app)
             if app.state.assistance_policy.allows("live_advice"):
@@ -290,23 +285,6 @@ def create_app(
             return result
         except sqlite3.Error as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-
-    @app.get("/api/profiles")
-    async def api_profiles(
-        mode: Optional[str] = Query(default=None, pattern="^(holdem|squid)$")
-    ) -> dict:
-        await _ensure_player_profile_snapshot(app, data_dir, mode)
-        cached = await run_in_threadpool(read_player_profiles, data_dir, mode)
-        if cached is None:
-            cached = await run_in_threadpool(
-                materialize_player_profiles, data_dir, mode
-            )
-        return {
-            "opponents": cached.get("opponents") or [],
-            "hero": cached.get("hero"),
-            "source_revision": cached.get("source_revision"),
-            "updated_at": cached.get("updated_at"),
-        }
 
     @app.get("/api/hands/{hand_id}")
     async def api_hand(hand_id: str) -> dict:
@@ -2044,41 +2022,6 @@ def _load_inference_backtest(data_dir: Path) -> dict:
         connection.close()
 
 
-async def _ensure_player_profile_snapshot(
-    app: FastAPI,
-    data_dir: Path,
-    mode: Optional[str],
-    wait_if_missing: bool = False,
-) -> None:
-    status = await run_in_threadpool(
-        player_profile_snapshot_status,
-        data_dir,
-        mode,
-    )
-    if not status["stale"]:
-        return
-    key = mode or "all"
-    task = app.state.profile_snapshot_tasks.get(key)
-    if task is None or task.done():
-        async def rebuild() -> None:
-            try:
-                await run_in_threadpool(
-                    materialize_player_profiles,
-                    data_dir,
-                    mode,
-                )
-                app.state.snapshot_cache.pop(key, None)
-            finally:
-                current = asyncio.current_task()
-                if app.state.profile_snapshot_tasks.get(key) is current:
-                    app.state.profile_snapshot_tasks.pop(key, None)
-
-        task = asyncio.create_task(rebuild())
-        app.state.profile_snapshot_tasks[key] = task
-    if wait_if_missing and not status["exists"]:
-        await asyncio.shield(task)
-
-
 async def _cached_snapshot(
     app: FastAPI,
     data_dir: Path,
@@ -2092,29 +2035,51 @@ async def _cached_snapshot(
     now = time.monotonic()
     if cached is not None and now - cached[0] < 0.7:
         return cached[1]
-    tasks = app.state.snapshot_tasks
-    task = tasks.get(key)
-    if task is None or task.done():
-        task = asyncio.create_task(
-            run_in_threadpool(
-                snapshot,
-                data_dir,
-                30,
-                80,
-                mode,
-            )
+    lock = app.state.snapshot_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = cache.get(key)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < 0.7:
+            return cached[1]
+        data = await run_in_threadpool(
+            snapshot,
+            data_dir,
+            30,
+            80,
+            mode,
         )
-        tasks[key] = task
-    try:
-        data = await asyncio.shield(task)
-    except BaseException:
-        if task.done() and tasks.get(key) is task:
-            tasks.pop(key, None)
-        raise
-    if tasks.get(key) is task:
-        tasks.pop(key, None)
-    cache[key] = (time.monotonic(), data)
-    return data
+        cache[key] = (time.monotonic(), data)
+        return data
+
+
+async def _cached_live_snapshot(
+    app: FastAPI,
+    data_dir: Path,
+    mode: Optional[str],
+) -> dict:
+    """Share the lightweight table-state read across dashboard clients."""
+
+    key = mode or "all"
+    cache = app.state.live_snapshot_cache
+    cached = cache.get(key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < 0.2:
+        return cached[1]
+    lock = app.state.live_snapshot_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = cache.get(key)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < 0.2:
+            return cached[1]
+        data = await run_in_threadpool(
+            live_snapshot,
+            data_dir,
+            3,
+            30,
+            mode,
+        )
+        cache[key] = (time.monotonic(), data)
+        return data
 
 
 async def _event_stream(
@@ -2129,13 +2094,13 @@ async def _event_stream(
     while not await request.is_disconnected():
         try:
             data = (
-                await _cached_snapshot(app, data_dir, mode)
+                await _cached_live_snapshot(app, data_dir, mode)
                 if app is not None
                 else await run_in_threadpool(
-                    snapshot,
+                    live_snapshot,
                     data_dir,
+                    3,
                     30,
-                    80,
                     mode,
                 )
             )
@@ -2167,4 +2132,4 @@ async def _event_stream(
                 yield ": keepalive\n\n"
         except sqlite3.Error as error:
             yield f"event: error\ndata: {json.dumps({'detail': str(error)})}\n\n"
-        await asyncio.sleep(0.75)
+        await asyncio.sleep(0.25)
