@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 import webbrowser
 from collections import Counter
 from pathlib import Path
@@ -66,7 +67,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--data-dir", type=Path, default=Path("data"))
     run.add_argument("--protocol", type=Path)
     run.add_argument("--retain-wire", action="store_true")
-    run.add_argument("--no-browser", action="store_true", help="do not open browser windows")
+    run.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="do not launch Chrome or open the dashboard; wait for an existing debug window",
+    )
     run.add_argument(
         "--assistance-mode",
         choices=ASSISTANCE_MODES,
@@ -79,6 +84,11 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--data-dir", type=Path, default=Path("data"))
     record.add_argument("--protocol", type=Path)
     record.add_argument("--retain-wire", action="store_true")
+    record.add_argument(
+        "--launch-browser",
+        action="store_true",
+        help="launch isolated debug Chrome if none is listening (off by default for daemons)",
+    )
 
     dashboard = sub.add_parser("dashboard", help="start only the local live dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
@@ -123,7 +133,7 @@ def launch_browser(port: int, profile: Path, url: str) -> None:
             str(chrome),
             f"--remote-debugging-port={port}",
             "--remote-debugging-address=127.0.0.1",
-            "--remote-allow-origins=http://127.0.0.1",
+            "--remote-allow-origins=*",
             f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
@@ -139,19 +149,70 @@ def launch_browser(port: int, profile: Path, url: str) -> None:
     print(f"Chrome launched; local CDP port: {port}")
 
 
+def _reconnectable_error(error: BaseException) -> bool:
+    return not isinstance(error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError))
+
+
+async def _wait_for_page(
+    port: int,
+    timeout: Optional[float] = 15.0,
+    interval: float = 0.5,
+) -> None:
+    started = time.monotonic()
+    announced = False
+    while True:
+        try:
+            page_target(port)
+            return
+        except (OSError, RuntimeError) as error:
+            if timeout is not None and (time.monotonic() - started) >= timeout:
+                raise RuntimeError("Chrome WPK page did not become ready") from error
+            if timeout is None and not announced:
+                print(
+                    f"Waiting for debug Chrome on port {port}; "
+                    "not launching WePoker automatically.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                announced = True
+            await asyncio.sleep(interval)
+
+
+async def _ensure_browser(
+    port: int,
+    *,
+    launch: bool = True,
+    timeout: Optional[float] = 15.0,
+) -> None:
+    try:
+        page_target(port)
+        return
+    except (OSError, RuntimeError):
+        if launch:
+            launch_browser(
+                port,
+                Path.home() / ".wpk-recorder" / "chrome-profile",
+                DEFAULT_URL,
+            )
+    await _wait_for_page(port, timeout=timeout)
+
+
+async def _run_recorder_with_reconnect(recorder: CDPRecorder) -> None:
+    while True:
+        try:
+            await recorder.run()
+        except Exception as error:
+            if not _reconnectable_error(error):
+                raise
+            print(f"Recorder reconnecting: {error}", file=sys.stderr, flush=True)
+        await asyncio.sleep(1)
+
+
 async def _record_while_dashboard_alive(
     recorder: CDPRecorder,
     dashboard_task: "asyncio.Task[Any]",
 ) -> None:
-    async def record_forever() -> None:
-        while True:
-            try:
-                await recorder.run()
-            except (OSError, RuntimeError) as error:
-                print(f"Recorder reconnecting: {error}", file=sys.stderr)
-            await asyncio.sleep(1)
-
-    recorder_task = asyncio.create_task(record_forever())
+    recorder_task = asyncio.create_task(_run_recorder_with_reconnect(recorder))
     try:
         done, _ = await asyncio.wait(
             (dashboard_task, recorder_task),
@@ -164,26 +225,6 @@ async def _record_while_dashboard_alive(
     finally:
         recorder_task.cancel()
         await asyncio.gather(recorder_task, return_exceptions=True)
-
-
-async def _ensure_browser(port: int) -> None:
-    try:
-        page_target(port)
-        return
-    except (OSError, RuntimeError):
-        launch_browser(
-            port,
-            Path.home() / ".wpk-recorder" / "chrome-profile",
-            DEFAULT_URL,
-        )
-    for _ in range(30):
-        await asyncio.sleep(0.5)
-        try:
-            page_target(port)
-            return
-        except (OSError, RuntimeError):
-            continue
-    raise RuntimeError("Chrome WPK page did not become ready")
 
 
 def capture(args: argparse.Namespace) -> int:
@@ -216,14 +257,13 @@ def record_system(args: argparse.Namespace) -> int:
     )
 
     async def record_forever() -> None:
-        await _ensure_browser(args.port)
+        await _ensure_browser(
+            args.port,
+            launch=args.launch_browser,
+            timeout=15.0 if args.launch_browser else None,
+        )
         print("Recorder attached. Press Ctrl-C to stop.")
-        while True:
-            try:
-                await recorder.run()
-            except (OSError, RuntimeError) as error:
-                print(f"Recorder reconnecting: {error}", file=sys.stderr)
-            await asyncio.sleep(1)
+        await _run_recorder_with_reconnect(recorder)
 
     try:
         asyncio.run(record_forever())
@@ -265,7 +305,11 @@ def run_system(args: argparse.Namespace) -> int:
     )
 
     async def serve_and_record() -> None:
-        await _ensure_browser(args.port)
+        await _ensure_browser(
+            args.port,
+            launch=not args.no_browser,
+            timeout=15.0 if not args.no_browser else None,
+        )
         app = create_app(
             args.data_dir,
             live_hand_provider=recorder.current_hand_snapshot,

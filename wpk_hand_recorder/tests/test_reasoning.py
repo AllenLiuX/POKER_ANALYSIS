@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import wpk_recorder.opponent_model as opponent_model_module
 import wpk_recorder.reasoning as reasoning_module
 import wpk_recorder.server as server_module
-from wpk_recorder.models import Action, HandHistory, Player, RawEvent
+from wpk_recorder.models import Action, DecisionRequest, HandHistory, Player, RawEvent
 from wpk_recorder.reasoning import (
     LLMReasoner,
     ReasoningError,
@@ -20,6 +20,7 @@ from wpk_recorder.reasoning import (
     _side_pots,
     apply_exploit_frequency_shifts,
     build_exploit_prompt,
+    build_preflop_preview,
     build_prompt,
     enrich_reasoning_context,
     live_decision,
@@ -104,12 +105,60 @@ def test_preflop_preview_tracks_hero_position_and_prior_action(tmp_path):
     assert response.status_code == 200
     assert response.json()["baseline"]["scenario"] == "facing_raise"
 
+    hand.pending_decision = DecisionRequest(
+        event_sequence=9,
+        captured_at="2026-01-01T00:00:09+00:00",
+        hand_id="preview-1",
+        seat=4,
+        user_id="p4",
+        cards=["As", "Kd"],
+        legal_actions=["fold", "call", "raise"],
+        call_score=12,
+        countdown=12,
+    )
+    assert preflop_preview_context_from_hand(hand) is not None
+    assert build_preflop_preview(hand)["baseline"]["hero_hand"] == "AKo"
+
     client = TestClient(create_app(tmp_path, live_hand_provider=lambda: hand))
     hand.actions.append(
         Action("preflop", 4, "P4", "call", 12, 12, "p4", sequence=4)
     )
     assert preflop_preview_context_from_hand(hand) is None
     assert client.get("/api/strategy/preflop-preview").status_code == 409
+
+
+def test_live_snapshot_includes_preflop_preview(tmp_path):
+    from wpk_recorder.analytics import live_snapshot
+
+    hand = HandHistory(
+        hand_id="preview-live",
+        button_seat=5,
+        small_blind=2,
+        big_blind=4,
+        status="in_progress",
+    )
+    hand.players = {
+        seat: Player(
+            seat,
+            user_id=f"p{seat}",
+            alias=f"P{seat}",
+            is_hero=seat == 4,
+            stack_start=400,
+            hole_cards=["As", "Kd"] if seat == 4 else [],
+        )
+        for seat in range(1, 6)
+    }
+    hand.actions = [
+        Action("preflop", 1, "P1", "small_blind", 2, 2, "p1", sequence=1),
+        Action("preflop", 2, "P2", "big_blind", 4, 4, "p2", sequence=2),
+        Action("preflop", 3, "P3", "raise", 12, 12, "p3", sequence=3),
+    ]
+    store = RecorderStore(tmp_path)
+    store.save_hand(hand, final=False)
+    store.close()
+    payload = live_snapshot(tmp_path, 3, 30, None)
+    assert payload["preflop_preview"]["preview"] is True
+    assert payload["preflop_preview"]["baseline"]["hero_hand"] == "AKo"
 
 
 def _decision_store(

@@ -57,9 +57,28 @@ RELEVANT_EVENTS = (
 )
 
 
+def _cdp_list_urls(debug_port: int) -> tuple[str, ...]:
+    return (
+        f"http://127.0.0.1:{debug_port}/json/list",
+        f"http://[::1]:{debug_port}/json/list",
+    )
+
+
+def _load_cdp_targets(debug_port: int) -> Any:
+    errors: list[str] = []
+    for url in _cdp_list_urls(debug_port):
+        try:
+            with urlopen(url, timeout=3) as response:
+                return json.load(response)
+        except (OSError, ValueError) as error:
+            errors.append(f"{url}: {error}")
+    raise RuntimeError(
+        f"Chrome CDP is not listening on port {debug_port} ({'; '.join(errors)})"
+    )
+
+
 def page_target(debug_port: int, host: str = "h5.sxkxys.com") -> Dict[str, Any]:
-    with urlopen(f"http://127.0.0.1:{debug_port}/json/list", timeout=3) as response:
-        targets = json.load(response)
+    targets = _load_cdp_targets(debug_port)
     for target in targets:
         if target.get("type") == "page" and host in target.get("url", ""):
             return target

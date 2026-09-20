@@ -267,8 +267,6 @@ def live_decision(
     contract = decision_state_from_hand(hand, request, source="live")
     if contract is None:
         return None
-    if contract["remaining_ms"] <= 0:
-        return None
     street = str(contract.get("street") or "")
     stack_bb = _number(contract.get("hero_stack_bb"))
     auto_reasoning, auto_reason = _reasoning_gate(
@@ -322,8 +320,6 @@ def live_decision_from_hand(hand: Any) -> Optional[Dict[str, Any]]:
         return None
     contract = decision_state_from_hand(hand, request, source="live")
     if contract is None:
-        return None
-    if contract["remaining_ms"] <= 0:
         return None
     actor = hand.players.get(contract.get("acting_seat"))
     actor_user_id = actor.user_id if actor is not None else request.user_id
@@ -436,8 +432,6 @@ def preflop_preview_context_from_hand(
     ):
         return None
     pending = getattr(hand, "pending_decision", None)
-    if pending is not None and pending.seat == hero.seat:
-        return None
 
     hero_contribution = float(
         projected.street_contributions.get(hero.seat, 0.0)
@@ -516,6 +510,19 @@ def preflop_preview_context_from_hand(
         "action_history": action_history,
         "active_opponent_profiles": [],
         "context_integrity": _context_integrity(public, action_history),
+        "preview": True,
+    }
+
+
+def build_preflop_preview(hand: Any) -> Optional[Dict[str, Any]]:
+    """Range-only payload for live SSE / dashboard before a local EV result exists."""
+
+    context = preflop_preview_context_from_hand(hand)
+    if context is None:
+        return None
+    return {
+        "decision": context["decision"],
+        "baseline": simplified_range_strategy(context),
         "preview": True,
     }
 

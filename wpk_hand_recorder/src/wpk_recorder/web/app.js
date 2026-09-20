@@ -2805,6 +2805,8 @@ function handleLiveDecision(decision) {
   const local = state.strategyResults.get(cacheKey);
   if (local && state.reasoningInFlight !== decision.sequence) {
     renderLocalStrategy(local);
+  } else if (state.preflopPreview && (decision.street === "preflop" || !decision.street)) {
+    renderPreflopPreview(state.preflopPreview);
   } else {
     renderDecisionWaiting(decision);
   }
@@ -2838,25 +2840,28 @@ function handleLiveDecision(decision) {
     runReasoning(false);
   }
 }
-async function loadPreflopPreview(hand, decision, sequence) {
+async function loadPreflopPreview(hand, decision, embedded) {
   const eligible = Boolean(
     hand &&
     hand.status === "in_progress" &&
-    !(hand.board || []).length &&
-    decision?.decision_subject !== "self",
+    !(hand.board || []).length,
   );
-  const key = eligible ? `${hand.hand_id}:${sequence || 0}` : "";
+  const key = eligible ? preflopPreviewKey(hand) : "";
   if (!eligible) {
     state.preflopPreview = null;
     state.preflopPreviewKey = "";
     state.preflopPreviewInFlight = "";
     return;
   }
-  if (state.preflopPreviewKey !== key) {
-    state.preflopPreview = null;
+  if (embedded?.baseline) {
+    state.preflopPreview = embedded;
     state.preflopPreviewKey = key;
+    state.preflopPreviewInFlight = "";
+    return;
   }
-  if (state.preflopPreview || state.preflopPreviewInFlight === key) return;
+  if (state.preflopPreviewKey === key && state.preflopPreview) return;
+  if (state.preflopPreviewInFlight === key) return;
+  state.preflopPreviewKey = key;
   state.preflopPreviewInFlight = key;
   try {
     const response = await fetch("/api/strategy/preflop-preview");
@@ -2865,13 +2870,11 @@ async function loadPreflopPreview(hand, decision, sequence) {
       if (response.status === 409) return;
       throw new Error(data.detail || `HTTP ${response.status}`);
     }
-    if (
-      state.preflopPreviewKey !== key ||
-      state.liveDecision?.decision_subject === "self"
-    ) return;
+    if (state.preflopPreviewKey !== key) return;
     state.preflopPreview = data;
-    if (!state.pinnedReasoning && !state.liveDecision) {
-      renderPreflopPreview(data);
+    if (!state.pinnedReasoning) {
+      const local = state.liveDecision && state.strategyResults.get(decisionCacheKey(state.liveDecision));
+      if (!local) renderPreflopPreview(data);
     }
     updateReasoningControls();
   } catch (_) {
@@ -2881,6 +2884,13 @@ async function loadPreflopPreview(hand, decision, sequence) {
       state.preflopPreviewInFlight = "";
     }
   }
+}
+function preflopPreviewKey(hand) {
+  const actions = (hand?.actions || [])
+    .filter(action => !action.street || action.street === "preflop")
+    .map(action => `${action.seat || ""}:${action.action || ""}:${action.amount_to ?? ""}`)
+    .join("|");
+  return `${hand?.hand_id || "none"}:${actions}`;
 }
 function decisionCacheKey(decision) {
   return `${decision?.sequence ?? "none"}:${decision?.state_hash || "legacy"}`;
@@ -3157,7 +3167,7 @@ function update(data) {
   }
   if (included.squid) renderSquid(data.squid);
   if (included.events) renderRaw(data.events);
-  loadPreflopPreview(displayedHand, data.live_decision, data.last_sequence);
+  loadPreflopPreview(displayedHand, data.live_decision, data.preflop_preview);
   handleLiveDecision(data.live_decision);
   if (
     shouldRefreshProfiles &&

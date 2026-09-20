@@ -53,7 +53,7 @@ from .reasoning import (
     local_exploit_fallback,
     local_fast_analysis,
     hero_preflop_range,
-    preflop_preview_context_from_hand,
+    build_preflop_preview,
     public_decision,
     reasoning_context,
     opponent_node_profile,
@@ -762,17 +762,13 @@ def create_app(
                 _load_latest_live_hand,
                 data_dir,
             )
-        context = preflop_preview_context_from_hand(live_hand)
-        if context is None:
+        preview = build_preflop_preview(live_hand)
+        if preview is None:
             raise HTTPException(
                 status_code=409,
                 detail="当前没有可提前展示的本人翻前范围",
             )
-        return {
-            "decision": context["decision"],
-            "baseline": simplified_range_strategy(context),
-            "preview": True,
-        }
+        return preview
 
     @app.get("/api/equity/current")
     async def current_equity_curve(
@@ -2119,8 +2115,13 @@ async def _event_stream(
                             or current_decision.get("game_mode") == mode
                         ):
                             payload["live_decision"] = current_decision
+                        if live_hand is not None:
+                            payload["preflop_preview"] = build_preflop_preview(
+                                live_hand
+                            )
                     else:
                         payload["live_decision"] = None
+                        payload["preflop_preview"] = None
                     payload["assistance_policy"] = (
                         app.state.assistance_policy.as_dict()
                     )

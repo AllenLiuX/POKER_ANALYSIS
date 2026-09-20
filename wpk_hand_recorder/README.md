@@ -19,18 +19,39 @@ python -m pip install -e '.[dev]'
 
 ## 使用
 
+### 本地地址
+
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| 实时看板 | [http://127.0.0.1:8765/](http://127.0.0.1:8765/) | 行动线、历史牌谱、对手统计、鱿鱼时间线 |
+| Chrome CDP | `127.0.0.1:9223` 或 `[::1]:9223` | 只连接带 `--remote-debugging-port=9223` 的专用 Chrome |
+
+日常办公用的 Chrome 没有调试端口，在里面打开 WePoker **无法**被监控。
+
+录制器通过 CDP 列出 `9223` 上的标签页，挂上 URL 包含 `h5.sxkxys.com` 的那一个。
+`record`（含本机 pm2 后台 `wpk-recorder`）**不会**自动弹出 WePoker；请在专用调试
+Chrome 里自己打开并登录。专用配置在 `~/.wpk-recorder/chrome-profile`。
+
+本机 pm2 常驻时：
+
+- 看板：打开 [http://127.0.0.1:8765/](http://127.0.0.1:8765/)（进程 `wpk-dashboard`）
+- 录制：进程 `wpk-recorder` 等待 `9223` 上出现 WePoker 页后自动挂上
+
 ### 一条命令启动录制与看板
 
 ```bash
 wpk-recorder run --data-dir data
 ```
 
-命令会启动或连接专用 Chrome、开始录制，并在
-`http://127.0.0.1:8765/` 打开本地看板。看板包含实时行动线、历史牌谱、对手统计、
-鱿鱼时间线和原始桌内事件抽屉。登录和进入牌桌仍由你手动完成。专用配置保存在
-`~/.wpk-recorder/chrome-profile`。按 `Ctrl-C` 同时停止录制器和看板。
+交互式 `run` 会启动或连接专用 Chrome、开始录制，并尝试打开
+[http://127.0.0.1:8765/](http://127.0.0.1:8765/)。看板包含实时行动线、历史牌谱、对手统计、
+鱿鱼时间线和原始桌内事件抽屉。登录和进入牌桌仍由你手动完成。
+`--no-browser` 只等待已有的调试窗口，不启动 Chrome、也不打开看板页。
+按 `Ctrl-C` 同时停止录制器和看板。
 
 原来的两步方式 `wpk-recorder browser` + `wpk-recorder capture` 仍可用于诊断。
+`wpk-recorder record` 只录制、不启看板；默认不启动 Chrome。
+`wpk-recorder dashboard` 只提供看板。
 输出位于：
 
 - `data/hands.sqlite3`：规范化分析库；

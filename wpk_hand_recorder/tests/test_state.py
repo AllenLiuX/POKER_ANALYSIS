@@ -265,6 +265,39 @@ def test_seated_hero_does_not_get_advice_during_opponent_action():
     assert live_decision_from_hand(state.current) is None
 
 
+def test_hero_live_decision_survives_expired_countdown():
+    state = HandStateMachine()
+    state.apply({"event": "start", "hand_id": "ttl-hand"})
+    state.apply(
+        {
+            "event": "player",
+            "seat": 1,
+            "user_id": "hero",
+            "is_hero": True,
+            "stack": 100,
+        }
+    )
+    state.apply(
+        {
+            "event": "decision_request",
+            "hand_id": "ttl-hand",
+            "seat": 1,
+            "user_id": "hero",
+            "is_hero": True,
+            "cards": ["As", "Kd"],
+            "legal_actions": ["fold", "call", "raise"],
+            "countdown": 12,
+            "_event_sequence": 4,
+        }
+    )
+    assert state.current is not None
+    state.current.pending_decision.captured_at = "2020-01-01T00:00:00+00:00"
+    decision = live_decision_from_hand(state.current)
+    assert decision is not None
+    assert decision["decision_subject"] == "self"
+    assert decision["remaining_ms"] == 0
+
+
 def test_sanitized_wpk_runtime_fixture_reconstructs_exact_hand():
     fixture = Path(__file__).parent / "fixtures" / "wpk_hand_events.json"
     messages = json.loads(fixture.read_text(encoding="utf-8"))

@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .inference import hand_range_predictions
-from .reasoning import live_decision, public_decision
+from .reasoning import build_preflop_preview, live_decision, public_decision
+from .storage import hand_from_dict
 
 def connect_readonly(data_dir: Path) -> sqlite3.Connection:
     path = data_dir / "hands.sqlite3"
@@ -19,6 +20,17 @@ def connect_readonly(data_dir: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA query_only=ON")
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _preflop_preview_payload(hand: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(hand, dict):
+        return None
+    if hand.get("status") != "in_progress" or list(hand.get("board") or []):
+        return None
+    try:
+        return build_preflop_preview(hand_from_dict(hand))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
 
 
 def snapshot(
@@ -79,6 +91,7 @@ def snapshot(
             "last_sequence": last_sequence,
             "current_hand": current_hand,
             "live_decision": decision,
+            "preflop_preview": _preflop_preview_payload(current_hand),
             "hands": hands,
             "events": events,
             "opponents": opponent_stats(connection, mode),
@@ -150,6 +163,7 @@ def live_snapshot(
             "live_decision": public_decision(
                 live_decision(connection, mode=mode)
             ),
+            "preflop_preview": _preflop_preview_payload(current_hand),
         }
     finally:
         connection.close()
