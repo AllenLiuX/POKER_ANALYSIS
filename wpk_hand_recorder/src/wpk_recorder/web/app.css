@@ -218,8 +218,12 @@ main { position: relative; padding: 18px 2vw 48px; }
 }
 .live-equity-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
+  align-items: stretch;
+}
+.live-equity-dashboard.is-comparing .live-equity-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
 }
 .all-equity-curves { display: contents; }
 .all-equity-curves[hidden] { display: none; }
@@ -229,6 +233,9 @@ main { position: relative; padding: 18px 2vw 48px; }
   border: 1px dashed var(--line);
   color: var(--muted);
   font: 10px/1.5 ui-monospace, monospace;
+}
+.live-equity-dashboard:not(.is-comparing) #equity-curve .equity-chart {
+  max-height: 196px;
 }
 .equity-curve.compact {
   overflow: visible;
@@ -265,7 +272,7 @@ main { position: relative; padding: 18px 2vw 48px; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.equity-curve.compact .equity-chart { max-height: 108px; }
+.equity-curve.compact .equity-chart { max-height: 132px; }
 .equity-curve.compact .equity-curve-note { display: none; }
 .empty {
   color: var(--muted);
@@ -2419,7 +2426,9 @@ dialog::backdrop { background: rgb(0 0 0 / .72); }
     grid-template-columns: 1fr;
     gap: 2px;
   }
-  .live-equity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-equity-dashboard.is-comparing .live-equity-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .players.table-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-rows: auto;

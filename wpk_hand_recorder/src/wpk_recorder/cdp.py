@@ -334,7 +334,7 @@ class CDPRecorder:
                         decision = decision_state_from_hand(current)
                         if decision is not None:
                             self.store.save_decision_state(decision)
-                    self.store.save_hand(current, final=False)
+                    self.store.save_hand(current, final=False, rebuild_metrics=False)
                 for hand in completed:
                     if self.active_squid_round_id:
                         hand.game_mode = "squid"

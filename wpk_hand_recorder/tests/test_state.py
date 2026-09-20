@@ -696,6 +696,34 @@ def test_round_change_captures_hero_first_to_act_decision():
     ]
 
 
+def test_round_change_uses_public_cards_when_deal_list_is_empty():
+    mapper = ProtocolMapper()
+    events = list(
+        mapper.canonical_events(
+            {
+                "event": "roundChangeNotify",
+                "data": {
+                    "round": "FLOP",
+                    "dealPublicCards": [],
+                    "publicCards": [112, 202, 310],
+                    "totalPot": 88,
+                },
+            }
+        )
+    )
+    board = next(event for event in events if event["event"] == "board")
+    assert board["append_cards"] == []
+    assert board["board"] == ["Qs", "2h", "Tc"]
+    assert board["pot"] == 88
+
+    state = HandStateMachine()
+    state.apply({"event": "start", "hand_id": "room-1"})
+    state.apply_many(events)
+    assert state.current is not None
+    assert state.current.board == ["Qs", "2h", "Tc"]
+    assert state.current.pot == 88
+
+
 def test_wpk_raise_increments_and_short_stack_all_in_are_canonicalized():
     mapper = ProtocolMapper()
     decision = next(

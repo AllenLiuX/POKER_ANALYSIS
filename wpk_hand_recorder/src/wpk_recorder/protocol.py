@@ -199,6 +199,7 @@ class ProtocolMapper:
             yield {
                 "event": "board",
                 "append_cards": _card_list(message.get("dealPublicCards")),
+                "board": _card_list(message.get("publicCards")),
                 "street": _street(message.get("round")),
                 "pot": message.get("totalPot"),
             }

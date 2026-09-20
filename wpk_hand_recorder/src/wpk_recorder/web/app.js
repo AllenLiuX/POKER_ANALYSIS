@@ -617,7 +617,7 @@ function renderHandPlayer(player, options = {}) {
   </div>`;
 }
 function liveEquityDashboardMarkup() {
-  return `<section class="live-equity-dashboard" aria-label="所有在局玩家的范围权益曲线">
+  return `<section class="live-equity-dashboard${state.allEquityEnabled ? " is-comparing" : ""}" aria-label="所有在局玩家的范围权益曲线">
     <div class="equity-display-controls">
       <span>RANGE EQUITY · LIVE BOARD</span>
       <label class="reasoning-switch">
@@ -626,7 +626,7 @@ function liveEquityDashboardMarkup() {
       </label>
     </div>
     <div class="live-equity-grid">
-      <section id="equity-curve" class="equity-curve compact">
+      <section id="equity-curve" class="equity-curve">
         <small>翻牌后生成当前范围权益曲线。</small>
       </section>
       <section id="all-equity-curves" class="all-equity-curves"${state.allEquityEnabled ? "" : " hidden"}></section>
@@ -844,8 +844,9 @@ function loadPlayerCardRanges(root = document) {
 function renderEquityCurve(data = null, options = {}) {
   const target = options.target || document.querySelector("#equity-curve");
   if (!target) return;
+  const comparing = Boolean(target.closest(".live-equity-dashboard.is-comparing"));
   const compact = options.compact ?? Boolean(
-    target.closest(".live-equity-dashboard"),
+    comparing || options.subjectSeat != null
   );
   const curveClass = `equity-curve${compact ? " compact" : ""}`;
   if (!data || data.status !== "ok") {
@@ -1014,6 +1015,29 @@ function equityCacheKey(decision, hand) {
     reveals,
   ].join(":");
 }
+function equityBoardKey(decision, hand) {
+  const board = visibleBoard(decision, hand);
+  return `${hand?.hand_id || decision?.hand_id || ""}:${board.join("")}`;
+}
+function visibleBoard(decision, hand) {
+  const fromDecision = Array.isArray(decision?.board) ? decision.board : [];
+  const fromHand = Array.isArray(hand?.board) ? hand.board : [];
+  return fromDecision.length >= fromHand.length ? fromDecision : fromHand;
+}
+function restoreRenderedEquity(decision, hand) {
+  const board = visibleBoard(decision, hand);
+  if (!hand || board.length < 3) return;
+  const cached = state.equityCurves.get(`board:${equityBoardKey(decision, hand)}`)
+    || state.equityCurves.get(equityCacheKey(decision, hand))
+    || state.equityCurves.get(equityCacheKey(null, hand));
+  if (cached) renderEquityCurve(cached);
+}
+function equityCurveMatchesCurrent(requestDecision, requestHand) {
+  const currentHand = state.data?.current_hand;
+  if (!currentHand || requestHand?.hand_id !== currentHand.hand_id) return false;
+  return equityBoardKey(requestDecision, requestHand)
+    === equityBoardKey(state.liveDecision, currentHand);
+}
 function activeEquityPlayers(hand) {
   const foldedSeats = new Set(
     (hand?.actions || [])
@@ -1061,7 +1085,7 @@ async function loadAllEquityCurves(decision, hand) {
     return;
   }
   container.hidden = false;
-  const board = decision?.board || hand?.board || [];
+  const board = visibleBoard(decision, hand);
   const observingSnapshot = (
     !decision &&
     hand?.status === "in_progress" &&
@@ -1173,8 +1197,7 @@ async function loadAllEquityCurves(decision, hand) {
 }
 async function loadEquityCurve(decision, hand = state.data?.current_hand) {
   const target = document.querySelector("#equity-curve");
-  loadAllEquityCurves(decision, hand);
-  const board = decision?.board || hand?.board || [];
+  const board = visibleBoard(decision, hand);
   const observingSnapshot = (
     !decision &&
     hand?.status === "in_progress" &&
@@ -1202,53 +1225,60 @@ async function loadEquityCurve(decision, hand = state.data?.current_hand) {
     return;
   }
   const cacheKey = equityCacheKey(decision, hand);
-  abortEquityRequests(state.equityControllers, cacheKey);
-  const cached = state.equityCurves.get(cacheKey);
+  const boardCacheKey = `board:${equityBoardKey(decision, hand)}`;
+  abortEquityRequests(state.equityControllers, boardCacheKey);
+  const cached = state.equityCurves.get(boardCacheKey)
+    || state.equityCurves.get(cacheKey)
+    || state.equityCurves.get(equityCacheKey(null, hand));
   if (cached) {
     renderEquityCurve(cached);
+    loadAllEquityCurves(decision, hand);
     return;
   }
-  if (state.equityInFlight.has(cacheKey)) return;
-  state.equityInFlight.add(cacheKey);
+  if (state.equityInFlight.has(boardCacheKey)) return;
+  state.equityInFlight.add(boardCacheKey);
   const controller = new AbortController();
-  state.equityControllers.set(cacheKey, controller);
-  target.className = "equity-curve loading";
-  target.innerHTML = `<small>正在按当前 board、${observingSnapshot ? "行动者" : "英雄"}行动线和对手范围计算权益分布…</small>`;
+  state.equityControllers.set(boardCacheKey, controller);
+  if (target) {
+    target.className = "equity-curve loading";
+    target.innerHTML = `<small>正在按当前 board、${observingSnapshot ? "行动者" : "英雄"}行动线和对手范围计算权益分布…</small>`;
+  }
   try {
-    const query = decision
-      ? `sequence=${encodeURIComponent(decision.sequence)}`
-      : `hand_id=${encodeURIComponent(hand.hand_id)}`;
+    const query = new URLSearchParams({
+      hand_id: hand.hand_id,
+    });
+    if (decision?.subject_seat != null && decision.subject_seat !== "") {
+      query.set("subject_seat", String(decision.subject_seat));
+    }
     const response = await fetch(
       `/api/equity/current?${query}`,
       { signal: controller.signal },
     );
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    if (data.stale) return;
     state.equityCurves.set(cacheKey, data);
+    state.equityCurves.set(boardCacheKey, data);
+    if (hand) state.equityCurves.set(equityCacheKey(null, hand), data);
     while (state.equityCurves.size > 32) {
       state.equityCurves.delete(state.equityCurves.keys().next().value);
     }
-    if (
-      equityCacheKey(state.liveDecision, state.data?.current_hand) === cacheKey
-    ) {
+    if (equityCurveMatchesCurrent(decision, hand)) {
       renderEquityCurve(data);
     }
   } catch (error) {
     if (error.name === "AbortError") return;
-    if (
-      equityCacheKey(state.liveDecision, state.data?.current_hand) === cacheKey
-    ) {
+    if (equityCurveMatchesCurrent(decision, hand)) {
       renderEquityCurve({
         status: "unavailable",
         reason: `权益曲线不可用：${error.message}`,
       });
     }
   } finally {
-    if (state.equityControllers.get(cacheKey) === controller) {
-      state.equityControllers.delete(cacheKey);
+    if (state.equityControllers.get(boardCacheKey) === controller) {
+      state.equityControllers.delete(boardCacheKey);
     }
-    state.equityInFlight.delete(cacheKey);
+    state.equityInFlight.delete(boardCacheKey);
+    loadAllEquityCurves(decision, hand);
   }
 }
 function renderHands(hands = []) {
@@ -2773,12 +2803,7 @@ function handleLiveDecision(decision) {
       reason: "观战实时范围已关闭；开启后会生成当前行动者的范围权益曲线。",
     });
     loadAllEquityCurves(null, state.data?.current_hand);
-  } else if (
-    !decision ||
-    state.strategyResults.has(decisionCacheKey(decision))
-  ) {
-    // Local EV owns the live latency budget. Start the heavier equity curve
-    // only after the action recommendation is already available.
+  } else {
     loadEquityCurve(decision, state.data?.current_hand);
   }
   const configured = Boolean(state.llmStatus?.configured);
@@ -3149,8 +3174,13 @@ function update(data) {
     state.allEquityEnabled = allEquityToggle.checked;
     localStorage.setItem("wpk.allEquity", String(state.allEquityEnabled));
     state.allEquityViewKey = "";
-    loadAllEquityCurves(state.liveDecision, state.data?.current_hand);
+    currentHandTarget.querySelector(".live-equity-dashboard")?.classList.toggle(
+      "is-comparing",
+      state.allEquityEnabled,
+    );
+    loadEquityCurve(state.liveDecision, state.data?.current_hand);
   });
+  restoreRenderedEquity(data.live_decision, displayedHand);
   if (
     included.hands &&
     !state.historyLoaded &&

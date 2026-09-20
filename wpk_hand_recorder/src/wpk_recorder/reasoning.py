@@ -530,17 +530,14 @@ def build_preflop_preview(hand: Any) -> Optional[Dict[str, Any]]:
 def fast_preflop_context(
     decision: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Build the minimum context needed for an immediate preflop EV result.
+    """Build the minimum context needed for an immediate live EV / equity result.
 
     Opponent profiling and validation backtests are intentionally excluded.
     They remain available to the slower inference-review path after the local
     action recommendation has already been shown.
     """
 
-    if (
-        decision is None
-        or str(decision.get("street") or "preflop") != "preflop"
-    ):
+    if decision is None:
         return None
     hand = decision.get("_hand") or {}
     positions = {
@@ -576,10 +573,11 @@ def fast_preflop_context(
         "joint_response_model": {},
         "joint_response_quality": {},
         "limitations": [
-            "翻前实时路径优先使用牌池基线；对手画像在后台复核阶段加载",
+            "实时路径优先使用牌池基线；完整对手后验只在 GPT 复核时加载",
         ],
         "context_integrity": _context_integrity(public, action_history),
-        "fast_preflop": True,
+        "fast_preflop": str(decision.get("street") or "preflop") == "preflop",
+        "fast_live": True,
     }
 
 

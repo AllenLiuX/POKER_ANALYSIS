@@ -371,6 +371,7 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
         "last_sequence",
         "current_hand",
         "live_decision",
+        "preflop_preview",
         "assistance_policy",
     }
     assert "opponents" not in live_payload

@@ -26,6 +26,7 @@ from .analytics import (
     live_snapshot,
     opponent_stats,
     snapshot,
+    _recover_board_from_db,
 )
 from .equity_curve import EquityCurveCancelled, build_range_equity_curve
 from .features import derive_positions, project_hand_state
@@ -712,7 +713,7 @@ def create_app(
                 status_code=409,
                 detail="该行动点已过期或当前牌局状态不完整",
             )
-        baseline = simplified_range_strategy(context)
+        baseline = await run_in_threadpool(simplified_range_strategy, context)
         money_strategy, audit_saved = await evaluate_and_audit_strategy(
             context, baseline
         )
@@ -780,7 +781,29 @@ def create_app(
         require_capability("live_equity")
         live_hand = _live_hand_snapshot(app)
         snapshot_fallback = sequence is None and bool(hand_id)
+        early_key = None
         if snapshot_fallback:
+            board = await run_in_threadpool(
+                _hand_board_cards,
+                data_dir,
+                str(hand_id),
+                live_hand,
+            )
+            early_key = (
+                "snapshot",
+                str(hand_id),
+                tuple(board),
+                str(subject_seat if subject_seat is not None else "primary"),
+            )
+            cached = app.state.equity_curve_cache.get(early_key)
+            if cached is not None:
+                return {
+                    **cached,
+                    "hand_id": str(hand_id),
+                    "subject_seat": subject_seat,
+                    "context_source": "hand_snapshot",
+                    "stale": False,
+                }
             context = await run_in_threadpool(
                 _load_hand_equity_context,
                 data_dir,
@@ -808,7 +831,6 @@ def create_app(
         )
         cached = app.state.equity_curve_cache.get(cache_key)
         if cached is None:
-            hero_range = hero_preflop_range(context)
             selected_seat = decision.get("subject_seat")
             if selected_seat is None:
                 selected_seat = decision.get("acting_seat")
@@ -835,12 +857,14 @@ def create_app(
 
             disconnect_task = asyncio.create_task(cancel_on_disconnect())
             try:
-                cached = await run_in_threadpool(
-                    build_range_equity_curve,
-                    context,
-                    hero_range,
-                    cancel_event.is_set,
-                )
+                def build_curve() -> dict:
+                    return build_range_equity_curve(
+                        context,
+                        hero_preflop_range(context),
+                        cancel_event.is_set,
+                    )
+
+                cached = await run_in_threadpool(build_curve)
             except EquityCurveCancelled as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
             finally:
@@ -854,6 +878,8 @@ def create_app(
                 if current_task is not None and current_task[1] is cancel_event:
                     app.state.equity_curve_tasks.pop(task_key, None)
             app.state.equity_curve_cache[cache_key] = cached
+            if early_key is not None:
+                app.state.equity_curve_cache[early_key] = cached
             while len(app.state.equity_curve_cache) > 32:
                 app.state.equity_curve_cache.pop(
                     next(iter(app.state.equity_curve_cache))
@@ -950,7 +976,7 @@ def create_app(
         frozen_replay = bool(
             (context.get("context_integrity") or {}).get("frozen_replay")
         )
-        strategy = simplified_range_strategy(context)
+        strategy = await run_in_threadpool(simplified_range_strategy, context)
         money_strategy, _ = await evaluate_and_audit_strategy(context, strategy)
         context["local_money_baseline"] = _compact_money_strategy(
             money_strategy
@@ -1751,6 +1777,32 @@ def _load_opponent_node_decision(
         connection.close()
 
 
+def _hand_board_cards(
+    data_dir: Path,
+    hand_id: str,
+    live_hand: Optional[Any] = None,
+) -> list:
+    if (
+        live_hand is not None
+        and str(getattr(live_hand, "hand_id", "")) == hand_id
+    ):
+        board = list(getattr(live_hand, "board", None) or [])
+        if len(board) >= 3:
+            return board
+    connection = connect_readonly(data_dir)
+    try:
+        row = connection.execute(
+            "SELECT board_json FROM hands WHERE hand_id = ?",
+            (hand_id,),
+        ).fetchone()
+        board = list(json.loads((row["board_json"] if row else None) or "[]"))
+        if len(board) < 3:
+            board = _recover_board_from_db(connection, hand_id, board)
+        return board
+    finally:
+        connection.close()
+
+
 def _load_hand_equity_context(
     data_dir: Path,
     hand_id: str,
@@ -1775,6 +1827,10 @@ def _load_hand_equity_context(
                 return None
             hand = json.loads(row["hand_json"])
         board = list(hand.get("board") or [])
+        if len(board) < 3:
+            board = _recover_board_from_db(connection, str(hand_id), board)
+            if board:
+                hand["board"] = board
         if hand.get("status") != "in_progress" or len(board) < 3:
             return None
         players = [
@@ -1914,11 +1970,7 @@ def _load_hand_equity_context(
             "_hero_user_id": actor.get("user_id"),
             "_hand": hand,
         }
-        return reasoning_context(
-            connection,
-            sequence,
-            decision=decision,
-        )
+        return fast_preflop_context(decision)
     finally:
         connection.close()
 
@@ -2070,8 +2122,8 @@ async def _cached_live_snapshot(
         data = await run_in_threadpool(
             live_snapshot,
             data_dir,
-            3,
-            30,
+            12,
+            80,
             mode,
         )
         cache[key] = (time.monotonic(), data)
@@ -2095,8 +2147,8 @@ async def _event_stream(
                 else await run_in_threadpool(
                     live_snapshot,
                     data_dir,
-                    3,
-                    30,
+                    12,
+                    80,
                     mode,
                 )
             )

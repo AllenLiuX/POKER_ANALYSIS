@@ -10,8 +10,11 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .inference import hand_range_predictions
+from .protocol import ProtocolMapper
 from .reasoning import build_preflop_preview, live_decision, public_decision
 from .storage import hand_from_dict
+
+_HEARTBEAT_EVENTS = {"waitHandsNotify"}
 
 def connect_readonly(data_dir: Path) -> sqlite3.Connection:
     path = data_dir / "hands.sqlite3"
@@ -31,6 +34,148 @@ def _preflop_preview_payload(hand: Optional[Dict[str, Any]]) -> Optional[Dict[st
         return build_preflop_preview(hand_from_dict(hand))
     except (TypeError, ValueError, KeyError, AttributeError):
         return None
+
+
+def _live_event_sequence(events: List[Dict[str, Any]]) -> int:
+    for event in events:
+        if event.get("event_name") not in _HEARTBEAT_EVENTS:
+            return int(event.get("sequence") or 0)
+    return int(events[0]["sequence"]) if events else 0
+
+
+def _latest_event_hand_id(events: List[Dict[str, Any]]) -> Optional[str]:
+    for event in events:
+        if event.get("event_name") in _HEARTBEAT_EVENTS:
+            continue
+        hand_id = event.get("hand_id")
+        if hand_id:
+            return str(hand_id)
+    return next(
+        (str(event["hand_id"]) for event in events if event.get("hand_id")),
+        None,
+    )
+
+
+def _select_current_hand(
+    hands: List[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    latest_hand_id = _latest_event_hand_id(events)
+    if latest_hand_id:
+        matched = next(
+            (
+                hand
+                for hand in hands
+                if str(hand.get("hand_id") or "") == latest_hand_id
+            ),
+            None,
+        )
+        if matched is not None:
+            return matched
+    return next(
+        (hand for hand in hands if hand.get("quality_status") == "live"),
+        hands[0] if hands else None,
+    )
+
+
+def _recover_board_cards(
+    hand: Dict[str, Any],
+    events: List[Dict[str, Any]],
+) -> List[str]:
+    recovered = list(hand.get("board") or [])
+    hand_id = str(hand.get("hand_id") or "")
+    mapper = ProtocolMapper()
+    relevant = [
+        event
+        for event in events
+        if str(event.get("hand_id") or "") == hand_id
+        and event.get("event_name") in {"roundChangeNotify", "upDateRoomNotify"}
+    ]
+    relevant.sort(key=lambda event: int(event.get("sequence") or 0))
+    for event in relevant:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        for item in mapper.canonical_events(payload):
+            if item.get("event") != "board":
+                continue
+            full_board = list(item.get("board") or [])
+            if len(full_board) >= len(recovered):
+                recovered = full_board
+            for card in item.get("append_cards") or []:
+                if card not in recovered:
+                    recovered.append(card)
+            if item.get("pot") is not None:
+                hand["pot"] = item.get("pot")
+    return recovered
+
+
+def _recover_board_from_db(
+    connection: sqlite3.Connection,
+    hand_id: str,
+    recovered: List[str],
+) -> List[str]:
+    if not hand_id:
+        return recovered
+    rows = connection.execute(
+        """
+        SELECT sequence, event_name, payload_json
+        FROM raw_events
+        WHERE hand_id = ?
+          AND event_name IN ('roundChangeNotify', 'upDateRoomNotify')
+        ORDER BY sequence
+        """,
+        (hand_id,),
+    ).fetchall()
+    events = [
+        {
+            "sequence": row["sequence"],
+            "event_name": row["event_name"],
+            "hand_id": hand_id,
+            "payload": json.loads(row["payload_json"]),
+        }
+        for row in rows
+    ]
+    return _recover_board_cards({"hand_id": hand_id, "board": recovered}, events)
+
+
+def _hydrate_live_hand(
+    hand: Optional[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+    connection: Optional[sqlite3.Connection] = None,
+) -> None:
+    if not hand or hand.get("status") != "in_progress":
+        return
+    _apply_runtime_player_states(hand, events)
+    recovered = _recover_board_cards(hand, events)
+    if len(recovered) < 3 and connection is not None:
+        recovered = _recover_board_from_db(
+            connection,
+            str(hand.get("hand_id") or ""),
+            recovered,
+        )
+    if recovered:
+        hand["board"] = recovered
+
+
+def _sync_decision_board(
+    decision: Optional[Dict[str, Any]],
+    hand: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not decision or not isinstance(hand, dict):
+        return decision
+    board = list(hand.get("board") or [])
+    current = list(decision.get("board") or [])
+    if len(board) <= len(current):
+        return decision
+    synced = dict(decision)
+    synced["board"] = board
+    synced["street"] = {
+        3: "flop",
+        4: "turn",
+        5: "river",
+    }.get(len(board), decision.get("street"))
+    return synced
 
 
 def snapshot(
@@ -63,30 +208,13 @@ def snapshot(
                 (event_limit,),
             )
         ]
-        last_sequence = events[0]["sequence"] if events else 0
-        decision = public_decision(live_decision(connection, mode=mode))
-        current_hand = next(
-            (hand for hand in hands if hand["quality_status"] == "live"),
-            None,
+        last_sequence = _live_event_sequence(events)
+        current_hand = _select_current_hand(hands, events)
+        _hydrate_live_hand(current_hand, events, connection)
+        decision = _sync_decision_board(
+            public_decision(live_decision(connection, mode=mode)),
+            current_hand,
         )
-        if current_hand is None:
-            latest_hand_id = next(
-                (
-                    str(event["hand_id"])
-                    for event in events
-                    if event.get("hand_id")
-                ),
-                None,
-            )
-            current_hand = next(
-                (
-                    hand
-                    for hand in hands
-                    if str(hand.get("hand_id") or "") == latest_hand_id
-                ),
-                hands[0] if hands else None,
-            )
-        _apply_runtime_player_states(current_hand, events)
         return {
             "last_sequence": last_sequence,
             "current_hand": current_hand,
@@ -134,34 +262,15 @@ def live_snapshot(
                 (event_limit,),
             )
         ]
-        last_sequence = events[0]["sequence"] if events else 0
-        current_hand = next(
-            (hand for hand in hands if hand["quality_status"] == "live"),
-            None,
-        )
-        if current_hand is None:
-            latest_hand_id = next(
-                (
-                    str(event["hand_id"])
-                    for event in events
-                    if event.get("hand_id")
-                ),
-                None,
-            )
-            current_hand = next(
-                (
-                    hand
-                    for hand in hands
-                    if str(hand.get("hand_id") or "") == latest_hand_id
-                ),
-                hands[0] if hands else None,
-            )
-        _apply_runtime_player_states(current_hand, events)
+        last_sequence = _live_event_sequence(events)
+        current_hand = _select_current_hand(hands, events)
+        _hydrate_live_hand(current_hand, events, connection)
         return {
             "last_sequence": last_sequence,
             "current_hand": current_hand,
-            "live_decision": public_decision(
-                live_decision(connection, mode=mode)
+            "live_decision": _sync_decision_board(
+                public_decision(live_decision(connection, mode=mode)),
+                current_hand,
             ),
             "preflop_preview": _preflop_preview_payload(current_hand),
         }

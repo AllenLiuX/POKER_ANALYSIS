@@ -161,6 +161,51 @@ def test_live_snapshot_includes_preflop_preview(tmp_path):
     assert payload["preflop_preview"]["baseline"]["hero_hand"] == "AKo"
 
 
+def test_live_event_sequence_skips_wait_hands_heartbeats():
+    from wpk_recorder.analytics import _live_event_sequence
+
+    assert _live_event_sequence(
+        [
+            {"sequence": 12, "event_name": "waitHandsNotify"},
+            {"sequence": 11, "event_name": "waitHandsNotify"},
+            {"sequence": 10, "event_name": "userOptNotify"},
+        ]
+    ) == 10
+    assert _live_event_sequence([]) == 0
+
+
+def test_hydrate_live_hand_recovers_board_from_round_change_events():
+    from wpk_recorder.analytics import _hydrate_live_hand
+
+    hand = {
+        "hand_id": "room-1",
+        "status": "in_progress",
+        "board": [],
+        "pot": 4,
+        "players": [],
+    }
+    _hydrate_live_hand(
+        hand,
+        [
+            {
+                "sequence": 2,
+                "event_name": "roundChangeNotify",
+                "hand_id": "room-1",
+                "payload": {
+                    "event": "roundChangeNotify",
+                    "data": {
+                        "round": "FLOP",
+                        "dealPublicCards": [112, 202, 310],
+                        "totalPot": 40,
+                    },
+                },
+            }
+        ],
+    )
+    assert hand["board"] == ["Qs", "2h", "Tc"]
+    assert hand["pot"] == 40
+
+
 def _decision_store(
     tmp_path,
     hand_cards=None,
@@ -284,6 +329,31 @@ def test_current_strategy_uses_fast_preflop_context(tmp_path, monkeypatch):
         "raise",
         "all_in",
     }
+
+
+def test_current_strategy_uses_fast_context_postflop(tmp_path, monkeypatch):
+    sequence = _decision_store(
+        tmp_path,
+        hand_cards=[204, 403],
+        recorder_hero_cards=[204, 403],
+        event_name="roundChangeNotify",
+        actor_user_id="hero",
+        runtime_user_id="hero",
+        board=["Qs", "2h", "Tc"],
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("full opponent context must not block postflop EV")
+
+    monkeypatch.setattr(server_module, "reasoning_context", fail_if_called)
+    response = TestClient(create_app(tmp_path)).get(
+        "/api/strategy/current",
+        params={"sequence": sequence},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["decision"]["street"] == "flop"
+    assert response.json()["decision"]["board"] == ["Qs", "2h", "Tc"]
 
 
 def test_side_pot_reconstruction_keeps_eligibility():

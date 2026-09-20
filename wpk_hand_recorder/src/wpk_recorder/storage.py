@@ -782,8 +782,14 @@ class RecorderStore:
         ).fetchone()
         return _hand_from_dict(json.loads(row[0])) if row else None
 
-    def save_hand(self, hand: HandHistory, final: bool = True) -> None:
-        decisions = derive_decisions(hand)
+    def save_hand(
+        self,
+        hand: HandHistory,
+        final: bool = True,
+        *,
+        rebuild_metrics: bool = True,
+    ) -> None:
+        decisions = derive_decisions(hand) if rebuild_metrics else []
         quality, reasons, excluded = assess_hand(hand)
         hand.quality_status = quality
         hand.quality_reasons = reasons
@@ -840,14 +846,15 @@ class RecorderStore:
                     encoded,
                 ),
             )
-            for table in (
+            rebuild_tables = [
                 "hand_players",
                 "actions",
-                "decision_snapshots",
-                "opportunities",
                 "board_cards",
                 "results",
-            ):
+            ]
+            if rebuild_metrics:
+                rebuild_tables.extend(["decision_snapshots", "opportunities"])
+            for table in rebuild_tables:
                 self.connection.execute(f"DELETE FROM {table} WHERE hand_id = ?", (hand.hand_id,))
             for player in hand.players.values():
                 if player.user_id:

@@ -13,6 +13,7 @@ from .poker import (
 )
 
 CURVE_VERSION = "range-equity-curve-v2"
+MAX_RANGE_CLASSES = 48
 
 
 class EquityCurveCancelled(RuntimeError):
@@ -66,15 +67,19 @@ def build_range_equity_curve(
         if float(weight) > 0
     }
     combos_by_class = starting_hand_combos_by_class(board)
-    per_combo_trials = max(16, round(32 / math.sqrt(opponents)))
+    ranked_weights = sorted(
+        weights.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[:MAX_RANGE_CLASSES]
+    per_combo_trials = max(8, round(16 / math.sqrt(opponents)))
     rows = []
     total_simulations = 0
-    for hand_class, range_weight in weights.items():
+    for hand_class, range_weight in ranked_weights:
         _raise_if_cancelled(cancel_check)
         combos = combos_by_class.get(hand_class) or []
         if not combos:
             continue
-        representatives = _representative_combos(combos, limit=2)
+        representatives = _representative_combos(combos, limit=1)
         equities = []
         for combo in representatives:
             _raise_if_cancelled(cancel_check)
@@ -205,7 +210,7 @@ def build_range_equity_curve(
                 else "对手范围尚未按翻后动作收紧，当前使用翻前范围回退。"
             ),
             "范围后验仍受公开摊牌选择偏差影响，这是实时近似而非 solver 精确节点。",
-            "每个 169 类起手牌最多抽取 2 个花色组合，极端同花阻断会有采样误差。",
+            "每个 169 类起手牌最多抽取 1 个花色组合，极端同花阻断会有采样误差。",
         ],
         "latency_ms": _elapsed_ms(started),
     }
@@ -288,6 +293,8 @@ def _representative_combos(
     *,
     limit: int,
 ) -> List[Tuple[str, str]]:
+    if limit <= 1 or len(combos) <= 1:
+        return [combos[0]]
     if len(combos) <= limit:
         return list(combos)
     indices = {

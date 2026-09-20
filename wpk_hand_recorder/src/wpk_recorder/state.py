@@ -149,14 +149,13 @@ class HandStateMachine:
         elif kind == "board":
             self.current.pending_decision = None
             append_cards = _cards(event.get("append_cards"))
+            full_board = _cards(event.get("board") or event.get("cards"))
             if append_cards:
                 self.current.board.extend(
                     card for card in append_cards if card not in self.current.board
                 )
-            else:
-                board = _cards(event.get("board") or event.get("cards"))
-                if len(board) >= len(self.current.board):
-                    self.current.board = board
+            if full_board and len(full_board) >= len(self.current.board):
+                self.current.board = full_board
             if event.get("pot") is not None:
                 self.current.pot = _number(event["pot"])
         elif kind == "result":
