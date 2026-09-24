@@ -4,6 +4,7 @@ from wpk_recorder.analytics import connect_readonly, hand_detail
 from wpk_recorder.inference import (
     _action_likelihoods_by_strength,
     _player_postflop_patterns,
+    _starting_hand_classes,
     action_line_range_profile,
     action_line_range_quality,
     available_starting_hand_combos,
@@ -75,6 +76,64 @@ def test_board_action_fallback_promotes_river_value_classes():
     assert all(update["heuristic"] for update in profile["updates"])
     assert available_starting_hand_combos("AA", board) == 3
     assert available_starting_hand_combos("AKo", board) == 9
+    assert profile["estimated_range_pct"] < profile["preflop_range_pct"]
+
+
+def test_multi_barrel_line_narrows_wide_calling_range():
+    board = ["Jh", "Ac", "3h", "8d", "As"]
+    baseline = {
+        item["hand"]: 49.0
+        for item in _starting_hand_classes()
+    }
+    profile = board_action_range_profile(
+        baseline,
+        [
+            {"seat": 5, "street": "preflop", "action": "call"},
+            {"seat": 5, "street": "flop", "action": "raise"},
+            {"seat": 5, "street": "turn", "action": "bet"},
+            {"seat": 5, "street": "river", "action": "bet"},
+        ],
+        5,
+        board,
+        action_context_by_street={
+            "flop": {"size_bucket": "pot"},
+            "turn": {"size_bucket": "medium"},
+            "river": {"size_bucket": "overbet"},
+        },
+    )
+    composition = range_exploit_composition(
+        profile["weights"],
+        board,
+        aggressive_action=True,
+    )
+
+    assert profile["preflop_range_pct"] == 49.0
+    assert profile["estimated_range_pct"] < 16
+    assert profile["estimated_range_pct"] < profile["preflop_range_pct"] / 2
+    assert profile["weights"]["A3s"] > 8 * profile["weights"]["KTo"]
+    assert profile["weights"]["AJs"] > 8 * profile["weights"]["QTo"]
+    assert composition["strong_value"] > 70
+    assert composition["air"] < 15
+
+
+def test_passive_line_does_not_collapse_calling_range():
+    board = ["Jh", "Ac", "3h", "8d", "As"]
+    baseline = {
+        item["hand"]: 49.0
+        for item in _starting_hand_classes()
+    }
+    profile = board_action_range_profile(
+        baseline,
+        [
+            {"seat": 5, "street": "flop", "action": "check"},
+            {"seat": 5, "street": "turn", "action": "check"},
+        ],
+        5,
+        board,
+    )
+
+    assert profile["estimated_range_pct"] > 28
+    assert profile["weights"]["KTo"] > 10
 
 
 def test_range_exploit_composition_marks_only_aggressive_air_as_bluff():

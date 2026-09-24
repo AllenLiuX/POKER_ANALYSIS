@@ -368,6 +368,14 @@ main { position: relative; padding: 18px 2vw 48px; }
   justify-content: space-between;
   gap: 5px;
 }
+.player-identity { min-width: 0; flex: 1; }
+.player-eml {
+  margin-top: 2px;
+  color: var(--signal);
+  font: 650 11px/1.15 ui-monospace, monospace;
+  letter-spacing: .03em;
+  white-space: nowrap;
+}
 .table-layout .player-name {
   overflow: hidden;
   min-width: 0;

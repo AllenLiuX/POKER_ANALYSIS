@@ -3,18 +3,21 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from .inference import hand_range_predictions
+from .inference import hand_range_predictions, normalize_preflop_position
 from .protocol import ProtocolMapper
 from .reasoning import build_preflop_preview, live_decision, public_decision
 from .storage import hand_from_dict
 
 _HEARTBEAT_EVENTS = {"waitHandsNotify"}
+_POSITION_VPIP_TTL_SECONDS = 20.0
+_POSITION_VPIP_CACHE: Dict[str, tuple] = {}
 
 def connect_readonly(data_dir: Path) -> sqlite3.Connection:
     path = data_dir / "hands.sqlite3"
@@ -224,6 +227,7 @@ def snapshot(
             "events": events,
             "opponents": opponent_stats(connection, mode),
             "hero": hero_stats(connection, mode),
+            "position_vpip": observed_position_vpip(connection),
             "squid": squid_snapshot(connection),
         }
     finally:
@@ -273,6 +277,7 @@ def live_snapshot(
                 current_hand,
             ),
             "preflop_preview": _preflop_preview_payload(current_hand),
+            "position_vpip": observed_position_vpip(connection),
         }
     finally:
         connection.close()
@@ -895,6 +900,88 @@ def squid_snapshot(connection: sqlite3.Connection) -> Dict[str, Any]:
         )
     ]
     return {"rounds": rounds, "settlements": settlements}
+
+
+def observed_position_vpip(
+    connection: sqlite3.Connection,
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Observed early/middle/late VPIP across every valid historical hand.
+
+    The sample is the full stored history, not the current hand or hands
+    recorded after this display was added. Invalid or still-live hands stay
+    out. Game mode is not filtered. The result is reused briefly so the live
+    update loop does not rescan the whole history on every tick.
+    """
+
+    cache_key = _database_path(connection)
+    cached = _POSITION_VPIP_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _POSITION_VPIP_TTL_SECONDS:
+        return cached[1]
+
+    hands: Dict[tuple, tuple] = {}
+    for row in connection.execute(
+        """
+        SELECT o.user_id, o.hand_id, o.position, o.success
+        FROM opportunities o
+        JOIN hands h ON h.hand_id = o.hand_id
+        WHERE o.metric = 'vpip'
+          AND o.user_id IS NOT NULL
+          AND o.user_id != ''
+          AND h.excluded_from_stats = 0
+        """
+    ):
+        group = _vpip_position_group(row["position"])
+        key = (str(row["user_id"]), str(row["hand_id"]))
+        success = int(row["success"])
+        previous = hands.get(key)
+        if previous is None:
+            hands[key] = (group, success)
+            continue
+        previous_group, previous_success = previous
+        hands[key] = (previous_group or group, max(previous_success, success))
+
+    grouped: Dict[str, Dict[str, List[int]]] = defaultdict(
+        lambda: {name: [0, 0] for name in ("early", "middle", "late")}
+    )
+    for (user_id, _), (group, success) in hands.items():
+        if group is None:
+            continue
+        bucket = grouped[user_id][group]
+        bucket[0] += success
+        bucket[1] += 1
+    result = {
+        user_id: {
+            name: {
+                "successes": successes,
+                "opportunities": trials,
+                "observed_pct": _pct(successes, trials) if trials else None,
+            }
+            for name, (successes, trials) in groups.items()
+        }
+        for user_id, groups in grouped.items()
+    }
+    _POSITION_VPIP_CACHE[cache_key] = (now, result)
+    return result
+
+
+def _database_path(connection: sqlite3.Connection) -> str:
+    try:
+        row = connection.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return ""
+    return str(row[2] or "") if row is not None else ""
+
+
+def _vpip_position_group(position: Optional[str]) -> Optional[str]:
+    value = normalize_preflop_position(position)
+    if value in {"BTN", "CO", "BTN/SB"}:
+        return "late"
+    if value in {"HJ", "MP", "MP+1", "LJ"}:
+        return "middle"
+    if value.startswith("UTG") or value.startswith("EP"):
+        return "early"
+    return None
 
 
 def _pct(numerator: int, denominator: int) -> float:

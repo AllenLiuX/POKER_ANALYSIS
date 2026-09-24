@@ -312,6 +312,13 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
     assert data["hero"]["alias"] == "Hero"
     assert data["hero"]["user_id"] == "hero"
     assert data["hero"]["metrics"]["vpip"]["opportunities"] == 1
+    assert data["position_vpip"]["villain"]["late"] == {
+        "successes": 1,
+        "opportunities": 1,
+        "observed_pct": 100.0,
+    }
+    assert data["position_vpip"]["villain"]["early"]["opportunities"] == 0
+    assert "hero" not in data["position_vpip"]
     assert all(
         player["user_id"] != data["hero"]["user_id"]
         for player in data["opponents"]
@@ -372,9 +379,101 @@ def test_normalized_storage_analytics_and_dashboard(tmp_path):
         "current_hand",
         "live_decision",
         "preflop_preview",
+        "position_vpip",
         "assistance_policy",
     }
     assert "opponents" not in live_payload
+
+
+def _six_max_vpip_hand(
+    hand_id,
+    *,
+    villain_seat,
+    action,
+    status="completed",
+    game_mode="holdem",
+):
+    hand = HandHistory(
+        hand_id=hand_id,
+        table_id="vpip",
+        started_at="2026-01-01T00:00:00+00:00",
+        ended_at="2026-01-01T00:01:00+00:00" if status == "completed" else None,
+        button_seat=6,
+        big_blind=2,
+        pot=10,
+        status=status,
+        game_mode=game_mode,
+    )
+    hand.players = {
+        seat: Player(
+            seat,
+            user_id="seat-vpip" if seat == villain_seat else f"filler-{seat}",
+            alias="VPIP" if seat == villain_seat else f"Filler {seat}",
+        )
+        for seat in range(1, 7)
+    }
+    hand.actions = [
+        Action(
+            "preflop",
+            villain_seat,
+            "VPIP",
+            action,
+            4 if action != "fold" else None,
+            6 if action == "raise" else None,
+            "seat-vpip",
+            f"{hand_id}-a",
+            sequence=1,
+        )
+    ]
+    return hand
+
+
+def test_position_vpip_counts_every_valid_historical_hand(tmp_path):
+    store = RecorderStore(tmp_path)
+    store.save_hand(_six_max_vpip_hand("early-a", villain_seat=3, action="raise"))
+    store.save_hand(_six_max_vpip_hand("early-b", villain_seat=3, action="raise"))
+    store.save_hand(
+        _six_max_vpip_hand(
+            "early-live",
+            villain_seat=3,
+            action="fold",
+            status="in_progress",
+        )
+    )
+    store.save_hand(
+        _six_max_vpip_hand(
+            "middle-squid",
+            villain_seat=4,
+            action="call",
+            game_mode="squid",
+        )
+    )
+    store.save_hand(_six_max_vpip_hand("late-btn", villain_seat=6, action="fold"))
+    store.save_hand(_six_max_vpip_hand("blind-bb", villain_seat=2, action="call"))
+    store.close()
+
+    data = snapshot(tmp_path, mode="holdem")
+    groups = data["position_vpip"]["seat-vpip"]
+    assert groups["early"] == {
+        "successes": 2,
+        "opportunities": 2,
+        "observed_pct": 100.0,
+    }
+    assert groups["middle"] == {
+        "successes": 1,
+        "opportunities": 1,
+        "observed_pct": 100.0,
+    }
+    assert groups["late"] == {
+        "successes": 0,
+        "opportunities": 1,
+        "observed_pct": 0.0,
+    }
+    profile = next(
+        player for player in data["opponents"] if player["user_id"] == "seat-vpip"
+    )
+    assert profile["metrics"]["vpip"]["opportunities"] == 4
+    assert sum(groups[name]["opportunities"] for name in ("early", "middle", "late")) == 4
 
 
 def test_opponent_stats_do_not_mix_hero_opportunity_samples(tmp_path):
@@ -515,7 +614,7 @@ def test_range_at_node_contract_and_stale_hash(tmp_path):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["model_version"] == "opponent-node-range-v6"
+    assert data["model_version"] == "opponent-node-range-v7"
     assert data["progressive"] == {"phase": "full", "complete": True}
     assert data["node"]["scope"] == "review"
     assert data["node"]["street"] == "river"
@@ -538,6 +637,7 @@ def test_range_at_node_contract_and_stale_hash(tmp_path):
         "preflop_prior",
         "action_line_posterior",
         "board_action_heuristic",
+        "history_shrunk_display",
     }
     assert all(
         item["available_combos"] >= 0

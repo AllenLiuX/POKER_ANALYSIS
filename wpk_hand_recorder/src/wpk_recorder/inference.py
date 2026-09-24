@@ -1209,7 +1209,7 @@ def action_line_range_profile(
             "reason": str(
                 quality.get("reason") or "行动线范围模型未通过时间外门"
             ),
-            "method": "bounded-conditional-size-range-v4",
+            "method": "bounded-conditional-size-range-v5",
         }
     if not base_weights:
         return {
@@ -1218,7 +1218,7 @@ def action_line_range_profile(
             "updates": [],
             "quality": quality,
             "reason": "缺少翻前范围先验",
-            "method": "bounded-conditional-size-range-v4",
+            "method": "bounded-conditional-size-range-v5",
         }
     by_street: Dict[str, List[str]] = defaultdict(list)
     for action in action_history:
@@ -1438,15 +1438,46 @@ def action_line_range_profile(
             )
             continue
         visible_board = tuple(board[:visible_count])
+        structural_likelihoods, structural_weight = (
+            _structural_action_likelihoods(
+                street,
+                signature,
+                action_path,
+                size_bucket or "none",
+            )
+        )
         class_likelihoods = {}
         for item in classes:
-            mix = _class_strength_mix(
+            mix = _class_exploit_mix(
                 item["hand"], visible_board, blocked
             )
             class_likelihoods[item["hand"]] = sum(
-                probability * likelihoods.get(label, evidence["fallback"])
+                probability
+                * structural_likelihoods.get(label, 0.08)
                 for label, probability in mix.items()
             )
+        if likelihoods:
+            statistical_scores = {}
+            for item in classes:
+                mix = _class_strength_mix(
+                    item["hand"], visible_board, blocked
+                )
+                statistical_scores[item["hand"]] = sum(
+                    probability
+                    * likelihoods.get(label, evidence["fallback"])
+                    for label, probability in mix.items()
+                )
+            statistical_peak = max(
+                statistical_scores.values(),
+                default=0.0,
+            )
+            if statistical_peak > 0:
+                residual = 0.28 if quality.get("display_only") else 0.40
+                for item in classes:
+                    hand = item["hand"]
+                    class_likelihoods[hand] *= 1.0 - residual + residual * (
+                        statistical_scores[hand] / statistical_peak
+                    )
         average = sum(
             item["deal_probability"]
             * max(0.0, raw[item["hand"]])
@@ -1459,17 +1490,27 @@ def action_line_range_profile(
                 for item in classes
             ),
         )
-        individual_weight = min(
-            0.15, evidence["player_samples"] / 120.0
+        update_weight = max(
+            structural_weight,
+            _statistical_action_update_weight(
+                street,
+                signature,
+                size_bucket,
+                evidence,
+                display_only=bool(quality.get("display_only")),
+            ),
         )
-        update_weight = min(
-            0.35,
-            0.12 + evidence["population_samples"] / 600.0 + individual_weight,
+        _apply_strength_likelihood_update(
+            raw,
+            classes,
+            class_likelihoods,
+            update_weight,
+            min_ratio=(
+                0.04
+                if signature in {"bet", "raise"}
+                else 0.28
+            ),
         )
-        for item in classes:
-            ratio = class_likelihoods[item["hand"]] / max(1e-9, average)
-            bounded_ratio = max(0.50, min(2.0, ratio))
-            raw[item["hand"]] *= 1.0 + update_weight * (bounded_ratio - 1.0)
         updates.append(
             {
                 "street": street,
@@ -1478,15 +1519,28 @@ def action_line_range_profile(
                 "preflop_path": preflop_path,
                 "size_bucket": size_bucket or None,
                 **evidence,
+                "mean_likelihood": round(average, 4),
                 "update_weight": round(update_weight, 3),
                 "applied": True,
             }
         )
-    inclusion = _calibrate_raw_propensities(
-        classes,
-        raw,
-        max(0.001, min(0.999, target_frequency)),
-    )
+    applied = any(update.get("applied") for update in updates)
+    if applied:
+        inclusion = {
+            item["hand"]: min(1.0, max(0.0, raw[item["hand"]]))
+            for item in classes
+        }
+        posterior_frequency = min(
+            target_frequency,
+            _inclusion_frequency(classes, inclusion),
+        )
+    else:
+        inclusion = _calibrate_raw_propensities(
+            classes,
+            raw,
+            max(0.001, min(0.999, target_frequency)),
+        )
+        posterior_frequency = target_frequency
     weights = {
         item["hand"]: round(100 * inclusion[item["hand"]], 2)
         for item in classes
@@ -1536,7 +1590,8 @@ def action_line_range_profile(
         "enabled": enabled,
         "weights": weights if enabled else {},
         "preview_weights": weights,
-        "estimated_range_pct": round(100 * target_frequency, 1),
+        "estimated_range_pct": round(100 * posterior_frequency, 1),
+        "preflop_range_pct": round(100 * target_frequency, 1),
         "confidence": (
             "medium"
             if enabled and sum(item.get("player_samples", 0) for item in updates) >= 20
@@ -1573,7 +1628,7 @@ def action_line_range_profile(
             if enabled
             else str(quality.get("reason") or "行动线模型未启用")
         ),
-        "method": "bounded-conditional-size-range-v4",
+        "method": "bounded-conditional-size-range-v5",
     }
 
 
@@ -1602,7 +1657,7 @@ def board_action_range_profile(
             "enabled": False,
             "weights": {},
             "updates": [],
-            "method": "board-action-structural-v1",
+            "method": "board-action-structural-v2",
             "reason": "翻牌前无需牌面行动回退",
         }
     classes = _starting_hand_classes()
@@ -1650,22 +1705,22 @@ def board_action_range_profile(
             if available <= 0 or raw[hand] <= 0:
                 class_likelihoods[hand] = 0.0
                 continue
-            mix = _class_strength_mix(hand, visible_board, blocked)
+            mix = _class_exploit_mix(hand, visible_board, blocked)
             score = sum(
-                probability * likelihoods.get(label, 0.1)
+                probability * likelihoods.get(label, 0.08)
                 for label, probability in mix.items()
             )
             class_likelihoods[hand] = score
             mass = available * raw[hand]
             weighted_score += mass * score
             weighted_mass += mass
-        average = weighted_score / max(1e-9, weighted_mass)
-        for item in classes:
-            hand = item["hand"]
-            if raw[hand] <= 0 or class_likelihoods[hand] <= 0:
-                continue
-            ratio = class_likelihoods[hand] / max(1e-9, average)
-            raw[hand] *= max(0.04, min(12.0, ratio)) ** update_weight
+        _apply_strength_likelihood_update(
+            raw,
+            classes,
+            class_likelihoods,
+            update_weight,
+            min_ratio=0.03 if signature in {"bet", "raise"} else 0.22,
+        )
         updates.append(
             {
                 "street": street,
@@ -1673,6 +1728,10 @@ def board_action_range_profile(
                 "action_path": action_path,
                 "size_bucket": size_bucket,
                 "feature_level": "board_action_structural",
+                "mean_likelihood": round(
+                    weighted_score / max(1e-9, weighted_mass),
+                    4,
+                ),
                 "update_weight": round(update_weight, 3),
                 "applied": True,
                 "heuristic": True,
@@ -1684,13 +1743,16 @@ def board_action_range_profile(
             "enabled": False,
             "weights": {},
             "updates": [],
-            "method": "board-action-structural-v1",
+            "method": "board-action-structural-v2",
             "reason": "该玩家尚无可用于收紧范围的翻后行动",
         }
-    inclusion = _calibrate_raw_propensities(
-        classes,
-        raw,
-        max(0.001, min(0.999, target_frequency)),
+    inclusion = {
+        item["hand"]: min(1.0, max(0.0, raw[item["hand"]]))
+        for item in classes
+    }
+    posterior_frequency = min(
+        target_frequency,
+        _inclusion_frequency(classes, inclusion),
     )
     weights = {
         item["hand"]: round(100 * inclusion[item["hand"]], 2)
@@ -1718,8 +1780,107 @@ def board_action_range_profile(
         "updates": updates,
         "top_class_shifts": class_shifts,
         "confidence": "low",
-        "method": "board-action-structural-v1",
+        "method": "board-action-structural-v2",
+        "estimated_range_pct": round(100 * posterior_frequency, 1),
+        "preflop_range_pct": round(100 * target_frequency, 1),
         "reason": "低置信度牌面/行动结构回退；不进入 Money-EV",
+    }
+
+
+def _apply_strength_likelihood_update(
+    raw: Dict[str, float],
+    classes: Sequence[Dict[str, Any]],
+    class_likelihoods: Dict[str, float],
+    update_weight: float,
+    *,
+    min_ratio: float = 0.04,
+) -> None:
+    """Shrink a range toward hands that actually take the observed action.
+
+    Likelihoods are normalized to the strongest class on this street, not to
+    the range-wide mean. Mean-preserving updates keep preflop width and leave
+    high-combo junk looking like the mode of the posterior.
+    """
+
+    peak = max(
+        (
+            float(class_likelihoods.get(item["hand"], 0.0) or 0.0)
+            for item in classes
+        ),
+        default=0.0,
+    )
+    if peak <= 0:
+        return
+    exponent = max(0.0, min(1.0, float(update_weight)))
+    floor = max(0.0, min(1.0, float(min_ratio)))
+    for item in classes:
+        hand = item["hand"]
+        if raw[hand] <= 0:
+            continue
+        relative = max(
+            floor,
+            float(class_likelihoods.get(hand, 0.0) or 0.0) / peak,
+        )
+        raw[hand] *= relative ** exponent
+
+
+def _inclusion_frequency(
+    classes: Sequence[Dict[str, Any]],
+    inclusion: Dict[str, float],
+) -> float:
+    return sum(
+        item["deal_probability"]
+        * max(0.0, min(1.0, float(inclusion.get(item["hand"], 0.0) or 0.0)))
+        for item in classes
+    )
+
+
+def _statistical_action_update_weight(
+    street: str,
+    signature: str,
+    size_bucket: str,
+    evidence: Dict[str, Any],
+    *,
+    display_only: bool,
+) -> float:
+    individual_weight = min(
+        0.15, float(evidence.get("player_samples") or 0) / 120.0
+    )
+    sample_weight = min(
+        0.22, float(evidence.get("population_samples") or 0) / 500.0
+    )
+    if signature not in {"bet", "raise"}:
+        return min(
+            0.40 if display_only else 0.28,
+            0.10 + sample_weight + individual_weight,
+        )
+    weight = 0.46 + sample_weight + individual_weight
+    if signature == "raise":
+        weight += 0.14
+    if street == "river":
+        weight += 0.12
+    elif street == "turn":
+        weight += 0.06
+    if size_bucket in {"pot", "overbet"}:
+        weight += 0.08
+    if display_only:
+        weight += 0.08
+    return min(0.92, weight)
+
+
+def _class_exploit_mix(
+    hand_class: str,
+    board: Tuple[str, ...],
+    blocked: Tuple[str, ...],
+) -> Dict[str, float]:
+    counts = _class_exploit_counts(hand_class, board, blocked)
+    total = sum(counts.values())
+    if total <= 0:
+        return {"air": 1.0}
+    return {
+        bucket: count / total
+        for bucket, count in counts.items()
+        if count > 0
     }
 
 
@@ -1731,82 +1892,77 @@ def _structural_action_likelihoods(
 ) -> Tuple[Dict[str, float], float]:
     mappings = {
         "check": {
-            "high_card": 1.0,
-            "pair": 0.95,
-            "draw": 0.90,
-            "two_pair_plus": 0.78,
-            "straight_plus": 0.68,
+            "air": 1.0,
+            "marginal_showdown": 0.90,
+            "draws": 0.82,
+            "strong_value": 0.58,
         },
         "call": {
-            "high_card": 0.08,
-            "pair": 0.56,
-            "draw": 0.86,
-            "two_pair_plus": 0.82,
-            "straight_plus": 0.92,
+            "air": 0.08,
+            "marginal_showdown": 0.62,
+            "draws": 0.88,
+            "strong_value": 0.90,
         },
         "bet": {
-            "high_card": 0.16,
-            "pair": 0.40,
-            "draw": 0.72,
-            "two_pair_plus": 0.90,
-            "straight_plus": 1.0,
+            "air": 0.12,
+            "marginal_showdown": 0.34,
+            "draws": 0.72,
+            "strong_value": 1.0,
         },
         "raise": {
-            "high_card": 0.06,
-            "pair": 0.14,
-            "draw": 0.58,
-            "two_pair_plus": 0.86,
-            "straight_plus": 1.0,
+            "air": 0.05,
+            "marginal_showdown": 0.12,
+            "draws": 0.52,
+            "strong_value": 1.0,
         },
         "fold": {
-            "high_card": 1.0,
-            "pair": 0.54,
-            "draw": 0.30,
-            "two_pair_plus": 0.08,
-            "straight_plus": 0.04,
+            "air": 1.0,
+            "marginal_showdown": 0.48,
+            "draws": 0.28,
+            "strong_value": 0.06,
         },
     }
     likelihoods = dict(mappings.get(signature) or mappings["check"])
     weights = {
         "check": 0.10,
         "call": 0.42,
-        "bet": 0.50,
-        "raise": 0.64,
+        "bet": 0.52,
+        "raise": 0.68,
         "fold": 0.38,
     }
     update_weight = weights.get(signature, 0.10)
     if street == "turn":
         update_weight += 0.06
     elif street == "river":
-        update_weight += 0.14
+        update_weight += 0.16
         if signature == "bet":
             likelihoods.update(
                 {
-                    "high_card": 0.11,
-                    "pair": 0.20,
-                    "draw": 0.08,
-                    "two_pair_plus": 0.58,
-                    "straight_plus": 1.0,
+                    "air": 0.06,
+                    "marginal_showdown": 0.16,
+                    "draws": 0.04,
+                    "strong_value": 1.0,
                 }
             )
-            update_weight = max(update_weight, 0.68)
+            update_weight = max(update_weight, 0.74)
         elif signature == "raise":
             likelihoods.update(
                 {
-                    "high_card": 0.07,
-                    "pair": 0.035,
-                    "draw": 0.02,
-                    "two_pair_plus": 0.20,
-                    "straight_plus": 1.0,
+                    "air": 0.04,
+                    "marginal_showdown": 0.05,
+                    "draws": 0.02,
+                    "strong_value": 1.0,
                 }
             )
+            update_weight = max(update_weight, 0.86)
     if signature in {"bet", "raise"} and size_bucket in {"pot", "overbet"}:
-        likelihoods["pair"] *= 0.65
-        likelihoods["two_pair_plus"] *= 0.82
-        likelihoods["straight_plus"] *= 1.08
-        update_weight += 0.06
+        likelihoods["air"] *= 0.45
+        likelihoods["marginal_showdown"] *= 0.62
+        likelihoods["draws"] *= 0.70
+        likelihoods["strong_value"] *= 1.05
+        update_weight += 0.08
     if street == "river" and action_path.endswith("bet-raise"):
-        update_weight = max(update_weight, 0.88)
+        update_weight = max(update_weight, 0.90)
     return likelihoods, min(0.92, update_weight)
 
 

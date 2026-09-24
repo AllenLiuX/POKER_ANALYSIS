@@ -574,7 +574,10 @@ function renderHandPlayer(player, options = {}) {
   ) ? ` · ${esc(player.position)}` : "";
   const content = `
     <div class="player-head">
-      <div class="player-name" title="${esc(player.alias || "未知玩家")}">${esc(player.alias || "未知玩家")}${player.is_hero ? " · 我" : ""}</div>
+      <div class="player-identity">
+        <div class="player-name" title="${esc(player.alias || "未知玩家")}">${esc(player.alias || "未知玩家")}${player.is_hero ? " · 我" : ""}</div>
+        ${renderPositionVpip(player.user_id, options.positionVpip)}
+      </div>
       <span class="player-status ${statusClass}">${esc(status)}</span>
     </div>
     <div class="player-meta">S${esc(seat)} · ${esc(tableLabel)}${pokerPosition}</div>
@@ -615,6 +618,27 @@ function renderHandPlayer(player, options = {}) {
       </button>
     </div>
   </div>`;
+}
+function renderPositionVpip(userId, positionVpip) {
+  const groups = positionVpip?.[String(userId || "")] || {};
+  const labels = [
+    ["early", "早位"],
+    ["middle", "中位"],
+    ["late", "后位"],
+  ];
+  const text = labels.map(([key]) => {
+    const trials = Number(groups[key]?.opportunities || 0);
+    if (!trials) return "—";
+    return String(Math.round(Number(groups[key].observed_pct)));
+  }).join("/");
+  const detail = labels.map(([key, label]) => {
+    const item = groups[key] || {};
+    const trials = Number(item.opportunities || 0);
+    return trials
+      ? `${label} ${Math.round(Number(item.observed_pct))}% · ${item.successes}/${trials} 手`
+      : `${label} 暂无观察`;
+  }).join(" · ");
+  return `<div class="player-eml" title="${esc(`E/M/L 自愿入池观察值 · ${detail}`)}">${esc(text)}</div>`;
 }
 function liveEquityDashboardMarkup() {
   return `<section class="live-equity-dashboard${state.allEquityEnabled ? " is-comparing" : ""}" aria-label="所有在局玩家的范围权益曲线">
@@ -744,6 +768,7 @@ function renderHand(hand, options = {}) {
         nodeSequence: options.nodeSequence,
         nodeStateHash: options.nodeStateHash,
         nodeScope: options.nodeScope,
+        positionVpip: options.positionVpip,
       })).join("")}
     </div>
     ${linkPlayers ? liveEquityDashboardMarkup() : ""}
@@ -3151,6 +3176,7 @@ function update(data) {
       linkPlayers: true,
       opponents: data.opponents,
       hero: data.hero,
+      positionVpip: data.position_vpip,
       decision: data.live_decision,
       handId: displayedHand?.hand_id,
       nodeSequence: data.live_decision?.sequence,
@@ -3409,8 +3435,11 @@ function renderOpponentNode(data) {
     .slice(0, 10);
   const topLikely = [...(data.range?.matrix || [])]
     .sort((left, right) =>
-      Number(right.probability_pct || 0)
+      Number(right.relative_likelihood_pct || 0)
+      - Number(left.relative_likelihood_pct || 0)
+      || Number(right.probability_pct || 0)
       - Number(left.probability_pct || 0)
+      || String(left.hand || "").localeCompare(String(right.hand || ""))
     )
     .slice(0, 12);
   const production = data.range?.production_enabled;
@@ -3439,9 +3468,9 @@ function renderOpponentNode(data) {
         </div>
       </div>
       <div class="node-range-frequency">
-        <small>${esc(data.range?.line_label || data.range?.line || "行动线")} · 翻前进入频率</small>
+        <small>${esc(data.range?.line_label || data.range?.line || "行动线")} · 当前范围</small>
         <strong>${esc(data.range?.estimated_range_pct ?? "—")}%</strong>
-        <span>当前核心 80%：${esc(data.range?.core_80_class_count ?? "—")} 类 · ${esc(confidenceLabel(data.range?.confidence))}置信度${player.folded ? " · 已弃牌冻结" : ""}</span>
+        <span>翻前进入 ${esc(data.range?.preflop_range_pct ?? "—")}% · 当前核心 80%：${esc(data.range?.core_80_class_count ?? "—")} 类 · ${esc(confidenceLabel(data.range?.confidence))}置信度${player.folded ? " · 已弃牌冻结" : ""}</span>
       </div>
     </section>
     <div class="node-range-grid">
@@ -3590,6 +3619,7 @@ async function openHand(id) {
     linkPlayers: true,
     opponents: state.data?.opponents || [],
     hero: state.data?.hero,
+    positionVpip: state.data?.position_vpip,
     handId: hand.hand_id,
     nodeScope: "review",
   }) +

@@ -64,7 +64,7 @@ from .storage import hand_from_dict
 
 
 DEFAULT_MODEL = "gpt-5.6-sol"
-OPPONENT_NODE_MODEL_VERSION = "opponent-node-range-v6"
+OPPONENT_NODE_MODEL_VERSION = "opponent-node-range-v7"
 MODEL_ENDPOINT_TEMPLATE = (
     "https://aidp-i18ntt-sg.tiktok-row.net/api/modelhub/online/v2/crawl/"
     "openai/deployments/{model}/chat/completions?api-version=2024-02-01"
@@ -1416,8 +1416,15 @@ def opponent_node_profile(
             ),
             "line": base_range.get("line"),
             "line_label": base_range.get("line_label"),
-            "estimated_range_pct": base_range.get(
+            "preflop_range_pct": base_range.get(
                 "estimated_range_pct"
+            ),
+            "estimated_range_pct": (
+                posterior.get("estimated_range_pct")
+                if posterior_enabled
+                else structural_fallback.get("estimated_range_pct")
+                if display_conditioned
+                else base_range.get("estimated_range_pct")
             ),
             "action_opportunities": base_range.get(
                 "action_opportunities"
