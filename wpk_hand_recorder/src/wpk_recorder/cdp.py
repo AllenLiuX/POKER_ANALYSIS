@@ -24,6 +24,17 @@ from .storage import RecorderStore
 from .squid import SquidStateMachine
 
 BINDING_NAME = "__wpkRecorderEmit"
+HOOK_VERSION = 9
+HOOK_WATCHDOG_INTERVAL = 5.0
+_HOOK_HEALTH_EXPRESSION = f"""
+(() => {{
+  if (!window.cc || !cc.director || !window.WePokerWebSocketMsgTypes) return "no-client";
+  if (typeof window.{BINDING_NAME} !== "function") return "no-binding";
+  if (window.__wpkRecorderHookVersion !== {HOOK_VERSION}) return "no-hook";
+  if (!(window.__wpkRecorderHandlers || []).length) return "no-handlers";
+  return "ok";
+}})()
+"""
 RELEVANT_EVENTS = (
     "dealNotify",
     "dealNotify_reconnection",
@@ -107,6 +118,8 @@ class CDPRecorder:
         self.event_sequence = store.max_event_sequence()
         self.squid_events = 0
         self.active_squid_round_id: Optional[str] = None
+        self._pending: Dict[int, "asyncio.Future[Dict[str, Any]]"] = {}
+        self._next_command_id = 1000
 
     def current_hand_snapshot(self) -> Any:
         """Return an isolated in-memory snapshot for the embedded strategy API."""
@@ -165,13 +178,22 @@ class CDPRecorder:
                 )
             )
             await self._wait_for_id(websocket, 6, "Runtime.evaluate")
-            if duration:
-                try:
-                    await asyncio.wait_for(self._receive(websocket), timeout=duration)
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await self._receive(websocket)
+            watchdog = asyncio.create_task(
+                self._hook_watchdog(websocket, hook_script)
+            )
+            try:
+                if duration:
+                    try:
+                        await asyncio.wait_for(
+                            self._receive(websocket), timeout=duration
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await self._receive(websocket)
+            finally:
+                watchdog.cancel()
+                await asyncio.gather(watchdog, return_exceptions=True)
         partial = self.state.flush()
         if partial:
             self.store.save_hand(partial)
@@ -206,9 +228,81 @@ class CDPRecorder:
     async def _receive(self, websocket: Any) -> None:
         try:
             async for raw in websocket:
-                await self._event(json.loads(raw))
+                message = json.loads(raw)
+                future = self._pending.pop(message.get("id"), None)
+                if future is not None:
+                    if not future.done():
+                        future.set_result(message)
+                    continue
+                await self._event(message)
         except asyncio.CancelledError:
             raise
+
+    async def _command(
+        self,
+        websocket: Any,
+        method: str,
+        params: Dict[str, Any],
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        future = asyncio.get_running_loop().create_future()
+        self._pending[command_id] = future
+        try:
+            await websocket.send(
+                json.dumps({"id": command_id, "method": method, "params": params})
+            )
+            # asyncio.wait_for on 3.9 can swallow a cancel that races with the
+            # reply, which would leave the watchdog running after shutdown.
+            done, _ = await asyncio.wait({future}, timeout=timeout)
+            if not done:
+                raise asyncio.TimeoutError(method)
+            return future.result()
+        finally:
+            self._pending.pop(command_id, None)
+
+    async def _hook_watchdog(
+        self,
+        websocket: Any,
+        hook_script: str,
+        interval: float = HOOK_WATCHDOG_INTERVAL,
+    ) -> None:
+        # Page reloads or renderer swaps can silently drop both the binding
+        # and the cc.director listeners while network frames keep flowing,
+        # so the CDP session never errors out and never reconnects.
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                response = await self._command(
+                    websocket,
+                    "Runtime.evaluate",
+                    {"expression": _HOOK_HEALTH_EXPRESSION, "returnByValue": True},
+                )
+                value = ((response.get("result") or {}).get("result") or {}).get(
+                    "value"
+                )
+                if value in ("ok", "no-client"):
+                    continue
+                print(
+                    f"Recorder hook missing ({value}); reinstalling",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                if value == "no-binding":
+                    await self._command(
+                        websocket, "Runtime.removeBinding", {"name": BINDING_NAME}
+                    )
+                await self._command(
+                    websocket, "Runtime.addBinding", {"name": BINDING_NAME}
+                )
+                await self._command(
+                    websocket,
+                    "Runtime.evaluate",
+                    {"expression": hook_script, "awaitPromise": False},
+                )
+            except asyncio.TimeoutError:
+                continue
 
     async def _event(self, message: Dict[str, Any]) -> None:
         method = message.get("method")
@@ -358,7 +452,7 @@ def _event_hook_script() -> str:
     events = json.dumps(RELEVANT_EVENTS)
     return f"""
 (() => {{
-  const hookVersion = 9;
+  const hookVersion = {HOOK_VERSION};
   const keys = {events};
   const validCard = value => {{
     const card = Number(value);

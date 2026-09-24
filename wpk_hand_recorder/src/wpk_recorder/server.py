@@ -7,6 +7,7 @@ import io
 import json
 import sqlite3
 import time
+from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from threading import Event
@@ -130,11 +131,19 @@ def create_app(
     app.state.live_snapshot_locks = {}
     app.state.inference_backtest_cache = None
     app.state.inference_backtest_lock = None
+    app.state.inference_backtest_executor = None
     app.state.live_hand_provider = live_hand_provider
     app.state.assistance_policy = AssistancePolicy.from_env(
         assistance_mode
     )
     app.mount("/assets", StaticFiles(directory=web_dir), name="assets")
+
+    def shutdown_backtest_executor() -> None:
+        executor = app.state.inference_backtest_executor
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    app.router.add_event_handler("shutdown", shutdown_backtest_executor)
 
     def require_capability(capability: str) -> None:
         policy = app.state.assistance_policy
@@ -663,7 +672,8 @@ def create_app(
             now = time.monotonic()
             if cached is not None and now - cached[0] < 300:
                 return cached[1]
-            result = await run_in_threadpool(
+            result = await asyncio.get_running_loop().run_in_executor(
+                _backtest_executor(app),
                 _load_inference_backtest,
                 data_dir,
             )
@@ -2060,6 +2070,16 @@ def _load_latest_live_hand(data_dir: Path) -> Optional[Any]:
         return hand_from_dict(json.loads(row["hand_json"]))
     finally:
         connection.close()
+
+
+def _backtest_executor(app: FastAPI) -> ProcessPoolExecutor:
+    # The backtest is minutes of pure-Python work; in a thread it holds the
+    # GIL and starves every live endpoint that steps through SQLite rows.
+    executor = app.state.inference_backtest_executor
+    if executor is None:
+        executor = ProcessPoolExecutor(max_workers=1)
+        app.state.inference_backtest_executor = executor
+    return executor
 
 
 def _load_inference_backtest(data_dir: Path) -> dict:
