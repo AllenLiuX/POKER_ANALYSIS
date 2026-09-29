@@ -363,11 +363,21 @@ class RecorderStore:
             ("quality_status", "TEXT NOT NULL DEFAULT 'unknown'"),
             ("quality_reasons_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("excluded_from_stats", "INTEGER NOT NULL DEFAULT 1"),
+            ("owner_email", "TEXT NOT NULL DEFAULT 'allenliux01@gmail.com'"),
         ):
             self._ensure_column("hands", name, definition)
         for table in ("hand_players", "results"):
             self._ensure_column(table, "insurance_result", "REAL")
             self._ensure_column(table, "fund", "REAL")
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_state (
+                hand_id TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                dirty INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
         self.connection.commit()
         self._backfill_decisions()
         self._refresh_opportunities_if_needed()
@@ -797,6 +807,8 @@ class RecorderStore:
         encoded = json.dumps(item, ensure_ascii=False, default=_json_default)
         hand_number = _hand_number(hand.hand_id)
         played_at = _normalize_time(hand.started_at or hand.ended_at)
+        from .cloud_sync import owner_email
+
         with self.connection:
             self.connection.execute(
                 """
@@ -804,8 +816,9 @@ class RecorderStore:
                     hand_id, table_id, started_at, ended_at, status, game_mode,
                     hand_number, played_at,
                     button_seat, small_blind, big_blind, ante, pot, board_json,
-                    quality_status, quality_reasons_json, excluded_from_stats, hand_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    quality_status, quality_reasons_json, excluded_from_stats, hand_json,
+                    owner_email
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(hand_id) DO UPDATE SET
                     table_id=excluded.table_id,
                     started_at=excluded.started_at,
@@ -823,7 +836,8 @@ class RecorderStore:
                     quality_status=excluded.quality_status,
                     quality_reasons_json=excluded.quality_reasons_json,
                     excluded_from_stats=excluded.excluded_from_stats,
-                    hand_json=excluded.hand_json
+                    hand_json=excluded.hand_json,
+                    owner_email=excluded.owner_email
                 """,
                 (
                     hand.hand_id,
@@ -844,6 +858,7 @@ class RecorderStore:
                     json.dumps(reasons, ensure_ascii=False),
                     int(excluded),
                     encoded,
+                    owner_email(self.data_dir),
                 ),
             )
             rebuild_tables = [
@@ -1002,6 +1017,7 @@ class RecorderStore:
             text_path.write_text(render_text(hand), encoding="utf-8")
             os.chmod(text_path, 0o600)
             rebuild_showdown_observations(self.connection, hand.hand_id)
+        _mark_hand_dirty(self.connection, hand.hand_id)
 
     def save_squid_event(self, event: SquidEvent, table_id: Optional[str] = None) -> None:
         item = event.as_dict()
@@ -1097,6 +1113,29 @@ class RecorderStore:
         os.chmod(self.live_path, 0o600)
 
 
+def _mark_hand_dirty(connection: sqlite3.Connection, hand_id: Optional[str]) -> None:
+    """Queue one hand for the Supabase worker. Local-only when sync is off."""
+
+    from .cloud_sync import cloud_sync_enabled
+
+    if not hand_id or not cloud_sync_enabled():
+        return
+    try:
+        connection.execute(
+            """
+            INSERT INTO sync_state(hand_id, updated_at, dirty)
+            VALUES (?, ?, 1)
+            ON CONFLICT(hand_id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                dirty = 1
+            """,
+            (str(hand_id), datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    except sqlite3.OperationalError:
+        return
+
+
 def save_strategy_evaluation(
     data_dir: Path,
     decision: Dict[str, Any],
@@ -1137,6 +1176,7 @@ def save_strategy_evaluation(
                     ),
                 ),
             )
+            _mark_hand_dirty(connection, decision.get("hand_id"))
         return True
     except (sqlite3.Error, TypeError, ValueError):
         return False
@@ -1288,6 +1328,7 @@ def save_inference_context(
                     ),
                 ),
             )
+            _mark_hand_dirty(connection, decision.get("hand_id"))
         return True
     except (sqlite3.Error, TypeError, ValueError):
         return False
@@ -1483,6 +1524,7 @@ def save_inference_run(
                     ),
                 ),
             )
+            _mark_hand_dirty(connection, decision.get("hand_id"))
         return run_id
     except (sqlite3.Error, TypeError, ValueError):
         return None

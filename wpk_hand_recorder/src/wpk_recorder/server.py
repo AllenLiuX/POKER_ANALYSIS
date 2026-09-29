@@ -75,6 +75,25 @@ from .storage import (
 from .squid_value import calibrate_squid_rules
 
 
+class PlanUpdate(BaseModel):
+    plan: str
+    expires_at: Optional[str] = None
+    note: Optional[str] = None
+
+
+class AuthRequest(BaseModel):
+    email: str = ""
+    password: str = ""
+
+
+class EmailRequest(BaseModel):
+    email: str = ""
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = ""
+
+
 class ReasoningRequest(BaseModel):
     sequence: int = Field(..., ge=1)
     state_hash: Optional[str] = Field(
@@ -104,6 +123,13 @@ class ProfileReasoningRequest(BaseModel):
     line: str = Field(default="vpip", max_length=24)
     mode: Optional[str] = Field(default=None, pattern="^(holdem|squid)$")
     force: bool = False
+
+
+def _bearer(request: Request) -> str:
+    header = request.headers.get("authorization") or ""
+    if header.lower().startswith("bearer "):
+        return header.split(" ", 1)[1].strip()
+    return ""
 
 
 def create_app(
@@ -1339,6 +1365,120 @@ def create_app(
             media_type="application/json",
             headers={"Content-Disposition": 'attachment; filename="wpk-hands.json"'},
         )
+
+    @app.post("/api/auth/signup")
+    async def auth_signup(body: AuthRequest) -> dict:
+        from .account_auth import AuthError, sign_up
+
+        try:
+            return await run_in_threadpool(sign_up, body.email, body.password, data_dir)
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.post("/api/auth/login")
+    async def auth_login(body: AuthRequest) -> dict:
+        from .account_auth import AuthError, sign_in
+
+        try:
+            return await run_in_threadpool(sign_in, body.email, body.password, data_dir)
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.post("/api/auth/recover")
+    async def auth_recover(body: EmailRequest) -> dict:
+        from .account_auth import AuthError, send_recovery
+
+        try:
+            return await run_in_threadpool(send_recovery, body.email)
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.post("/api/auth/resend")
+    async def auth_resend(body: EmailRequest) -> dict:
+        from .account_auth import AuthError, resend_signup
+
+        try:
+            return await run_in_threadpool(resend_signup, body.email)
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.post("/api/auth/refresh")
+    async def auth_refresh(body: RefreshRequest) -> dict:
+        from .account_auth import AuthError, refresh
+
+        try:
+            return await run_in_threadpool(refresh, body.refresh_token, data_dir)
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.post("/api/auth/logout")
+    async def auth_logout(request: Request) -> dict:
+        from .account_auth import sign_out
+
+        await run_in_threadpool(sign_out, data_dir, _bearer(request))
+        return {"ok": True}
+
+    @app.get("/api/auth/me")
+    async def auth_me(request: Request) -> dict:
+        from .account_auth import AuthError, current_user
+
+        try:
+            return await run_in_threadpool(current_user, _bearer(request))
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.get("/api/admin/subscriptions")
+    async def admin_subscriptions(request: Request) -> dict:
+        from .account_auth import AuthError, current_user
+        from .admin_subscriptions import SubscriptionError, fetch_dashboard, public_error
+
+        try:
+            user = await run_in_threadpool(current_user, _bearer(request))
+            if not user.get("is_admin"):
+                raise HTTPException(status_code=403, detail="需要管理员权限")
+            return await run_in_threadpool(
+                fetch_dashboard, user["user_id"], user["email"]
+            )
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except SubscriptionError as exc:
+            status = 403 if "管理员" in str(exc) else 503
+            raise HTTPException(status_code=status, detail=public_error(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=public_error(exc)) from exc
+
+    @app.post("/api/admin/subscriptions/{user_id}")
+    async def admin_set_subscription(
+        user_id: str, body: PlanUpdate, request: Request
+    ) -> dict:
+        from .account_auth import AuthError, current_user
+        from .admin_subscriptions import SubscriptionError, public_error, set_plan
+
+        try:
+            user = await run_in_threadpool(current_user, _bearer(request))
+            if not user.get("is_admin"):
+                raise HTTPException(status_code=403, detail="需要管理员权限")
+            return await run_in_threadpool(
+                set_plan,
+                user_id,
+                body.plan.strip().lower(),
+                body.expires_at,
+                body.note,
+                user["user_id"],
+                user["email"],
+            )
+        except AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except SubscriptionError as exc:
+            status = 400 if "套餐必须" in str(exc) else 403 if "管理员" in str(exc) else 503
+            raise HTTPException(status_code=status, detail=public_error(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            status = 400 if "套餐必须" in str(exc) else 503
+            raise HTTPException(status_code=status, detail=public_error(exc)) from exc
 
     @app.get("/api/events")
     async def events(request: Request) -> StreamingResponse:

@@ -3634,6 +3634,7 @@ function activateView(view) {
   if (view === "hands" && !state.historyLoaded) {
     loadHistory({ reset: true });
   }
+  if (view === "admin") loadAdmin();
 }
 function openOpponentProfile(userId, alias) {
   const targetUser = String(userId || "");
@@ -3716,6 +3717,9 @@ document.querySelector("#opponent-node-dialog").addEventListener("close", () => 
 });
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
   activateView(tab.dataset.view);
+}));
+document.querySelectorAll("[data-open-view]").forEach(button => button.addEventListener("click", () => {
+  activateView(button.dataset.openView);
 }));
 let source;
 function connectStream() {
@@ -3845,3 +3849,420 @@ connectStream();
 // non-live diagnostic query.
 window.setTimeout(loadBacktest, 5000);
 loadReasoningStatus();
+
+const adminState = { data: null, editing: null, plan: "pro", days: "365" };
+
+function loadAdmin() {
+  const panel = document.querySelector("#admin-panel");
+  panel.textContent = "正在读取后台…";
+  fetch("/api/admin/subscriptions", { headers: authHeaders() })
+    .then(async response => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "读取失败");
+      adminState.data = body;
+      renderAdmin();
+    })
+    .catch(error => {
+      panel.innerHTML = `<div class="empty-result">${esc(error.message)}</div>`;
+    });
+}
+
+function renderAdmin() {
+  const data = adminState.data;
+  const panel = document.querySelector("#admin-panel");
+  if (!data) return;
+  const stats = data.stats || {};
+  panel.innerHTML = `
+    <div class="admin-stats">
+      ${adminStat("注册用户", stats.users)}
+      ${adminStat("有效 Pro", stats.pro_users)}
+      ${adminStat("云端手牌", stats.hands, `今日 +${stats.hands_today ?? 0}`)}
+      ${adminStat("近 30 天手牌", stats.hands_30d)}
+    </div>
+    <div class="admin-breakdowns">
+      ${adminBreakdown("套餐", data.plan_breakdown, adminPlanLabel)}
+      ${adminBreakdown("手牌质量", data.quality_breakdown, adminQualityLabel)}
+      ${adminBreakdown("玩法", data.mode_breakdown, adminModeLabel)}
+    </div>
+    <h3 class="admin-title">近 30 天最活跃用户</h3>
+    ${adminTopTable(data.top_users || [])}
+    <h3 class="admin-title">最近注册的用户</h3>
+    ${adminUsersTable(data.users || [])}
+    ${adminUnclaimed(data.unclaimed || [])}
+  `;
+}
+
+function adminStat(label, value, hint) {
+  return `<div class="admin-stat"><span>${esc(label)}</span><strong>${esc(value ?? 0)}</strong>${
+    hint ? `<small>${esc(hint)}</small>` : ""
+  }</div>`;
+}
+
+function adminBreakdown(title, items, label) {
+  const rows = items || [];
+  const total = rows.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const body = rows.length
+    ? rows.map(item => {
+      const pct = total ? Math.round((Number(item.count) / total) * 100) : 0;
+      return `<div class="admin-bar-row">
+        <div><span>${esc(label(item.key))}</span><small>${esc(item.count)} · ${pct}%</small></div>
+        <i style="width:${pct}%"></i>
+      </div>`;
+    }).join("")
+    : `<p class="admin-empty">暂无</p>`;
+  return `<section class="admin-breakdown"><header><strong>${esc(title)}</strong><small>合计 ${esc(total)}</small></header>${body}</section>`;
+}
+
+function adminTopTable(users) {
+  if (!users.length) return `<p class="admin-empty">近 30 天还没有用户上传手牌</p>`;
+  return `<table class="admin-table"><thead><tr><th>#</th><th>用户</th><th>套餐</th><th>30 天手牌</th></tr></thead><tbody>${
+    users.map((user, index) => `<tr>
+      <td>${index + 1}</td>
+      <td>${adminUserCell(user)}</td>
+      <td>${adminPlanBadge(user)}</td>
+      <td class="num">${esc(user.hands_30d)}</td>
+    </tr>`).join("")
+  }</tbody></table>`;
+}
+
+function adminUsersTable(users) {
+  if (!users.length) return `<p class="admin-empty">还没有人注册。管理员邮箱注册后会出现在这里。</p>`;
+  return `<div class="admin-table-wrap"><table class="admin-table"><thead><tr>
+      <th>用户</th><th>套餐</th><th>手牌</th><th>近 30 天</th><th>注册</th><th>最近登录</th><th></th>
+    </tr></thead><tbody>${
+    users.map(user => `<tr>
+      <td>${adminUserCell(user)}</td>
+      <td>${adminPlanBadge(user)}</td>
+      <td class="num">${esc(user.hands ?? 0)}</td>
+      <td class="num">${esc(user.hands_30d ?? 0)}</td>
+      <td>${esc(adminDate(user.created_at))}</td>
+      <td>${esc(adminDate(user.last_sign_in_at))}</td>
+      <td><button class="admin-upgrade" type="button" data-user="${esc(user.user_id)}">${user.active ? "调整" : "升 Pro"}</button></td>
+    </tr>`).join("")
+  }</tbody></table></div>`;
+}
+
+function adminUserCell(user) {
+  const title = user.display_name || user.email || String(user.user_id || "").slice(0, 8);
+  const mail = user.display_name && user.email ? `<small>${esc(user.email)}</small>` : "";
+  const badge = user.is_admin ? `<em>管理员</em>` : "";
+  return `<div class="admin-user">${esc(title)}${badge}${mail}</div>`;
+}
+
+function adminPlanBadge(user) {
+  if (user.plan !== "pro") return `<span class="admin-badge">Free</span>`;
+  const when = user.plan_expires_at ? adminDate(user.plan_expires_at) : "";
+  const label = user.active ? "Pro" : "Pro 已过期";
+  const extra = when ? (user.active ? `到期 ${when}` : `过期于 ${when}`) : (user.active ? "永久" : "");
+  return `<span class="admin-badge pro">${esc(label)}</span>${extra ? `<small class="admin-expiry">${esc(extra)}</small>` : ""}`;
+}
+
+function adminUnclaimed(rows) {
+  if (!rows.length) return "";
+  return `<h3 class="admin-title">还没注册的归属</h3><table class="admin-table"><tbody>${
+    rows.map(row => `<tr><td>${esc(row.owner_email)}</td><td class="num">${esc(row.hands)} 手</td></tr>`).join("")
+  }</tbody></table><p class="admin-empty">这些邮箱还没有账号。用对应邮箱注册后，手牌会归到那个用户。</p>`;
+}
+
+function adminDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("zh-CN");
+}
+
+function adminPlanLabel(key) {
+  if (key === "pro") return "Pro";
+  if (key === "free") return "Free";
+  return key;
+}
+
+function adminQualityLabel(key) {
+  return { good: "完整", live: "进行中", partial: "残缺", bad: "异常", unknown: "未知" }[key] || key;
+}
+
+function adminModeLabel(key) {
+  return { holdem: "德州", squid: "鱿鱼" }[key] || key;
+}
+
+function openPlanDialog(user) {
+  adminState.editing = user;
+  adminState.plan = "pro";
+  adminState.days = "365";
+  document.querySelector("#plan-user").textContent = user.email || user.user_id;
+  document.querySelector("#plan-note").value = user.plan_note || "";
+  document.querySelector("#plan-days").value = "365";
+  document.querySelector("#plan-error").hidden = true;
+  syncPlanDialog();
+  document.querySelector("#plan-dialog").showModal();
+}
+
+function syncPlanDialog() {
+  document.querySelectorAll(".plan-choice").forEach(button => {
+    button.classList.toggle("active", button.dataset.plan === adminState.plan);
+  });
+  document.querySelectorAll(".plan-duration").forEach(button => {
+    button.classList.toggle("active", button.dataset.days === adminState.days);
+  });
+  document.querySelector("#plan-duration-block").hidden = adminState.plan !== "pro";
+  const days = Number(adminState.days);
+  const preview = document.querySelector("#plan-preview");
+  if (adminState.plan !== "pro") {
+    preview.textContent = "保存后降为 Free";
+  } else if (!adminState.days || !Number.isFinite(days) || days <= 0) {
+    preview.textContent = "永久有效，不会自动降级";
+  } else {
+    preview.textContent = `到期时间 ${new Date(Date.now() + days * 86400000).toLocaleString("zh-CN")}`;
+  }
+}
+
+document.querySelector("#admin-panel").addEventListener("click", event => {
+  const button = event.target.closest(".admin-upgrade");
+  if (!button) return;
+  const user = (adminState.data?.users || []).find(item => item.user_id === button.dataset.user);
+  if (user) openPlanDialog(user);
+});
+document.querySelectorAll(".plan-choice").forEach(button => {
+  button.addEventListener("click", () => {
+    adminState.plan = button.dataset.plan;
+    syncPlanDialog();
+  });
+});
+document.querySelectorAll(".plan-duration").forEach(button => {
+  button.addEventListener("click", () => {
+    adminState.days = button.dataset.days;
+    document.querySelector("#plan-days").value = adminState.days;
+    syncPlanDialog();
+  });
+});
+document.querySelector("#plan-days").addEventListener("input", event => {
+  adminState.days = event.target.value;
+  syncPlanDialog();
+});
+function closePlanDialog() {
+  document.querySelector("#plan-dialog").close();
+}
+document.querySelector("#plan-close").addEventListener("click", closePlanDialog);
+document.querySelector("#plan-cancel").addEventListener("click", closePlanDialog);
+document.querySelector("#plan-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const error = document.querySelector("#plan-error");
+  error.hidden = true;
+  const user = adminState.editing;
+  if (!user) return;
+  let expiresAt = null;
+  if (adminState.plan === "pro" && adminState.days !== "") {
+    const days = Number(adminState.days);
+    if (!Number.isFinite(days) || days <= 0) {
+      error.textContent = "请填写大于 0 的天数，或选择永久";
+      error.hidden = false;
+      return;
+    }
+    expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  }
+  const save = document.querySelector("#plan-save");
+  save.disabled = true;
+  try {
+    const response = await fetch(`/api/admin/subscriptions/${encodeURIComponent(user.user_id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        plan: adminState.plan,
+        expires_at: expiresAt,
+        note: document.querySelector("#plan-note").value.trim() || null,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || "保存失败");
+    closePlanDialog();
+    loadAdmin();
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  } finally {
+    save.disabled = false;
+  }
+});
+
+const authState = { mode: "signin", user: null, needsConfirm: false };
+
+function authHeaders() {
+  const session = readAuthSession();
+  if (!session?.access_token) return {};
+  return { Authorization: `Bearer ${session.access_token}` };
+}
+
+function readAuthSession() {
+  try {
+    return JSON.parse(localStorage.getItem("wpk.auth") || "null");
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeAuthSession(session) {
+  if (!session) {
+    localStorage.removeItem("wpk.auth");
+    return;
+  }
+  localStorage.setItem("wpk.auth", JSON.stringify(session));
+}
+
+function renderAccount() {
+  const button = document.querySelector("#account-button");
+  const user = authState.user;
+  button.textContent = user?.email || "登录";
+  button.title = user?.email || "登录或注册";
+  document.querySelector("#admin-tab").hidden = !user?.is_admin;
+  if (!user?.is_admin && document.querySelector("#view-admin").classList.contains("active")) {
+    activateView("live");
+  }
+}
+
+function showAuthMessage(text, kind) {
+  const node = document.querySelector("#auth-message");
+  node.hidden = !text;
+  node.textContent = text || "";
+  node.classList.toggle("info", kind === "info");
+}
+
+function syncAuthDialog() {
+  const user = authState.user;
+  const signedIn = Boolean(user?.email);
+  document.querySelector("#auth-title").textContent = signedIn
+    ? "账号"
+    : (authState.mode === "signup" ? "注册" : "登录");
+  document.querySelector("#auth-help").textContent = signedIn
+    ? `${user.email}${user.is_admin ? " · 管理员" : ""}${user.plan === "pro" ? " · Pro" : " · Free"}`
+    : "登录后，之后录到的手牌归到这个账号。";
+  document.querySelector("#auth-fields").hidden = signedIn;
+  document.querySelector("#auth-submit").hidden = signedIn;
+  document.querySelector("#auth-switch").hidden = signedIn;
+  document.querySelector("#auth-recover").hidden = signedIn;
+  document.querySelector("#auth-resend").hidden = signedIn || !authState.needsConfirm;
+  document.querySelector("#auth-logout").hidden = !signedIn;
+  document.querySelector("#auth-submit").textContent = authState.mode === "signup" ? "注册" : "登录";
+  document.querySelector("#auth-switch").textContent = authState.mode === "signup"
+    ? "已有账号？登录"
+    : "还没有账号？注册";
+  document.querySelector("#auth-password").autocomplete = authState.mode === "signup"
+    ? "new-password"
+    : "current-password";
+}
+
+async function loadAccount() {
+  const session = readAuthSession();
+  if (!session?.access_token) {
+    authState.user = null;
+    renderAccount();
+    return;
+  }
+  let response = await fetch("/api/auth/me", { headers: authHeaders() });
+  if (response.status === 401 && session.refresh_token) {
+    const refreshed = await fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    });
+    if (refreshed.ok) {
+      const next = await refreshed.json();
+      writeAuthSession(next);
+      response = await fetch("/api/auth/me", { headers: authHeaders() });
+    } else {
+      writeAuthSession(null);
+    }
+  }
+  if (!response.ok) {
+    authState.user = null;
+    renderAccount();
+    return;
+  }
+  authState.user = await response.json();
+  renderAccount();
+}
+
+document.querySelector("#account-button").addEventListener("click", () => {
+  showAuthMessage("");
+  syncAuthDialog();
+  document.querySelector("#auth-dialog").showModal();
+});
+document.querySelector("#auth-close").addEventListener("click", () => {
+  document.querySelector("#auth-dialog").close();
+});
+document.querySelector("#auth-switch").addEventListener("click", () => {
+  authState.mode = authState.mode === "signup" ? "signin" : "signup";
+  authState.needsConfirm = false;
+  showAuthMessage("");
+  syncAuthDialog();
+});
+async function sendAuthEmail(path) {
+  const email = document.querySelector("#auth-email").value.trim();
+  if (!email) {
+    showAuthMessage("请先填写邮箱");
+    return;
+  }
+  showAuthMessage("");
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showAuthMessage(body.detail || "发送失败");
+    return;
+  }
+  showAuthMessage(body.info || "已提交发送", "info");
+}
+document.querySelector("#auth-recover").addEventListener("click", () => {
+  sendAuthEmail("/api/auth/recover");
+});
+document.querySelector("#auth-resend").addEventListener("click", () => {
+  sendAuthEmail("/api/auth/resend");
+});
+document.querySelector("#auth-logout").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST", headers: authHeaders() });
+  writeAuthSession(null);
+  authState.user = null;
+  renderAccount();
+  document.querySelector("#auth-dialog").close();
+});
+document.querySelector("#auth-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  showAuthMessage("");
+  const submit = document.querySelector("#auth-submit");
+  submit.disabled = true;
+  try {
+    const response = await fetch(
+      authState.mode === "signup" ? "/api/auth/signup" : "/api/auth/login",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: document.querySelector("#auth-email").value.trim(),
+          password: document.querySelector("#auth-password").value,
+        }),
+      },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || "登录失败");
+    if (body.info) {
+      authState.needsConfirm = Boolean(body.needs_confirm);
+      showAuthMessage(body.info, "info");
+      authState.mode = "signin";
+      syncAuthDialog();
+      return;
+    }
+    writeAuthSession(body);
+    document.querySelector("#auth-password").value = "";
+    await loadAccount();
+    syncAuthDialog();
+    if (authState.user) document.querySelector("#auth-dialog").close();
+  } catch (error) {
+    showAuthMessage(error.message);
+  } finally {
+    submit.disabled = false;
+  }
+});
+loadAccount();
+

@@ -17,8 +17,10 @@ dependencies = [
   "websockets>=12,<16",
 ]
 
+
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
+cloud = ["psycopg[binary]>=3.1,<4"]
 
 [project.scripts]
 wpk-recorder = "wpk_recorder.cli:main"

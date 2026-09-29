@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Spade, UserRound } from "lucide-react";
 import { getHealth, type HealthResponse } from "@/lib/api";
+import { fetchWpkMe } from "@/lib/account";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 
@@ -16,6 +17,7 @@ const LINKS: { href: string; label: string; badge?: string }[] = [
   { href: "/import", label: "截图导入", badge: "Beta" },
   { href: "/opponents", label: "对手档案", badge: "Beta" },
   { href: "/progress", label: "我的进度" },
+  { href: "/hands", label: "我的手牌" },
 ];
 
 function isActive(pathname: string, href: string): boolean {
@@ -74,16 +76,36 @@ export default function NavBar() {
 
 function AuthNav() {
   const { enabled, user } = useAuth();
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (!user) {
+      setIsAdmin(false);
+      return;
+    }
+    fetchWpkMe()
+      .then((me) => setIsAdmin(Boolean(me.is_admin)))
+      .catch(() => setIsAdmin(false));
+  }, [user]);
   if (!enabled) return null;
   return (
-    <Link
-      href={user ? "/progress" : "/login"}
-      className="flex max-w-[9rem] items-center gap-1.5 truncate rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-neutral-300 transition hover:bg-white/[0.07]"
-      title={user?.email ?? "登录"}
-    >
-      <UserRound className="size-3.5 shrink-0" />
-      <span className="truncate">{user ? user.email : "登录"}</span>
-    </Link>
+    <>
+      {isAdmin && (
+        <Link
+          href="/admin"
+          className="rounded-full border border-emerald-500/30 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"
+        >
+          后台
+        </Link>
+      )}
+      <Link
+        href={user ? "/progress" : "/login"}
+        className="flex max-w-[9rem] items-center gap-1.5 truncate rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-neutral-300 transition hover:bg-white/[0.07]"
+        title={user?.email ?? "登录"}
+      >
+        <UserRound className="size-3.5 shrink-0" />
+        <span className="truncate">{user ? user.email : "登录"}</span>
+      </Link>
+    </>
   );
 }
 

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WPK 牌局记录台</title>
-    <link rel="stylesheet" href="/assets/app.css?v=eml-vpip-v1" />
+    <link rel="stylesheet" href="/assets/app.css?v=site-v3" />
   </head>
   <body>
     <header class="masthead">
@@ -16,6 +16,7 @@
         <span id="connection-dot" class="dot"></span>
         <span id="connection-label">正在连接</span>
         <span id="sequence" class="sequence">#0</span>
+        <button id="account-button" class="account-button" type="button">登录</button>
       </div>
     </header>
 
@@ -25,6 +26,9 @@
       <button class="tab" data-view="opponents">对手数据</button>
       <button class="tab" data-view="squid">鱿鱼模式</button>
       <button class="tab" data-view="raw">原始事件</button>
+      <button class="tab" data-view="plans">订阅</button>
+      <button class="tab" data-view="about">关于</button>
+      <button class="tab" data-view="admin" id="admin-tab" hidden>后台</button>
       <a class="export" href="/api/export/hands.csv">导出行动 CSV</a>
     </nav>
 
@@ -182,6 +186,183 @@
         </div>
         <div id="raw-list" class="raw-list"></div>
       </section>
+
+      <section id="view-plans" class="view">
+        <div class="section-heading">
+          <span>订阅</span>
+          <small>原价 ¥500 / 月 · 页面内不收款</small>
+        </div>
+        <p class="plans-lead">
+          当前月付 73 折，季付 59 折，年付 44 折。选好方案后，发邮件或加管理员微信，说明登录邮箱和方案。确认后由管理员在后台开通 Pro。
+        </p>
+        <div class="plan-grid">
+          <article class="plan-card">
+            <p class="eyebrow">当前 73折</p>
+            <h2>月付</h2>
+            <p class="plan-price"><span>¥365</span><small>/ 月</small></p>
+            <p class="plan-was">原价 ¥500 / 月</p>
+          </article>
+          <article class="plan-card">
+            <p class="eyebrow">当前 59折</p>
+            <h2>季付</h2>
+            <p class="plan-price"><span>¥888</span><small>/ 季</small></p>
+            <p class="plan-was">原价 ¥1,500 / 季</p>
+          </article>
+          <article class="plan-card plan-card-featured">
+            <p class="eyebrow">当前 44折</p>
+            <h2>年付</h2>
+            <p class="plan-price"><span>¥2,640</span><small>/ 年</small></p>
+            <p class="plan-was">原价 ¥6,000 / 年</p>
+          </article>
+        </div>
+        <div class="plan-includes">
+          <h3>Pro 包含</h3>
+          <ul>
+            <li>实时牌局、历史牌谱、对手样本与 169 格范围、鱿鱼时间线</li>
+            <li>行动导出，以及登录后归到该账号的云端牌谱</li>
+            <li>到期日之前一直有效；后台留空到期日则长期有效</li>
+          </ul>
+        </div>
+        <div class="plan-contact">
+          <div>
+            <p class="eyebrow">CONTACT</p>
+            <h3>怎么开通</h3>
+            <p>把登录邮箱和方案（月付、季付或年付）发给管理员。管理员确认后在后台把这个账号设为 Pro。这个页面不收款、不跳转支付。</p>
+          </div>
+          <div class="plan-contact-ways">
+            <p><span>邮件</span><a href="mailto:wpkhelperpro@gmail.com?subject=WPK%20Pro%20%E5%BC%80%E9%80%9A">wpkhelperpro@gmail.com</a></p>
+            <p><span>微信</span>添加管理员微信，备注登录邮箱和方案。微信号发上面的邮件即可索取。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-about" class="view">
+        <div class="about-stage">
+          <header class="about-hero">
+            <p class="about-pill">STUDY</p>
+            <h2>把每一手留成<span>可核对的牌谱</span></h2>
+            <p>记录你自己打开的 WePoker 牌桌。行动线、对手样本、169 格范围和鱿鱼结算都在本机完成。不代打，也不自动点击。</p>
+          </header>
+
+          <div class="about-grid">
+            <article class="about-card">
+              <div class="about-visual" aria-hidden="true">
+                <div class="about-seats">
+                  <span class="is-fold">UTG</span>
+                  <span>HJ</span>
+                  <span class="is-act">CO</span>
+                  <span>BTN</span>
+                  <span>SB</span>
+                  <span>BB</span>
+                </div>
+                <ol class="about-actions">
+                  <li><b>UTG</b><span>弃牌</span></li>
+                  <li><b>HJ</b><span>加注 2.5bb</span></li>
+                  <li class="is-act"><b>CO</b><span>跟注</span></li>
+                  <li><b>BTN</b><span>弃牌</span></li>
+                </ol>
+              </div>
+              <h3>实时行动线</h3>
+              <p>九人桌按方位排开，弃牌、行动中和全下分开着色。翻后未弃牌的对手按底牌相对公共牌的提升分成强价值、摊牌价值、听牌和空气。公共牌自己的成牌不会让全桌都显示强牌。</p>
+            </article>
+            <article class="about-card">
+              <div class="about-visual" aria-hidden="true">
+                <div class="about-matrix">
+                  <i class="hot"></i><i class="hot"></i><i class="warm"></i><i class="warm"></i><i></i><i></i><i></i><i></i>
+                  <i class="hot"></i><i class="hot"></i><i class="warm"></i><i></i><i></i><i></i><i></i><i></i>
+                  <i class="warm"></i><i class="warm"></i><i class="hot"></i><i class="warm"></i><i></i><i></i><i></i><i></i>
+                  <i></i><i class="warm"></i><i></i><i class="hot"></i><i></i><i></i><i></i><i></i>
+                  <i></i><i></i><i></i><i></i><i class="mid"></i><i></i><i></i><i></i>
+                  <i></i><i></i><i></i><i></i><i></i><i class="mid"></i><i></i><i></i>
+                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="mid"></i>
+                </div>
+              </div>
+              <h3>169 格范围</h3>
+              <p>翻前按人数、位置、前注和码深成型，同花和非同花分开。翻后按本手的过牌、跟注、下注和加注更新。格子是这类牌在当前范围里的权重，不是底牌识别，也不是当前节点的精确最优解。</p>
+            </article>
+          </div>
+
+          <div class="about-grid">
+            <article class="about-card">
+              <div class="about-visual about-visual-stats" aria-hidden="true">
+                <div><span>VPIP</span><b style="width:28%"></b><em>28</em></div>
+                <div><span>PFR</span><b style="width:18%"></b><em>18</em></div>
+                <div><span>3BET</span><b class="low" style="width:7%"></b><em>7</em></div>
+                <div><span>弃牌对 CBet</span><b class="high" style="width:62%"></b><em>62</em></div>
+              </div>
+              <h3>对手样本</h3>
+              <p>VPIP、PFR、3bet、各街持续下注，以及面对进攻时的弃牌、跟注和再加注。频率向牌池收缩。样本不够就标成待验证，不把偶然的 0% 或 100% 当成稳定漏洞。改名仍按玩家 ID 归到同一个人。</p>
+            </article>
+            <article class="about-card">
+              <div class="about-visual about-visual-quality" aria-hidden="true">
+                <div><span>完整</span><b style="width:96%"></b><em>96%</em></div>
+                <div><span>残缺</span><b class="mid" style="width:3%"></b><em>3%</em></div>
+                <div><span>异常</span><b class="bad" style="width:1%"></b><em>1%</em></div>
+                <p>公共牌张数 · 行动连续 · 净输赢</p>
+              </div>
+              <h3>先核对，再统计</h3>
+              <p>公共牌只能是 0、3、4 或 5 张。行动序号要连续，街道不能倒退。扣除保险和基金后的净输赢对得上抽水，才进入统计。认不出的消息会留下，不会被猜成一次下注或一张牌。</p>
+            </article>
+          </div>
+
+          <article class="about-report">
+            <div class="about-report-copy">
+              <p class="about-pill">RANGE</p>
+              <h3>范围跟着行动线走</h3>
+              <p>翻前进入这条线的频率和当前 169 格权重分开标。亮牌会参与学习，但权重被压低。每一层先在时间外的牌上检验，没通过就退回更粗、已经通过的一层。</p>
+            </div>
+            <div class="about-report-board" aria-hidden="true">
+              <div class="about-bars">
+                <i style="height:72%"></i><i style="height:40%"></i><i style="height:88%"></i><i style="height:26%"></i>
+                <i class="gold" style="height:64%"></i><i class="gold" style="height:34%"></i><i style="height:78%"></i><i class="red" style="height:22%"></i>
+                <i style="height:56%"></i><i class="gold" style="height:48%"></i><i style="height:90%"></i><i class="red" style="height:18%"></i>
+              </div>
+              <table>
+                <thead><tr><th>起手</th><th>弃牌</th><th>跟注</th><th>加注</th></tr></thead>
+                <tbody>
+                  <tr><td>AA</td><td><b class="red" style="width:4%"></b></td><td><b style="width:18%"></b></td><td><b class="hot" style="width:78%"></b></td></tr>
+                  <tr><td>AKs</td><td><b class="red" style="width:8%"></b></td><td><b style="width:24%"></b></td><td><b class="hot" style="width:68%"></b></td></tr>
+                  <tr><td>KQo</td><td><b class="red" style="width:22%"></b></td><td><b style="width:51%"></b></td><td><b class="hot" style="width:27%"></b></td></tr>
+                  <tr><td>76s</td><td><b class="red" style="width:41%"></b></td><td><b style="width:46%"></b></td><td><b class="hot" style="width:13%"></b></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <div class="about-facts">
+            <article>
+              <h3>只读你自己的牌桌</h3>
+              <p>专用 Chrome 的调试端口只绑定本机。不装根证书，不做中间人，不改页面。密码、Cookie、聊天、好友和支付不进录制文件。</p>
+            </article>
+            <article>
+              <h3>本机记录，账号归集</h3>
+              <p>登录后新牌归到这个邮箱，并同步一份到云端。本机数据库仍是记录时的依据，录制不会等云端写完。帧和诊断材料留在本机。</p>
+            </article>
+            <article>
+              <h3>鱿鱼和本地建议</h3>
+              <p>一轮的开始、加入、晋级和结算按原样留下。本地比较筹码期望和鱿鱼边际；结算对不上，就不把鱿鱼单位并进筹码。建议不会自动点击。</p>
+            </article>
+          </div>
+
+          <footer class="about-offer">
+            <div>
+              <p class="about-pill">PRO</p>
+              <h3>当前 73 折月付，季付 59 折，年付 44 折</h3>
+              <p>¥365 / 月 · ¥888 / 季 · ¥2,640 / 年。页面内不收款。邮件 <a href="mailto:wpkhelperpro@gmail.com">wpkhelperpro@gmail.com</a>，或加管理员微信，写上登录邮箱和方案。</p>
+            </div>
+            <button type="button" data-open-view="plans">查看订阅</button>
+          </footer>
+        </div>
+      </section>
+
+      <section id="view-admin" class="view">
+        <div class="section-heading">
+          <span>后台</span>
+          <small>手动开通 Pro。留空到期日则一直有效。</small>
+        </div>
+        <div id="admin-panel" class="admin-panel">正在读取后台…</div>
+      </section>
     </main>
 
     <dialog id="hand-dialog">
@@ -200,6 +381,64 @@
         <div class="node-range-empty">选择实时或历史牌局中的对手。</div>
       </div>
     </dialog>
-    <script src="/assets/app.js?v=eml-vpip-v1"></script>
+    <dialog id="plan-dialog" class="plan-dialog">
+      <button id="plan-close" class="dialog-close" type="button">关闭</button>
+      <form id="plan-form">
+        <p class="eyebrow">SUBSCRIPTION</p>
+        <h2>设置套餐</h2>
+        <p id="plan-user" class="plan-user"></p>
+        <div class="plan-choices" role="group" aria-label="套餐">
+          <button class="plan-choice" type="button" data-plan="free">Free</button>
+          <button class="plan-choice active" type="button" data-plan="pro">Pro</button>
+        </div>
+        <div id="plan-duration-block">
+          <div class="plan-durations" role="group" aria-label="有效期">
+            <button class="plan-duration" type="button" data-days="7">7 天</button>
+            <button class="plan-duration" type="button" data-days="30">30 天</button>
+            <button class="plan-duration" type="button" data-days="90">90 天</button>
+            <button class="plan-duration active" type="button" data-days="365">1 年</button>
+            <button class="plan-duration" type="button" data-days="">永久</button>
+          </div>
+          <label class="plan-custom">自定义天数
+            <input id="plan-days" type="number" min="0" value="365" placeholder="留空表示永久">
+          </label>
+          <p id="plan-preview" class="plan-preview"></p>
+        </div>
+        <label class="plan-note">备注
+          <textarea id="plan-note" rows="2" maxlength="200" placeholder="例：内测邀请 / 客户合作"></textarea>
+        </label>
+        <p id="plan-error" class="plan-error" hidden></p>
+        <div class="plan-actions">
+          <button id="plan-cancel" type="button">取消</button>
+          <button id="plan-save" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="auth-dialog" class="auth-dialog">
+      <button id="auth-close" class="dialog-close" type="button">关闭</button>
+      <form id="auth-form">
+        <p class="eyebrow">ACCOUNT</p>
+        <h2 id="auth-title">登录</h2>
+        <p id="auth-help" class="auth-help">登录后，之后录到的手牌归到这个账号。</p>
+        <div id="auth-fields">
+          <label>邮箱
+            <input id="auth-email" type="email" autocomplete="username" required placeholder="you@example.com">
+          </label>
+          <label>密码
+            <input id="auth-password" type="password" autocomplete="current-password" required minlength="6" placeholder="至少 6 位">
+          </label>
+        </div>
+        <p id="auth-session" class="auth-session" hidden></p>
+        <p id="auth-message" class="auth-message" hidden></p>
+        <div class="auth-actions">
+          <button id="auth-switch" type="button">还没有账号？注册</button>
+          <button id="auth-recover" type="button">忘记密码</button>
+          <button id="auth-resend" type="button" hidden>重发确认信</button>
+          <button id="auth-submit" type="submit">登录</button>
+          <button id="auth-logout" type="button" hidden>退出</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="/assets/app.js?v=site-v3"></script>
   </body>
 </html>

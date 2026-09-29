@@ -119,6 +119,25 @@ def parser() -> argparse.ArgumentParser:
         default="deep",
     )
     evaluate.add_argument("--no-persist", action="store_true")
+
+    sync_status = sub.add_parser("sync-status", help="local vs Supabase hand counts")
+    sync_status.add_argument("--data-dir", type=Path, default=Path("data"))
+
+    sync_probe = sub.add_parser("sync-probe", help="time a few hand uploads to Supabase")
+    sync_probe.add_argument("--data-dir", type=Path, default=Path("data"))
+    sync_probe.add_argument("--limit", type=int, default=5)
+
+    sync_backfill = sub.add_parser(
+        "sync-backfill",
+        help="upload existing local hands to Supabase",
+    )
+    sync_backfill.add_argument("--data-dir", type=Path, default=Path("data"))
+    sync_backfill.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="only the newest N hands; 0 uploads every hand",
+    )
     return root
 
 
@@ -227,9 +246,21 @@ async def _record_while_dashboard_alive(
         await asyncio.gather(recorder_task, return_exceptions=True)
 
 
+def _start_cloud_worker(store: RecorderStore):
+    from .cloud_sync import start_worker
+
+    return start_worker(store.data_dir)
+
+
+def _stop_cloud_worker(worker) -> None:
+    if worker is not None:
+        worker.stop()
+
+
 def capture(args: argparse.Namespace) -> int:
     page_target(args.port)
     store = RecorderStore(args.data_dir, retain_raw=args.retain_raw)
+    worker = _start_cloud_worker(store)
     recorder = CDPRecorder(
         store=store,
         mapper=ProtocolMapper(args.protocol),
@@ -242,6 +273,7 @@ def capture(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nStopping recorder...")
     finally:
+        _stop_cloud_worker(worker)
         store.close()
     print(json.dumps(recorder.summary(), ensure_ascii=False, indent=2))
     return 0
@@ -249,6 +281,7 @@ def capture(args: argparse.Namespace) -> int:
 
 def record_system(args: argparse.Namespace) -> int:
     store = RecorderStore(args.data_dir, retain_raw=args.retain_wire)
+    worker = _start_cloud_worker(store)
     recorder = CDPRecorder(
         store=store,
         mapper=ProtocolMapper(args.protocol),
@@ -270,6 +303,7 @@ def record_system(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nStopping recorder...")
     finally:
+        _stop_cloud_worker(worker)
         store.close()
     return 0
 
@@ -297,6 +331,7 @@ def run_system(args: argparse.Namespace) -> int:
     from .server import create_app
 
     store = RecorderStore(args.data_dir, retain_raw=args.retain_wire)
+    worker = _start_cloud_worker(store)
     recorder = CDPRecorder(
         store=store,
         mapper=ProtocolMapper(args.protocol),
@@ -346,6 +381,7 @@ def run_system(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nStopping recorder and dashboard...")
     finally:
+        _stop_cloud_worker(worker)
         store.close()
     return 0
 
@@ -516,9 +552,36 @@ def eval_templates(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cloud_commands(args: argparse.Namespace) -> int:
+    from .cloud_sync import apply_default_cloud_sync, backfill, probe, status
+
+    apply_default_cloud_sync()
+    if args.command == "sync-status":
+        print(json.dumps(status(args.data_dir), ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "sync-probe":
+        print(
+            json.dumps(
+                probe(args.data_dir, limit=max(1, args.limit)),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "sync-backfill":
+        backfill(args.data_dir, limit=args.limit or None)
+        return 0
+    return 1
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    from .cloud_sync import apply_default_cloud_sync
+
     args = parser().parse_args(argv)
+    apply_default_cloud_sync()
     try:
+        if args.command in {"sync-status", "sync-probe", "sync-backfill"}:
+            return _cloud_commands(args)
         if args.command == "browser":
             launch_browser(args.port, args.profile, args.url)
             return 0
