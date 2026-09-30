@@ -265,6 +265,77 @@ def test_showdown_portrait_counters_trap_hit_lead_and_air():
     assert vil["checked_strong_pair"] == {"n": 0, "k": 0}
     assert hero["checked_strong_pair"] == {"n": 1, "k": 1}
 
+    board_made = {
+        "confidence": 0.9,
+        "board": ["7h", "7c", "2d", "2s"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BB",
+                "is_hero": True,
+                "hole_cards": ["9c", "8d"],
+                "net": 0,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BTN",
+                "is_hero": False,
+                "hole_cards": [],
+                "net": 0,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                ],
+            },
+        ],
+    }
+    hero_board = _by_alias(hand_contributions({"blinds": "1/2"}, board_made))["Hero"][
+        "counters"
+    ]
+    assert hero_board["slowplay_two_pair_plus"] == {"n": 0, "k": 0}
+    assert hero_board["checked_strong_pair"] == {"n": 0, "k": 0}
+    assert hero_board["thin_value_medium"] == {"n": 0, "k": 0}
+
+    playing_pair = {
+        "confidence": 0.9,
+        "board": ["Kh", "Kc", "Qd"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BB",
+                "is_hero": True,
+                "hole_cards": ["8d", "3s"],
+                "net": 0,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BTN",
+                "is_hero": False,
+                "hole_cards": [],
+                "net": 0,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                ],
+            },
+        ],
+    }
+    hero_pair = _by_alias(hand_contributions({"blinds": "1/2"}, playing_pair))["Hero"][
+        "counters"
+    ]
+    assert hero_pair["slowplay_two_pair_plus"] == {"n": 0, "k": 0}
+    assert hero_pair["checked_strong_pair"] == {"n": 0, "k": 0}
+
     hit_lead = {
         "confidence": 0.9,
         "board": ["Ah", "7h", "2c", "3h"],

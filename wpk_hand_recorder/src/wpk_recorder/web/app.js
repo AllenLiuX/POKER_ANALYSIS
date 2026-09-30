@@ -435,25 +435,25 @@ const quickMetricDescriptions = {
   overfold_small_bet: "面对不超过 33% 底池的下注时弃牌的比例",
   fold_to_barrel: "面对转/河继续开火时弃牌的比例",
   fold_to_postflop_raise: "翻后面对加注时弃牌的比例",
-  slowplay_two_pair_plus: "亮牌两对+时选择过牌或跟注而非进攻的比例（摊牌样本）",
-  checked_strong_pair: "亮牌一对且可开火时选择过牌的比例（摊牌样本）",
-  delayed_value: "翻牌过牌后，转/河持两对+时主动开火的比例（摊牌样本）",
-  check_raise_nuts: "亮牌两对+过牌后面对下注时加注的比例（摊牌样本）",
-  hit_then_lead: "亮牌样本：上一街跟注且本街成牌提升后选择领打的比例（成牌后是否开火，不是领打含牌力）",
-  shown_lead_was_hit: "亮牌样本：买牌后领打里，成牌提升或两对+的比例（才是领打是否命中）",
+  slowplay_two_pair_plus: "相对牌面两对+（底牌抬升成手）时过牌或跟注的比例（摊牌样本）",
+  checked_strong_pair: "相对牌面顶对/超对且可开火时选择过牌的比例（摊牌样本）",
+  delayed_value: "翻牌过牌后，转/河持相对牌面两对+时主动开火的比例（摊牌样本）",
+  check_raise_nuts: "相对牌面两对+过牌后面对下注时加注的比例（摊牌样本）",
+  hit_then_lead: "亮牌样本：上一街跟注且本街相对牌面成牌提升后选择领打的比例",
+  shown_lead_was_hit: "亮牌样本：买牌后领打里，相对牌面成牌提升或两对+的比例",
   miss_then_give_up: "买听牌后未中时过牌或弃牌的比例（摊牌样本）",
-  shown_air_aggression: "亮牌进攻动作里持空气的比例（摊牌样本）",
-  river_air_bluff: "河牌进攻的亮牌样本里持高牌的比例",
+  shown_air_aggression: "亮牌进攻里相对牌面没有成手（含打公共牌）的比例（摊牌样本）",
+  river_air_bluff: "河牌进攻的亮牌样本里持高牌或打公共牌的比例",
   bet_aversion: "翻后无人下注、可以开火时选择过牌的比例",
   call_vs_raise: "翻后面对加注时选择跟注（相对弃牌/再加注）的比例",
   overcall_overbet: "面对超过底池的下注时跟注而非弃牌的比例",
   draw_complete_donk: "亮牌样本：听牌在本街完成后 OOP 领打的比例",
   bluff_size_split: "亮牌空气进攻里尺寸不超过 40% 底池的比例",
   low_wsd_large_pot: "大底池走到摊牌且净额≤0 的比例（摊牌样本）",
-  thin_value_medium: "亮牌顶对/超对/中间对、转河可开火时选择进攻的比例（摊牌样本）",
-  weak_pays_big: "亮牌空气/底对面对大池下注时跟注而非弃牌的比例（摊牌样本）",
+  thin_value_medium: "亮牌顶对/超对/中间对（相对牌面）、转河可开火时选择进攻的比例（摊牌样本）",
+  weak_pays_big: "亮牌空气/底对/打公共牌面对大池下注时跟注而非弃牌的比例（摊牌样本）",
   medium_calls_big: "亮牌顶对/中间对面对大池下注时跟注而非弃牌的比例（摊牌样本）",
-  river_weak_call: "亮牌空气/底对面对河牌下注时跟注而非弃牌的比例（摊牌样本）",
+  river_weak_call: "亮牌空气/底对/打公共牌面对河牌下注时跟注而非弃牌的比例（摊牌样本）",
 };
 function quickMetricTitle(key, metric = null) {
   const name = quickMetricNames[key] || metricNames[key] || key;
@@ -564,13 +564,36 @@ function renderQuickMetric(profile, keys) {
     <em><b>${esc(deviation.degreeLabel)}</b> ${esc(signedPoints(deviation.delta))}<i>pp</i> · n${esc(metric.opportunities || 0)}</em>
   </span>`;
 }
+const TONE_BY_FAMILY = {
+  stick: "loose", scared: "tight", fold: "tight", trap: "tight",
+  aggro: "aggro", air: "aggro", drawlead: "aggro",
+};
+const TONE_HINT = {
+  tight: "偏紧/被动 · 过牌可偷，其主动线更像价值",
+  loose: "偏松/黏 · 少诈唬，价值加频加厚",
+  aggro: "偏凶 · 多抓诈、轻跟",
+};
+function tagTone(tag) {
+  return tag.tone || TONE_BY_FAMILY[tag.family] || "tight";
+}
+function renderPortraitToneLegend() {
+  return `<div class="portrait-tone-legend" title="色相=剥削方向，深浅=置信度">
+    <span class="tone-tight">蓝 · 紧/被动</span>
+    <span class="tone-loose">黄 · 松/黏</span>
+    <span class="tone-aggro">红 · 凶</span>
+    <span class="tone-shade">浅=初判 · 深=可信</span>
+  </div>`;
+}
 function renderPortraitTags(tags = []) {
   return tags.map(tag => {
     const showdown = tag.selection_bias === "showdown_only";
     const bias = showdown ? " · 摊牌样本有偏" : "";
+    const tone = tagTone(tag);
+    const toneHint = TONE_HINT[tone] || TONE_HINT.tight;
+    const conf = tag.confidence || "low";
     return `
-    <span class="portrait-tag family-${esc(tag.family || "other")} confidence-${esc(tag.confidence || "low")}${showdown ? " showdown-only" : ""}"
-      title="${esc(`${tag.exploit || ""} · n${tag.opportunities || 0} · ${tag.delta_pp >= 0 ? "+" : ""}${tag.delta_pp ?? ""}pp${bias}`)}">
+    <span class="portrait-tag tone-${esc(tone)} confidence-${esc(conf)}${showdown ? " showdown-only" : ""}"
+      title="${esc(`${toneHint} · ${confidenceLabel(conf)}置信度 · ${tag.exploit || ""} · n${tag.opportunities || 0} · ${tag.delta_pp >= 0 ? "+" : ""}${tag.delta_pp ?? ""}pp${bias}`)}">
       ${esc(tag.label)}
     </span>`;
   }).join("");
@@ -876,7 +899,7 @@ function renderHand(hand, options = {}) {
       ${linkPlayers ? `<div class="table-center" role="region" aria-label="公共牌">
         <span>${esc(streetNames[boardStreet] || "BOARD")}</span>
         <div class="board table-board">${(hand.board || []).length ? cards(hand.board) : "<small>等待公共牌</small>"}</div>
-        <small>底池 ${esc(hand.pot ?? "—")} · 左 ← 牌桌方位 → 右</small>
+        <small>底池 ${esc(hand.pot ?? "—")} · 左 ← 牌桌方位 → 右 · 蓝紧/被动 · 黄松/黏 · 红凶 · 越深越可信</small>
       </div>` : ""}
       ${players.map(player => renderHandPlayer(player, {
         linkPlayers,
@@ -1947,7 +1970,7 @@ function renderProfile(player) {
       <strong class="style-name">${esc(style.label || "样本积累中")}</strong>
       <p>${esc(style.summary || "尚未形成稳定风格标签。")}</p>
       <span class="confidence-chip">${esc(confidenceLabel(style.confidence || "very_low"))}置信度</span>
-      ${portrait ? `<div class="player-portrait-tags">${portrait}</div>` : ""}
+      ${portrait ? `<div class="player-portrait-tags">${portrait}</div>${renderPortraitToneLegend()}` : ""}
     </div>
     <div class="metric-panel">
       <p class="profile-label">机会率后验 · 按街</p>

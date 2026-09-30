@@ -369,6 +369,76 @@ def test_showdown_splits_trap_from_scared_pair_check():
     assert "slowplay_two_pair_plus" not in scared_metrics
 
 
+def test_showdown_tags_require_hole_to_beat_the_board():
+    board_made = _hu_hand(
+        "board-two-pair",
+        ["7h", "7c", "2d", "2s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+        ],
+        holes={1: ["9c", "8d"]},
+    )
+    board_metrics = _metrics_at(board_made, 5)
+    assert "slowplay_two_pair_plus" not in board_metrics
+    assert "checked_strong_pair" not in board_metrics
+    assert "thin_value_medium" not in board_metrics
+
+    second_pair = _hu_hand(
+        "second-pair-check",
+        ["As", "8c", "3d"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+        ],
+        holes={1: ["8h", "7d"]},
+    )
+    second_metrics = _metrics_at(second_pair, 3)
+    assert "checked_strong_pair" not in second_metrics
+    assert "slowplay_two_pair_plus" not in second_metrics
+
+    playing_pair = _hu_hand(
+        "board-pair",
+        ["Kh", "Kc", "Qd"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+        ],
+        holes={1: ["8d", "3s"]},
+    )
+    pair_metrics = _metrics_at(playing_pair, 3)
+    assert "checked_strong_pair" not in pair_metrics
+    assert "slowplay_two_pair_plus" not in pair_metrics
+
+    streets = [
+        Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+        Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+        Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+        Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+        Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+        Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+        Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+    ]
+    board_hearts = ["5h", "7h", "9h", "Jh", "3h"]
+    nut_flush = _metrics_at(
+        _hu_hand("nut-flush", board_hearts, streets, holes={1: ["Ah", "2c"]}),
+        7,
+    )
+    assert nut_flush["slowplay_two_pair_plus"] is True
+    board_flush = _metrics_at(
+        _hu_hand("board-flush", board_hearts, streets, holes={1: ["2c", "4d"]}),
+        7,
+    )
+    assert "slowplay_two_pair_plus" not in board_flush
+    assert board_flush.get("river_air_bluff") is not True
+    assert "checked_strong_pair" not in board_flush
+
+
 def test_showdown_delayed_value_and_check_raise_nuts():
     delayed = _hu_hand(
         "delayed",

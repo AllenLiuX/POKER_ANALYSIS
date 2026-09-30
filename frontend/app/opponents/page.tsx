@@ -481,7 +481,18 @@ function TagLegend() {
       <summary className="cursor-pointer select-none text-sm font-medium text-neutral-300">
         标签说明 · 共 {DEV_TAG_LEGEND.length} 种偏移读牌标签
         <span className="ml-2 text-xs font-normal text-neutral-500">
-          （颜色区分方向；带「初」为小样本初判，仅供参考）
+          （色相=方向 · 浅=初判 · 深=可信；带「初」为小样本）
+        </span>
+        <span className="mt-2 flex flex-wrap gap-2 text-[11px] font-normal">
+          {groups.map((cat) => (
+            <span
+              key={cat}
+              className={`inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 ring-1 ${DEVCAT_CLS[cat]}`}
+            >
+              <span className={`inline-block size-1.5 rounded-full ${DEVCAT_DOT[cat]}`} />
+              {DEVCAT_NAME[cat]}
+            </span>
+          ))}
         </span>
       </summary>
       <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-3">

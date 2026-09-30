@@ -71,6 +71,9 @@ def test_showdown_tags_mark_selection_bias_and_stay_multilabel():
     assert "hit_then_lead" in by_id
     assert by_id["slowplay_two_pair_plus"]["selection_bias"] == "showdown_only"
     assert by_id["shown_air_aggression"]["family"] == "air"
+    assert by_id["shown_air_aggression"]["tone"] == "aggro"
+    assert by_id["slowplay_two_pair_plus"]["tone"] == "tight"
+    assert by_id["hit_then_lead"]["tone"] == "aggro"
 
 
 def test_remaining_catalog_tags_fire():
@@ -85,8 +88,9 @@ def test_remaining_catalog_tags_fire():
         }
     )
     by_id = {tag["id"]: tag for tag in tags}
-    assert "call_vs_raise" in by_id
-    assert "bet_aversion" in by_id
+    assert by_id["call_vs_raise"]["tone"] == "loose"
+    assert by_id["bet_aversion"]["tone"] == "tight"
+    assert by_id["draw_complete_donk"]["tone"] == "tight"
     assert "overcall_overbet" in by_id
     assert "draw_complete_donk" in by_id
     assert by_id["draw_complete_donk"]["selection_bias"] == "showdown_only"
@@ -116,6 +120,11 @@ def test_showdown_strength_band_tags_fire():
         }
     )
     inverse_ids = {tag["id"] for tag in inverse}
+    inverse_by_id = {tag["id"]: tag for tag in inverse}
     assert "checks_medium" in inverse_ids
     assert "folds_weak_big" in inverse_ids
+    assert inverse_by_id["checks_medium"]["tone"] == "tight"
+    assert inverse_by_id["folds_weak_big"]["tone"] == "tight"
+    assert by_id["thin_value_medium"]["tone"] == "aggro"
+    assert by_id["weak_pays_big"]["tone"] == "loose"
 

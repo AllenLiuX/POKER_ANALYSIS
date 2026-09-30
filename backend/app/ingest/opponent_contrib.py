@@ -480,7 +480,8 @@ def _apply_showdown_portrait(
         else None
     )
     two_pair_plus = _shown_two_pair_plus(current)
-    pair_only = current.get("made") == "Pair" and not current.get("board_dominated")
+    pair_kind = current.get("pair_kind")
+    strong_pair = pair_kind in {"overpair", "top_pair", "top_pair_weak"}
     air = _shown_air(current, street)
     hit = _shown_hit(previous, current)
     aggressive = kind in _AGGR_ACTS
@@ -492,7 +493,7 @@ def _apply_showdown_portrait(
         counters["slowplay_two_pair_plus"]["n"] += 1
         if kind in {"check", "call"}:
             counters["slowplay_two_pair_plus"]["k"] += 1
-    if pair_only and can_open and kind in _OPEN_ACTS:
+    if strong_pair and can_open and kind in _OPEN_ACTS:
         counters["checked_strong_pair"]["n"] += 1
         if kind == "check":
             counters["checked_strong_pair"]["k"] += 1
@@ -538,7 +539,7 @@ def _apply_showdown_portrait(
             counters["shown_air_aggression"]["k"] += 1
         if street == "河牌":
             counters["river_air_bluff"]["n"] += 1
-            if current.get("made") == "High Card":
+            if current.get("made") == "High Card" or current.get("board_dominated"):
                 counters["river_air_bluff"]["k"] += 1
         if air and street_start > 0:
             frac = _action_amount(first_act) / street_start
@@ -551,6 +552,7 @@ def _apply_showdown_portrait(
         and previous is not None
         and _shown_made_draw(previous)
         and current.get("made") in _COMPLETED_DRAW
+        and not current.get("board_dominated")
         and kind in _OPEN_ACTS
     ):
         counters["draw_complete_donk"]["n"] += 1
@@ -634,7 +636,10 @@ def _shown_made_draw(info: Optional[Dict]) -> bool:
 
 
 def _shown_air(info: Optional[Dict], street: str) -> bool:
-    if not info or info.get("made") != "High Card":
+    if not info:
+        return False
+    playing_board = bool(info.get("board_dominated")) or info.get("made") == "High Card"
+    if not playing_board:
         return False
     if street == "河牌":
         return True
@@ -643,6 +648,8 @@ def _shown_air(info: Optional[Dict], street: str) -> bool:
 
 
 def _shown_hit(previous: Optional[Dict], current: Dict) -> bool:
+    if current.get("board_dominated"):
+        return False
     if previous is None:
         return _shown_two_pair_plus(current)
     prev_rank = _MADE_RANK.get(str(previous.get("made") or ""), 0)

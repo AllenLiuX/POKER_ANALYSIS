@@ -601,7 +601,12 @@ def _showdown_opportunities(
         else None
     )
     two_pair_plus = _is_two_pair_plus(current)
-    pair_only = current.get("category") == "pair"
+    pair_kind = (
+        _pair_kind(hole_cards, board[: STREET_CARD_COUNT.get(action.street, 0)])
+        if current.get("category") == "pair"
+        else None
+    )
+    strong_pair = pair_kind in {"overpair", "top_pair"}
     air = _is_air(current, action.street)
     hit = _is_hit(previous, current)
     called_previous = _seat_called(previous_actions, action.seat)
@@ -613,7 +618,7 @@ def _showdown_opportunities(
         result.append(
             Opportunity("slowplay_two_pair_plus", kind in {"check", "call"})
         )
-    if pair_only and can_open_bet:
+    if strong_pair and can_open_bet:
         result.append(Opportunity("checked_strong_pair", kind == "check"))
     if (
         two_pair_plus
@@ -768,14 +773,28 @@ def _category_uses_hole(
     board: Sequence[str],
     features: Mapping[str, Any],
 ) -> bool:
-    if len(board) < 5:
+    """True only if hole cards raise made-hand quality above the board itself.
+
+    Pair through full house / quads need a higher *category* than the board —
+    an Ace kicker on board two pair is still playing the board. Straights and
+    flushes compare the full rank tuple so a nut flush beats a board flush.
+    """
+
+    if len(board) < 3:
         return True
     try:
         board_only = hand_features([], board)
     except (TypeError, ValueError, IndexError, KeyError):
         return True
-    return int(features.get("category_rank") or 0) > int(
-        board_only.get("category_rank") or 0
+    hero_cat = int(features.get("category_rank") or 0)
+    board_cat = int(board_only.get("category_rank") or 0)
+    if hero_cat != board_cat:
+        return hero_cat > board_cat
+    category = str(features.get("category") or "")
+    if category not in {"straight", "flush", "straight_flush"}:
+        return False
+    return tuple(features.get("rank") or (hero_cat,)) > tuple(
+        board_only.get("rank") or (board_cat,)
     )
 
 

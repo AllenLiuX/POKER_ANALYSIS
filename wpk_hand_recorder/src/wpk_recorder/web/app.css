@@ -473,26 +473,57 @@ main { position: relative; padding: 18px 2vw 48px; }
   margin: 6px 0 2px;
 }
 .portrait-tag {
+  --tag-hue: var(--muted);
+  --tag-ink: var(--muted);
+  --tag-line: var(--line);
+  --tag-fill: transparent;
   display: inline-flex;
   padding: 3px 6px;
-  border: 1px solid var(--line);
-  color: var(--muted);
+  border: 1px solid var(--tag-line);
+  color: var(--tag-ink);
+  background: var(--tag-fill);
   font: 600 10px/1.2 ui-monospace, monospace;
 }
-.portrait-tag.family-stick { border-color: color-mix(in srgb, #d97706 55%, var(--line)); color: #fbbf24; }
-.portrait-tag.family-scared { border-color: color-mix(in srgb, #38bdf8 55%, var(--line)); color: #7dd3fc; }
-.portrait-tag.family-drawlead { border-color: color-mix(in srgb, #c084fc 55%, var(--line)); color: #e9d5ff; }
-.portrait-tag.family-fold { border-color: color-mix(in srgb, #94a3b8 55%, var(--line)); color: #cbd5e1; }
-.portrait-tag.family-aggro { border-color: color-mix(in srgb, #f87171 55%, var(--line)); color: #fca5a5; }
-.portrait-tag.family-trap { border-color: color-mix(in srgb, #34d399 55%, var(--line)); color: #6ee7b7; }
-.portrait-tag.family-air { border-color: color-mix(in srgb, #fb7185 55%, var(--line)); color: #fda4af; }
+/* 色相=剥削方向；深浅=置信度（浅=样本少初判，深=更可信） */
+.portrait-tag.tone-tight { --tag-hue: #38bdf8; --tag-ink: #7dd3fc; }
+.portrait-tag.tone-loose { --tag-hue: #d97706; --tag-ink: #fbbf24; }
+.portrait-tag.tone-aggro { --tag-hue: #f87171; --tag-ink: #fca5a5; }
+.portrait-tag.confidence-low {
+  --tag-line: color-mix(in srgb, var(--tag-hue) 26%, var(--line));
+  --tag-ink: color-mix(in srgb, var(--tag-hue) 52%, var(--muted));
+  --tag-fill: transparent;
+  font-weight: 500;
+}
+.portrait-tag.confidence-medium {
+  --tag-line: color-mix(in srgb, var(--tag-hue) 58%, var(--line));
+  --tag-ink: color-mix(in srgb, var(--tag-hue) 88%, white);
+  --tag-fill: color-mix(in srgb, var(--tag-hue) 18%, transparent);
+}
+.portrait-tag.confidence-high {
+  --tag-line: color-mix(in srgb, var(--tag-hue) 88%, var(--line));
+  --tag-ink: color-mix(in srgb, var(--tag-hue) 96%, white);
+  --tag-fill: color-mix(in srgb, var(--tag-hue) 36%, transparent);
+  font-weight: 700;
+}
+.portrait-tone-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 4px 0 2px;
+  color: var(--muted);
+  font: 600 8px/1.2 ui-monospace, monospace;
+}
+.portrait-tone-legend span { opacity: .9; }
+.portrait-tone-legend .tone-tight { color: #7dd3fc; }
+.portrait-tone-legend .tone-loose { color: #fbbf24; }
+.portrait-tone-legend .tone-aggro { color: #fca5a5; }
+.portrait-tone-legend .tone-shade { color: var(--muted); font-weight: 500; }
 .portrait-tag.showdown-only::after {
   content: "摊";
   margin-left: 4px;
   opacity: .7;
   font-weight: 700;
 }
-.portrait-tag.confidence-low { opacity: .72; }
 .player-profile-sample {
   flex: 0 0 auto;
   color: var(--muted);

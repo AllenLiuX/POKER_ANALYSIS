@@ -20,6 +20,23 @@ CONFIDENCE_RANK = {
 }
 
 
+# tight=偏紧/被动, loose=偏松/黏, aggro=偏凶. HUD color follows this, not family.
+TONE_BY_FAMILY = {
+    "stick": "loose",
+    "scared": "tight",
+    "fold": "tight",
+    "trap": "tight",
+    "aggro": "aggro",
+    "air": "aggro",
+    "drawlead": "aggro",
+}
+TONE_LABEL = {
+    "tight": "偏紧/被动",
+    "loose": "偏松/黏",
+    "aggro": "偏凶",
+}
+
+
 @dataclass(frozen=True)
 class TagSpec:
     tag_id: str
@@ -34,6 +51,7 @@ class TagSpec:
     high_n: int = 40
     delta_pp: float = 8.0
     showdown_only: bool = False
+    tone: Optional[str] = None  # tight | loose | aggro; default from family
 
 
 TAG_SPECS: Sequence[TagSpec] = (
@@ -173,7 +191,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="大牌蹲坑",
         metric="slowplay_two_pair_plus",
         direction="high",
-        exploit="过牌/跟注含坚果，少空枪过牌加注，薄价值可以打",
+        exploit="相对牌面两对+（底牌抬升成手）过牌/跟注偏多，少空枪过牌加注",
         streets=("flop", "turn", "river"),
         min_n=4,
         medium_n=10,
@@ -187,7 +205,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="一对不敢打",
         metric="checked_strong_pair",
         direction="high",
-        exploit="过牌一对偏多，可薄价值；其主动下注更像两对+",
+        exploit="相对牌面顶对/超对可开火时爱过牌，可薄打；其主动下注更像两对+",
         streets=("flop", "turn", "river"),
         min_n=4,
         medium_n=10,
@@ -201,7 +219,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="翻牌过牌后延迟价值",
         metric="delayed_value",
         direction="high",
-        exploit="转河开火更像价值，少当空气抓",
+        exploit="翻牌过牌后，转/河相对牌面两对+开火更像价值，少当空气抓",
         streets=("turn", "river"),
         min_n=4,
         medium_n=10,
@@ -215,7 +233,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="过牌加注拿坚果",
         metric="check_raise_nuts",
         direction="high",
-        exploit="面对 CR 少跟空气，除非有阻断/坚果",
+        exploit="相对牌面两对+的过牌加注偏多，面对 CR 少跟空气",
         streets=("flop", "turn", "river"),
         min_n=3,
         medium_n=8,
@@ -229,7 +247,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="命中后领打",
         metric="hit_then_lead",
         direction="high",
-        exploit="成牌后爱领打，过牌更像没中；领打是否价值看亮牌「领打是命中」",
+        exploit="相对牌面成牌提升后爱领打；领打是否价值看「领打亮牌是命中」",
         streets=("flop", "turn", "river"),
         min_n=4,
         medium_n=10,
@@ -243,7 +261,8 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="领打亮牌是命中",
         metric="shown_lead_was_hit",
         direction="high",
-        exploit="亮牌领打里成牌偏多，面对其领打少空枪反打、按价值防守",
+        exploit="亮牌领打里相对牌面成牌偏多，少空枪反打、按价值防守",
+        tone="tight",
         streets=("flop", "turn", "river"),
         min_n=4,
         medium_n=10,
@@ -285,7 +304,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="亮牌进攻偏空气",
         metric="shown_air_aggression",
         direction="high",
-        exploit="多抓诈、轻跟；其过牌则更像放弃",
+        exploit="多抓诈、轻跟；打公共牌/没抬升成手也算空气",
         streets=("flop", "turn", "river"),
         min_n=5,
         medium_n=12,
@@ -300,6 +319,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         metric="shown_air_aggression",
         direction="low",
         exploit="其下注当价值，少抓空气",
+        tone="tight",
         streets=("flop", "turn", "river"),
         min_n=5,
         medium_n=12,
@@ -328,6 +348,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         metric="river_air_bluff",
         direction="low",
         exploit="河牌只跟坚果/阻断，少 spew 抓诈",
+        tone="tight",
         streets=("river",),
         min_n=4,
         medium_n=10,
@@ -381,6 +402,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         metric="draw_complete_donk",
         direction="high",
         exploit="donk 当价值，check-raise 其领打要更紧",
+        tone="tight",
         streets=("flop", "turn", "river"),
         min_n=3,
         medium_n=8,
@@ -436,7 +458,7 @@ TAG_SPECS: Sequence[TagSpec] = (
         label="中等牌力爱薄打",
         metric="thin_value_medium",
         direction="high",
-        exploit="一对转河常开火，过牌更弱可多偷；其主动下注少空气",
+        exploit="一对/超对转河常开火，过牌更弱可多偷；其主动下注少空气",
         streets=("turn", "river"),
         min_n=4,
         medium_n=10,
@@ -682,9 +704,12 @@ def _evaluate_spec(
     score = abs(delta) * min(1.0, (trials / 30) ** 0.5)
     if separated:
         score += 8.0
+    tone = spec.tone or TONE_BY_FAMILY.get(spec.family, "tight")
     return {
         "id": spec.tag_id,
         "family": spec.family,
+        "tone": tone,
+        "tone_label": TONE_LABEL.get(tone, TONE_LABEL["tight"]),
         "label": spec.label,
         "exploit": spec.exploit,
         "metric": spec.metric,

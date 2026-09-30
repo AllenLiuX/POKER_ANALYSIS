@@ -433,27 +433,27 @@ const DEV_RULES: DevRule[] = [
   },
   {
     key: "slowplayTwoPairPlus", get: (p) => p.slowplayTwoPairPlus, base: BASE.slowplayTwoPairPlus, gate: 4,
-    high: { t: 0.48, label: "大牌蹲坑", cat: "tight", hint: "摊牌样本：过牌/跟注含坚果，少空枪过牌加注。" },
+    high: { t: 0.48, label: "大牌蹲坑", cat: "tight", hint: "摊牌样本：相对牌面两对+过牌/跟注偏多，少空枪过牌加注。" },
   },
   {
     key: "checkedStrongPair", get: (p) => p.checkedStrongPair, base: BASE.checkedStrongPair, gate: 4,
-    high: { t: 0.58, label: "一对不敢打", cat: "tight", hint: "摊牌样本：过牌一对偏多，可薄价值；其主动下注更像两对+。" },
+    high: { t: 0.58, label: "一对不敢打", cat: "tight", hint: "摊牌样本：相对牌面顶对/超对爱过牌，可薄打。" },
   },
   {
     key: "delayedValue", get: (p) => p.delayedValue, base: BASE.delayedValue, gate: 4,
-    high: { t: 0.68, label: "翻牌过牌后延迟价值", cat: "aggro", hint: "摊牌样本：转河开火更像价值，少当空气抓。" },
+    high: { t: 0.68, label: "翻牌过牌后延迟价值", cat: "aggro", hint: "摊牌样本：转河相对牌面两对+开火更像价值，少当空气抓。" },
   },
   {
     key: "checkRaiseNuts", get: (p) => p.checkRaiseNuts, base: BASE.checkRaiseNuts, gate: 3,
-    high: { t: 0.40, label: "过牌加注拿坚果", cat: "aggro", hint: "摊牌样本：面对 CR 少跟空气，除非有阻断/坚果。" },
+    high: { t: 0.40, label: "过牌加注拿坚果", cat: "aggro", hint: "摊牌样本：相对牌面两对+的 CR 偏多，面对 CR 少跟空气。" },
   },
   {
     key: "hitThenLead", get: (p) => p.hitThenLead, base: BASE.hitThenLead, gate: 4,
-    high: { t: 0.68, label: "命中后领打", cat: "aggro", hint: "摊牌样本：成牌后爱领打，过牌更像没中；领打是否价值看「领打亮牌是命中」。" },
+    high: { t: 0.68, label: "命中后领打", cat: "aggro", hint: "摊牌样本：相对牌面成牌提升后爱领打；领打是否价值看「领打亮牌是命中」。" },
   },
   {
     key: "shownLeadWasHit", get: (p) => p.shownLeadWasHit, base: BASE.shownLeadWasHit, gate: 4,
-    high: { t: 0.74, label: "领打亮牌是命中", cat: "aggro", hint: "摊牌样本：亮牌领打里成牌偏多，少空枪反打、按价值防守。" },
+    high: { t: 0.74, label: "领打亮牌是命中", cat: "aggro", hint: "摊牌样本：亮牌领打里相对牌面成牌偏多，少空枪反打、按价值防守。" },
     low: { t: 0.45, label: "领打偏空气", cat: "aggro", hint: "摊牌样本：可加注惩罚领打，尤其在砖块公牌。" },
   },
   {
@@ -462,7 +462,7 @@ const DEV_RULES: DevRule[] = [
   },
   {
     key: "shownAirAggression", get: (p) => p.shownAirAggression, base: BASE.shownAirAggression, gate: 5,
-    high: { t: 0.32, label: "亮牌进攻偏空气", cat: "aggro", hint: "摊牌样本：多抓诈、轻跟。" },
+    high: { t: 0.32, label: "亮牌进攻偏空气", cat: "aggro", hint: "摊牌样本：多抓诈、轻跟；打公共牌也算空气。" },
     low: { t: 0.12, label: "进攻很少空气", cat: "tight", hint: "摊牌样本：其下注当价值，少抓空气。" },
   },
   {
@@ -497,12 +497,12 @@ const DEV_RULES: DevRule[] = [
   },
   {
     key: "thinValueMedium", get: (p) => p.thinValueMedium, base: BASE.thinValueMedium, gate: 4,
-    high: { t: 0.55, label: "中等牌力爱薄打", cat: "aggro", hint: "摊牌样本：一对转河常开火，过牌更弱可多偷。" },
-    low: { t: 0.32, label: "中等牌力不打薄价值", cat: "tight", hint: "摊牌样本：过牌含顶对，可薄打；其下注更像两对+。" },
+    high: { t: 0.55, label: "中等牌力爱薄打", cat: "aggro", hint: "摊牌样本：相对牌面顶对/超对/中间对转河常开火，过牌更弱可多偷。" },
+    low: { t: 0.32, label: "中等牌力不打薄价值", cat: "tight", hint: "摊牌样本：过牌含相对顶对，可薄打；其下注更像两对+。" },
   },
   {
     key: "weakPaysBig", get: (p) => p.weakPaysBig, base: BASE.weakPaysBig, gate: 4,
-    high: { t: 0.50, label: "弱牌大池爱付钱", cat: "loose", hint: "摊牌样本：垃圾/底对也跟大池，少诈唬、价值加厚。" },
+    high: { t: 0.50, label: "弱牌大池爱付钱", cat: "loose", hint: "摊牌样本：空气/底对/打公共牌也跟大池，少诈唬、价值加厚。" },
     low: { t: 0.22, label: "弱牌大池会弃", cat: "tight", hint: "摊牌样本：大池弱牌会放，可打合理阻断诈唬。" },
   },
   {
@@ -672,9 +672,9 @@ export function freqRows(p: CloudProfile): FreqRow[] {
     { label: "河牌大注跟住", cell: p.riverStation, base: BASE.riverStation, hint: "越高越少河牌诈唬" },
     { label: "IP 河牌过牌", cell: p.ipRiverCheckback, base: BASE.ipRiverCheckback, hint: "越高越可薄打" },
     { label: "面对二枪弃牌", cell: p.foldToBarrel, base: BASE.foldToBarrel, hint: "越高越可二枪" },
-    { label: "大牌蹲坑（摊牌）", cell: p.slowplayTwoPairPlus, base: BASE.slowplayTwoPairPlus, hint: "越高越少空枪过牌加注" },
-    { label: "一对不敢打（摊牌）", cell: p.checkedStrongPair, base: BASE.checkedStrongPair, hint: "越高越可薄打过牌" },
-    { label: "命中后领打（摊牌）", cell: p.hitThenLead, base: BASE.hitThenLead, hint: "越高表示成牌后越爱领打" },
+    { label: "大牌蹲坑（摊牌）", cell: p.slowplayTwoPairPlus, base: BASE.slowplayTwoPairPlus, hint: "越高表示相对牌面两对+越爱过牌/跟注" },
+    { label: "一对不敢打（摊牌）", cell: p.checkedStrongPair, base: BASE.checkedStrongPair, hint: "越高表示相对牌面顶对/超对越爱过牌" },
+    { label: "命中后领打（摊牌）", cell: p.hitThenLead, base: BASE.hitThenLead, hint: "越高表示相对牌面成牌后越爱领打" },
     { label: "亮牌进攻偏空气", cell: p.shownAirAggression, base: BASE.shownAirAggression, hint: "越高越可抓诈" },
     { label: "河牌空气诈唬", cell: p.riverAirBluff, base: BASE.riverAirBluff, hint: "越高越可河牌抓诈" },
     { label: "有开火机会却过牌", cell: p.betAversion, base: BASE.betAversion, hint: "越高越可偷过牌" },
@@ -683,8 +683,8 @@ export function freqRows(p: CloudProfile): FreqRow[] {
     { label: "听牌完成领打（摊牌）", cell: p.drawCompleteDonk, base: BASE.drawCompleteDonk, hint: "越高越把 donk 当价值" },
     { label: "空气小注（摊牌）", cell: p.bluffSizeSplit, base: BASE.bluffSizeSplit, hint: "越高越抓小注、信大注" },
     { label: "大池摊牌常输", cell: p.lowWsdLargePot, base: BASE.lowWsdLargePot, hint: "越高越继续加压价值" },
-    { label: "中等牌力薄打（摊牌）", cell: p.thinValueMedium, base: BASE.thinValueMedium, hint: "越高表示一对爱拿薄价值" },
-    { label: "弱牌大池付钱（摊牌）", cell: p.weakPaysBig, base: BASE.weakPaysBig, hint: "越高越少诈唬、价值加厚" },
+    { label: "中等牌力薄打（摊牌）", cell: p.thinValueMedium, base: BASE.thinValueMedium, hint: "越高表示相对牌面顶对/中间对爱拿薄价值" },
+    { label: "弱牌大池付钱（摊牌）", cell: p.weakPaysBig, base: BASE.weakPaysBig, hint: "越高表示空气/底对/打公共牌越爱跟大池" },
     { label: "一对大池跟注（摊牌）", cell: p.mediumCallsBig, base: BASE.mediumCallsBig, hint: "越高越继续加压价值" },
     { label: "河牌弱牌跟注（摊牌）", cell: p.riverWeakCall, base: BASE.riverWeakCall, hint: "越高越河牌价值加厚" },
   ];

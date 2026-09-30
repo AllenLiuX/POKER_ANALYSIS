@@ -24,7 +24,7 @@ from .protocol import ProtocolMapper
 from .quality import assess_hand
 
 
-OPPORTUNITY_SCHEMA_VERSION = "6"
+OPPORTUNITY_SCHEMA_VERSION = "7"
 STARTUP_REPAIR_VERSION = "1"
 
 

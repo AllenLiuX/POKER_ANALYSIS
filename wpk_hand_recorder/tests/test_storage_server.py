@@ -218,7 +218,7 @@ def test_opportunity_schema_upgrade_rebuilds_historical_metrics(tmp_path):
     upgraded.close()
 
     assert tuple(metric) == (1,)
-    assert tuple(version) == ("6",)
+    assert tuple(version) == ("7",)
     assert "call_then_lead" in rebuilt
     assert "missed_initiative" in rebuilt
     assert "bet_aversion" in rebuilt
