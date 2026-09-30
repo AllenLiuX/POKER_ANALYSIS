@@ -1574,6 +1574,7 @@ def _profile_reasoning_context(
             "wtsd_pct": profile.get("wtsd_pct"),
             "w_sd_pct": profile.get("w_sd_pct"),
             "local_tendencies": profile.get("tendencies") or [],
+            "portrait_tags": profile.get("portrait_tags") or [],
             "caveats": profile.get("profile_caveats") or [],
             "position_metrics": position_metrics,
             "bet_sizing": profile.get("sizing") or {},

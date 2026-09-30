@@ -24,7 +24,7 @@ from .storage import RecorderStore
 from .squid import SquidStateMachine
 
 BINDING_NAME = "__wpkRecorderEmit"
-HOOK_VERSION = 9
+HOOK_VERSION = 10
 HOOK_WATCHDOG_INTERVAL = 5.0
 _HOOK_HEALTH_EXPRESSION = f"""
 (() => {{
@@ -424,7 +424,7 @@ class CDPRecorder:
                     if self.active_squid_round_id:
                         current.game_mode = "squid"
                         current.squid_round_id = self.active_squid_round_id
-                    if event.get("event") == "decision_request":
+                    if self._should_refresh_live_decision(current, event):
                         decision = decision_state_from_hand(current)
                         if decision is not None:
                             self.store.save_decision_state(decision)
@@ -436,6 +436,23 @@ class CDPRecorder:
                     self.store.save_hand(hand)
                     self.store.append_live(render_hand_text(hand))
                     self.hands += 1
+
+    @staticmethod
+    def _should_refresh_live_decision(
+        current: Any,
+        event: Dict[str, Any],
+    ) -> bool:
+        pending = getattr(current, "pending_decision", None)
+        if pending is None:
+            return False
+        kind = event.get("event")
+        if kind == "decision_request":
+            return True
+        if kind != "player" or not pending.cards:
+            return False
+        if event.get("is_hero") is True:
+            return True
+        return pending.seat is not None and event.get("seat") == pending.seat
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -460,25 +477,67 @@ def _event_hook_script() -> str:
     const rank = card % 100;
     return Number.isInteger(card) && suit >= 1 && suit <= 4 && rank >= 1 && rank <= 13;
   }};
+  const readHoleCards = value => {{
+    if (Array.isArray(value) && value.length === 2 && value.every(validCard)) {{
+      return value.slice();
+    }}
+    return null;
+  }};
+  const cardsFromObject = value => {{
+    if (!value || typeof value !== "object") return null;
+    return (
+      readHoleCards(value.handCards)
+      || readHoleCards(value._handCards)
+      || readHoleCards(value.publicCards)
+      || readHoleCards(value.pokers)
+    );
+  }};
   const currentHeroCards = currentUserId => {{
     if (currentUserId == null || !window.cc || !cc.director) return null;
     try {{
       const scene = cc.director.getScene();
       const direct = window.cc.find ? cc.find("gameContr", scene) : null;
       const queue = direct ? [direct] : [scene];
+      let controller = null;
       while (queue.length) {{
         const node = queue.shift();
         for (const component of (node && node._components) || []) {{
-          if (!Array.isArray(component._dealList)) continue;
-          const hero = component._dealList.find(
-            player => player && String(player.userId) === String(currentUserId)
-          );
-          const cards = hero && hero.handCards;
-          if (Array.isArray(cards) && cards.length === 2 && cards.every(validCard)) {{
-            return cards.slice();
+          if (Array.isArray(component._dealList)) {{
+            controller = component;
+            const hero = component._dealList.find(
+              player => player && String(player.userId) === String(currentUserId)
+            );
+            const cards = cardsFromObject(hero);
+            if (cards) return cards;
+          }}
+          if (
+            component.userId != null
+            && String(component.userId) === String(currentUserId)
+          ) {{
+            const cards = cardsFromObject(component);
+            if (cards) return cards;
           }}
         }}
         if (!direct) queue.push(...((node && node.children) || []));
+      }}
+      const seats = controller && controller._gameUI && controller._gameUI.seats;
+      if (Array.isArray(seats)) {{
+        for (const root of seats) {{
+          let userId = null;
+          let found = null;
+          const seatQueue = [root];
+          while (seatQueue.length) {{
+            const node = seatQueue.shift();
+            for (const component of (node && node._components) || []) {{
+              try {{
+                if (component.userId != null) userId = component.userId;
+                found = found || cardsFromObject(component);
+              }} catch (_error) {{}}
+            }}
+            seatQueue.push(...((node && node.children) || []));
+          }}
+          if (found && String(userId) === String(currentUserId)) return found;
+        }}
       }}
     }} catch (_error) {{}}
     return null;
@@ -525,45 +584,128 @@ def _event_hook_script() -> str:
     }} catch (_error) {{}}
     return null;
   }};
+  const ACTION_CARD_EVENTS = {{
+    userOptNotify: true,
+    roundChangeNotify: true,
+    forceSeeCardNotify: true,
+    handCardsNotify: true,
+    openCardNotify: true,
+  }};
+  const END_EVENTS = {{
+    playResultNotify: true,
+    cleanGameNotify: true,
+    cleanNotify: true,
+  }};
+  const currentUserId = () => (
+    window.CurrentUserInfo && window.CurrentUserInfo.user
+      ? window.CurrentUserInfo.user.userId
+      : null
+  );
+  const heroCardKey = cards => (cards || []).join(",");
+  const stopHeroCardPoll = () => {{
+    if (window.__wpkRecorderHeroPoll) {{
+      clearInterval(window.__wpkRecorderHeroPoll);
+      window.__wpkRecorderHeroPoll = null;
+    }}
+  }};
+  const emitHeroCardsIfReady = () => {{
+    const cards = currentHeroCards(currentUserId());
+    if (!cards) {{
+      window.__wpkRecorderHeroBlank = true;
+      return false;
+    }}
+    const key = heroCardKey(cards);
+    if (key === window.__wpkRecorderLastHeroCards) {{
+      window.__wpkRecorderNeedHeroCards = false;
+      stopHeroCardPoll();
+      return true;
+    }}
+    // After a new deal the previous hand's decrypted cards can linger.
+    // Wait until we have seen a blank/_invalid window, or the values change.
+    if (
+      !window.__wpkRecorderHeroBlank
+      && key === window.__wpkRecorderPrevHeroCards
+    ) {{
+      return false;
+    }}
+    window.__wpkRecorderLastHeroCards = key;
+    window.__wpkRecorderPrevHeroCards = key;
+    window.__wpkRecorderNeedHeroCards = false;
+    stopHeroCardPoll();
+    safe("recorderHeroCards", {{ detail: {{}} }});
+    return true;
+  }};
+  const startHeroCardPoll = () => {{
+    window.__wpkRecorderNeedHeroCards = true;
+    if (window.__wpkRecorderHeroPoll) return;
+    window.__wpkRecorderHeroPoll = setInterval(() => {{
+      if (!window.__wpkRecorderNeedHeroCards) {{
+        stopHeroCardPoll();
+        return;
+      }}
+      emitHeroCardsIfReady();
+    }}, 250);
+  }};
   const safe = (key, event) => {{
     try {{
       const envelope = event && event.getUserData ? event.getUserData() : (event && event.detail);
       const body = envelope && Object.prototype.hasOwnProperty.call(envelope, "msgBody")
         ? envelope.msgBody : envelope;
-      const currentUserId = window.CurrentUserInfo && window.CurrentUserInfo.user
-        ? window.CurrentUserInfo.user.userId : null;
+      const userId = currentUserId();
       const isDealEvent = (
         key === "dealNotify" || key === "dealNotify_reconnection"
       );
+      if (isDealEvent) {{
+        window.__wpkRecorderPrevHeroCards = (
+          window.__wpkRecorderLastHeroCards || window.__wpkRecorderPrevHeroCards
+        );
+        window.__wpkRecorderLastHeroCards = null;
+        window.__wpkRecorderHeroBlank = false;
+        window.__wpkRecorderNeedHeroCards = true;
+      }}
+      if (END_EVENTS[key]) {{
+        window.__wpkRecorderNeedHeroCards = false;
+        stopHeroCardPoll();
+      }}
       // The deal callback can run before Cocos replaces the previous hand's
       // decrypted _dealList. Never persist that synchronous value.
       const recorderHeroCards = isDealEvent
-        ? null : currentHeroCards(currentUserId);
+        ? null : currentHeroCards(userId);
       const payload = JSON.stringify(
         {{
           event: key,
           data: body,
           sysTime: envelope && envelope.sysTime,
-          _recorderCurrentUserId: currentUserId,
+          _recorderCurrentUserId: userId,
           _recorderHeroCards: recorderHeroCards,
           _recorderPlayerStates: currentPlayerStates(),
         }},
         (_key, value) => typeof value === "bigint" ? value.toString() : value
       );
       window.{BINDING_NAME}(payload);
+      if (key === "recorderHeroCards") return;
       if (isDealEvent) {{
-        for (const delay of [0, 100, 300, 700, 1500, 3000]) {{
-          setTimeout(
-            () => safe("recorderHeroCards", {{ detail: {{}} }}),
-            delay,
-          );
+        startHeroCardPoll();
+        for (const delay of [80, 200, 400, 800, 1500, 3000, 6000, 12000]) {{
+          setTimeout(() => emitHeroCardsIfReady(), delay);
         }}
+      }} else if (ACTION_CARD_EVENTS[key] && !recorderHeroCards) {{
+        startHeroCardPoll();
+        for (const delay of [0, 50, 120, 250, 500, 1000, 2000, 4000]) {{
+          setTimeout(() => emitHeroCardsIfReady(), delay);
+        }}
+      }} else if (recorderHeroCards) {{
+        window.__wpkRecorderLastHeroCards = heroCardKey(recorderHeroCards);
+        window.__wpkRecorderPrevHeroCards = window.__wpkRecorderLastHeroCards;
+        window.__wpkRecorderNeedHeroCards = false;
+        stopHeroCardPoll();
       }}
     }} catch (_error) {{}}
   }};
   const install = () => {{
     if (!window.cc || !cc.director || !window.WePokerWebSocketMsgTypes) return false;
     if (window.__wpkRecorderHookVersion === hookVersion) return true;
+    stopHeroCardPoll();
     for (const old of (window.__wpkRecorderHandlers || [])) {{
       try {{ cc.director.off(old[0], old[1]); }} catch (_error) {{}}
     }}

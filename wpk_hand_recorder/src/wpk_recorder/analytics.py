@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .inference import hand_range_predictions, normalize_preflop_position
+from .portrait import classify_portrait_tags
 from .protocol import ProtocolMapper
 from .reasoning import build_preflop_preview, live_decision, public_decision
 from .storage import hand_from_dict
@@ -675,6 +676,24 @@ def _player_stats(
         )
         tendencies = _tendencies(metrics, item["aggressive"], item["calls"])
         style = _player_style(metrics, item["aggressive"], item["calls"], hand_count)
+        portrait_tags = classify_portrait_tags(metrics)
+        if portrait_tags:
+            portrait_tendencies = [
+                {
+                    "label": tag["label"],
+                    "exploit": tag["exploit"],
+                    "evidence": tag["metric"],
+                    "confidence": tag["confidence"],
+                    "family": tag["family"],
+                    "id": tag["id"],
+                    "selection_bias": tag.get("selection_bias") or "action",
+                }
+                for tag in portrait_tags
+            ]
+            seen = {item["evidence"] for item in portrait_tendencies}
+            tendencies = portrait_tendencies + [
+                item for item in tendencies if item.get("evidence") not in seen
+            ]
         profile_caveats = []
         if len(item["showdowns"]) < 20:
             profile_caveats.append(
@@ -701,6 +720,7 @@ def _player_stats(
                 "positions": positions,
                 "sizing": sizing,
                 "tendencies": tendencies,
+                "portrait_tags": portrait_tags,
                 "style": style,
                 "profile_caveats": profile_caveats,
                 "vpip_pct": vpip["mean_pct"],

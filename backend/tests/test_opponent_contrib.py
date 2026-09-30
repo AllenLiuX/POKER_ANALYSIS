@@ -158,3 +158,357 @@ def test_contributions_endpoint_from_facts():
     m = _by_alias(contribs)
     assert m["Opener"]["counters"]["cbet_flop"] == {"n": 1, "k": 1}
     assert m["Hero"]["counters"]["fold_vs_cbet_flop"] == {"n": 1, "k": 1}
+
+
+def test_portrait_counters_call_then_lead_and_missed_initiative():
+    recon = {
+        "confidence": 0.9,
+        "board": ["As", "Kd", "7c", "2h"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Ah", "Ac"],
+                "net": 20,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "bet", "amount": 4, "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": [],
+                "net": -20,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "call", "amount": 4, "street": "翻牌"},
+                    {"action": "bet", "amount": 10, "street": "转牌"},
+                ],
+            },
+        ],
+    }
+    m = _by_alias(hand_contributions({"blinds": "1/2"}, recon))
+    vil = m["Villain"]["counters"]
+    hero = m["Hero"]["counters"]
+    assert vil["call_then_lead"] == {"n": 1, "k": 1}
+    assert hero["missed_initiative"] == {"n": 1, "k": 0}
+
+    checked = {
+        "confidence": 0.9,
+        "board": ["As", "Kd", "7c"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Ah", "Ac"],
+                "net": 3,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": [],
+                "net": -3,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                ],
+            },
+        ],
+    }
+    hero = _by_alias(hand_contributions({"blinds": "1/2"}, checked))["Hero"]["counters"]
+    assert hero["missed_initiative"] == {"n": 1, "k": 1}
+
+
+def test_showdown_portrait_counters_trap_hit_lead_and_air():
+    trap = {
+        "confidence": 0.9,
+        "board": ["As", "8c", "3d"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Ah", "Kd"],
+                "net": 3,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["8s", "8d"],
+                "net": -3,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                ],
+            },
+        ],
+    }
+    m = _by_alias(hand_contributions({"blinds": "1/2"}, trap))
+    vil = m["Villain"]["counters"]
+    hero = m["Hero"]["counters"]
+    assert vil["slowplay_two_pair_plus"] == {"n": 1, "k": 1}
+    assert vil["checked_strong_pair"] == {"n": 0, "k": 0}
+    assert hero["checked_strong_pair"] == {"n": 1, "k": 1}
+
+    hit_lead = {
+        "confidence": 0.9,
+        "board": ["Ah", "7h", "2c", "3h"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Kc", "Qd"],
+                "net": -20,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "bet", "amount": 4, "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["6h", "5h"],
+                "net": 20,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "call", "amount": 4, "street": "翻牌"},
+                    {"action": "bet", "amount": 10, "street": "转牌"},
+                ],
+            },
+        ],
+    }
+    vil = _by_alias(hand_contributions({"blinds": "1/2"}, hit_lead))["Villain"]["counters"]
+    assert vil["call_then_lead"] == {"n": 1, "k": 1}
+    assert vil["hit_then_lead"] == {"n": 1, "k": 1}
+    assert vil["shown_lead_was_hit"] == {"n": 1, "k": 1}
+
+    air = {
+        "confidence": 0.9,
+        "board": ["As", "7h", "2c", "Kd", "Qc"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["9c", "8d"],
+                "net": 20,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                    {"action": "bet", "amount": 8, "street": "河牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["Jh", "Td"],
+                "net": -20,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                    {"action": "check", "street": "河牌"},
+                ],
+            },
+        ],
+    }
+    hero = _by_alias(hand_contributions({"blinds": "1/2"}, air))["Hero"]["counters"]
+    assert hero["shown_air_aggression"]["n"] >= 1
+    assert hero["shown_air_aggression"]["k"] >= 1
+    assert hero["river_air_bluff"] == {"n": 1, "k": 1}
+
+    extra = {
+        "confidence": 0.9,
+        "board": ["Ah", "7h", "2c", "3h"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Kc", "Qd"],
+                "net": 40,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "fold", "amount": 10, "street": "转牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["6h", "5h"],
+                "net": -40,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "bet", "amount": 10, "street": "转牌"},
+                ],
+            },
+        ],
+    }
+    vil = _by_alias(hand_contributions({"blinds": "1/2"}, extra))["Villain"]["counters"]
+    assert vil["bet_aversion"]["n"] >= 1
+    assert vil["draw_complete_donk"] == {"n": 1, "k": 1}
+
+
+def test_showdown_strength_band_counters():
+    thin = {
+        "confidence": 0.9,
+        "board": ["As", "8c", "3d", "2h", "4c"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Ah", "Kd"],
+                "net": 20,
+                "actions": [
+                    {"action": "raise", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "call", "amount": 6, "street": "转牌"},
+                    {"action": "bet", "amount": 8, "street": "河牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["9c", "7d"],
+                "net": -20,
+                "actions": [
+                    {"action": "call", "amount": 3, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "bet", "amount": 6, "street": "转牌"},
+                    {"action": "check", "street": "河牌"},
+                ],
+            },
+        ],
+    }
+    m = _by_alias(hand_contributions({"blinds": "1/2"}, thin))
+    assert m["Hero"]["counters"]["thin_value_medium"] == {"n": 1, "k": 1}
+    assert m["Villain"]["counters"]["thin_value_medium"] == {"n": 0, "k": 0}
+
+    weak = {
+        "confidence": 0.9,
+        "board": ["As", "7h", "2c", "Kd", "9s"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Kc", "Qd"],
+                "net": 50,
+                "actions": [
+                    {"action": "raise", "amount": 6, "street": "翻前"},
+                    {"action": "bet", "amount": 8, "street": "翻牌"},
+                    {"action": "bet", "amount": 40, "street": "转牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["4c", "4d"],
+                "net": -50,
+                "actions": [
+                    {"action": "call", "amount": 6, "street": "翻前"},
+                    {"action": "call", "amount": 8, "street": "翻牌"},
+                    {"action": "call", "amount": 40, "street": "转牌"},
+                ],
+            },
+        ],
+    }
+    vil = _by_alias(hand_contributions({"blinds": "1/2"}, weak))["Villain"]["counters"]
+    assert vil["weak_pays_big"] == {"n": 1, "k": 1}
+    assert vil["medium_calls_big"] == {"n": 0, "k": 0}
+
+    medium = {
+        "confidence": 0.9,
+        "board": ["As", "7h", "2c", "Kd", "9s"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Kc", "Qd"],
+                "net": 50,
+                "actions": [
+                    {"action": "raise", "amount": 6, "street": "翻前"},
+                    {"action": "bet", "amount": 8, "street": "翻牌"},
+                    {"action": "bet", "amount": 40, "street": "转牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["Ah", "Qd"],
+                "net": -50,
+                "actions": [
+                    {"action": "call", "amount": 6, "street": "翻前"},
+                    {"action": "call", "amount": 8, "street": "翻牌"},
+                    {"action": "call", "amount": 40, "street": "转牌"},
+                ],
+            },
+        ],
+    }
+    med = _by_alias(hand_contributions({"blinds": "1/2"}, medium))["Villain"]["counters"]
+    assert med["medium_calls_big"] == {"n": 1, "k": 1}
+    assert med["weak_pays_big"] == {"n": 0, "k": 0}
+
+    river_weak = {
+        "confidence": 0.9,
+        "board": ["As", "7h", "2c", "Kd", "Qc"],
+        "players": [
+            {
+                "alias": "Hero",
+                "position": "BTN",
+                "is_hero": True,
+                "hole_cards": ["Ah", "Kd"],
+                "net": 15,
+                "actions": [
+                    {"action": "raise", "amount": 6, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                    {"action": "bet", "amount": 3, "street": "河牌"},
+                ],
+            },
+            {
+                "alias": "Villain",
+                "position": "BB",
+                "is_hero": False,
+                "hole_cards": ["9c", "8d"],
+                "net": -15,
+                "actions": [
+                    {"action": "call", "amount": 6, "street": "翻前"},
+                    {"action": "check", "street": "翻牌"},
+                    {"action": "check", "street": "转牌"},
+                    {"action": "call", "amount": 3, "street": "河牌"},
+                ],
+            },
+        ],
+    }
+    rw = _by_alias(hand_contributions({"blinds": "1/2"}, river_weak))["Villain"]["counters"]
+    assert rw["river_weak_call"] == {"n": 1, "k": 1}
+

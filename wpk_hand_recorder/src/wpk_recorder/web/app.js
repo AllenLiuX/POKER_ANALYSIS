@@ -122,6 +122,33 @@ const metricNames = {
   fold_to_river_barrel: "面对河牌继续开火弃牌",
   flop_check_raise: "翻牌过牌加注", turn_check_raise: "转牌过牌加注",
   river_check_raise: "河牌过牌加注",
+  big_pot_calldown: "大底池跟住",
+  river_station: "河牌大注跟住",
+  missed_initiative: "错过主动开火",
+  ip_river_checkback: "IP 河牌过牌",
+  call_then_lead: "买牌领打",
+  overfold_small_bet: "面对小注弃牌",
+  fold_to_barrel: "面对二枪弃牌",
+  fold_to_postflop_raise: "面对翻后加注弃牌",
+  slowplay_two_pair_plus: "大牌蹲坑",
+  checked_strong_pair: "一对不敢打",
+  delayed_value: "延迟价值",
+  check_raise_nuts: "过牌加注拿坚果",
+  hit_then_lead: "命中后领打",
+  shown_lead_was_hit: "领打亮牌是命中",
+  miss_then_give_up: "听牌没中放弃",
+  shown_air_aggression: "亮牌进攻偏空气",
+  river_air_bluff: "河牌空气诈唬",
+  bet_aversion: "有开火机会却过牌",
+  call_vs_raise: "面对加注跟注",
+  overcall_overbet: "面对超池跟注",
+  draw_complete_donk: "听牌完成领打",
+  bluff_size_split: "空气小注",
+  low_wsd_large_pot: "大池摊牌常输",
+  thin_value_medium: "中等牌力薄打",
+  weak_pays_big: "弱牌大池付钱",
+  medium_calls_big: "一对大池跟注",
+  river_weak_call: "河牌弱牌跟注",
 };
 const metricStreetGroups = [
   {
@@ -136,6 +163,8 @@ const metricStreetGroups = [
       "flop_cbet", "flop_donk", "fold_to_flop_bet",
       "call_vs_flop_bet", "raise_vs_flop_bet",
       "fold_to_flop_cbet", "flop_check_raise", "fold_to_flop_raise",
+      "missed_initiative", "call_then_lead", "overfold_small_bet",
+      "fold_to_postflop_raise", "bet_aversion", "call_vs_raise",
     ],
   },
   {
@@ -146,6 +175,7 @@ const metricStreetGroups = [
       "fold_to_turn_bet", "call_vs_turn_bet", "raise_vs_turn_bet",
       "fold_to_turn_cbet", "fold_to_turn_delayed_cbet", "fold_to_turn_barrel",
       "turn_check_raise", "fold_to_turn_raise",
+      "big_pot_calldown", "fold_to_barrel", "overcall_overbet",
     ],
   },
   {
@@ -156,6 +186,18 @@ const metricStreetGroups = [
       "fold_to_river_bet", "call_vs_river_bet", "raise_vs_river_bet",
       "fold_to_river_cbet", "fold_to_river_barrel",
       "river_check_raise", "fold_to_river_raise",
+      "river_station", "ip_river_checkback",
+    ],
+  },
+  {
+    key: "showdown",
+    label: "摊牌样本",
+    metrics: [
+      "slowplay_two_pair_plus", "checked_strong_pair", "delayed_value",
+      "check_raise_nuts", "hit_then_lead", "shown_lead_was_hit",
+      "miss_then_give_up", "shown_air_aggression", "river_air_bluff",
+      "draw_complete_donk", "bluff_size_split", "low_wsd_large_pot",
+      "thin_value_medium", "weak_pays_big", "medium_calls_big", "river_weak_call",
     ],
   },
 ];
@@ -264,26 +306,26 @@ const quickStreetMetricSlots = {
   ],
   flop: [
     ["flop_cbet"],
-    ["flop_donk"],
-    ["fold_to_flop_bet", "fold_to_flop_cbet"],
+    ["flop_donk", "call_then_lead", "hit_then_lead"],
+    ["fold_to_flop_bet", "fold_to_flop_cbet", "overfold_small_bet"],
     ["call_vs_flop_bet"],
     ["raise_vs_flop_bet"],
-    ["flop_check_raise", "fold_to_flop_raise"],
+    ["flop_check_raise", "fold_to_flop_raise", "fold_to_postflop_raise", "check_raise_nuts"],
   ],
   turn: [
     ["turn_barrel", "turn_cbet"],
-    ["turn_probe"],
+    ["turn_probe", "call_then_lead", "hit_then_lead"],
     ["turn_donk"],
-    ["fold_to_turn_bet", "fold_to_turn_cbet", "fold_to_turn_barrel"],
-    ["call_vs_turn_bet"],
+    ["fold_to_turn_bet", "fold_to_turn_cbet", "fold_to_turn_barrel", "fold_to_barrel"],
+    ["call_vs_turn_bet", "big_pot_calldown"],
     ["raise_vs_turn_bet", "turn_check_raise"],
   ],
   river: [
-    ["river_barrel", "river_cbet"],
+    ["river_barrel", "river_cbet", "ip_river_checkback"],
     ["river_probe"],
-    ["river_donk"],
+    ["river_donk", "call_then_lead", "river_air_bluff"],
     ["fold_to_river_bet", "fold_to_river_cbet", "fold_to_river_barrel"],
-    ["call_vs_river_bet"],
+    ["call_vs_river_bet", "river_station", "big_pot_calldown"],
     ["raise_vs_river_bet", "river_check_raise"],
   ],
 };
@@ -322,6 +364,33 @@ const quickMetricNames = {
   call_vs_river_bet: "Call vs Bet",
   raise_vs_river_bet: "Raise vs Bet",
   river_check_raise: "Check-Raise",
+  big_pot_calldown: "Big Pot Calldown",
+  river_station: "River Station",
+  missed_initiative: "Missed Initiative",
+  ip_river_checkback: "IP River Check",
+  call_then_lead: "Call Then Lead",
+  overfold_small_bet: "Overfold Small Bet",
+  fold_to_barrel: "Fold to Barrel",
+  fold_to_postflop_raise: "Fold to Raise",
+  slowplay_two_pair_plus: "Slowplay Two Pair+",
+  checked_strong_pair: "Checked Pair",
+  delayed_value: "Delayed Value",
+  check_raise_nuts: "Check-Raise Nuts",
+  hit_then_lead: "Hit Then Lead",
+  shown_lead_was_hit: "Lead Was Hit",
+  miss_then_give_up: "Miss Then Give Up",
+  shown_air_aggression: "Shown Air Aggression",
+  river_air_bluff: "River Air Bluff",
+  bet_aversion: "Bet Aversion",
+  call_vs_raise: "Call vs Raise",
+  overcall_overbet: "Call vs Overbet",
+  draw_complete_donk: "Complete Draw Donk",
+  bluff_size_split: "Small Air Size",
+  low_wsd_large_pot: "Lost Large Showdown",
+  thin_value_medium: "Thin Value Medium",
+  weak_pays_big: "Weak Pays Big",
+  medium_calls_big: "Medium Calls Big",
+  river_weak_call: "River Weak Call",
 };
 const quickMetricDescriptions = {
   vpip: "自愿入池率：翻前主动投入筹码的比例",
@@ -358,6 +427,33 @@ const quickMetricDescriptions = {
   call_vs_river_bet: "面对河牌下注时的跟注率",
   raise_vs_river_bet: "面对河牌下注时的加注率",
   river_check_raise: "河牌过牌后再加注的比例",
+  big_pot_calldown: "转/河大底池面对下注时选择跟注而非弃牌的比例",
+  river_station: "河牌面对至少半池下注时跟注的比例",
+  missed_initiative: "作为翻前进攻方有开火机会时选择过牌的比例",
+  ip_river_checkback: "河牌位置内单挑、无人下注时选择过牌的比例",
+  call_then_lead: "上一街跟注后，本街无人下注时选择领打的比例（只统计动作，不含牌力）",
+  overfold_small_bet: "面对不超过 33% 底池的下注时弃牌的比例",
+  fold_to_barrel: "面对转/河继续开火时弃牌的比例",
+  fold_to_postflop_raise: "翻后面对加注时弃牌的比例",
+  slowplay_two_pair_plus: "亮牌两对+时选择过牌或跟注而非进攻的比例（摊牌样本）",
+  checked_strong_pair: "亮牌一对且可开火时选择过牌的比例（摊牌样本）",
+  delayed_value: "翻牌过牌后，转/河持两对+时主动开火的比例（摊牌样本）",
+  check_raise_nuts: "亮牌两对+过牌后面对下注时加注的比例（摊牌样本）",
+  hit_then_lead: "亮牌样本：上一街跟注且本街成牌提升后选择领打的比例（成牌后是否开火，不是领打含牌力）",
+  shown_lead_was_hit: "亮牌样本：买牌后领打里，成牌提升或两对+的比例（才是领打是否命中）",
+  miss_then_give_up: "买听牌后未中时过牌或弃牌的比例（摊牌样本）",
+  shown_air_aggression: "亮牌进攻动作里持空气的比例（摊牌样本）",
+  river_air_bluff: "河牌进攻的亮牌样本里持高牌的比例",
+  bet_aversion: "翻后无人下注、可以开火时选择过牌的比例",
+  call_vs_raise: "翻后面对加注时选择跟注（相对弃牌/再加注）的比例",
+  overcall_overbet: "面对超过底池的下注时跟注而非弃牌的比例",
+  draw_complete_donk: "亮牌样本：听牌在本街完成后 OOP 领打的比例",
+  bluff_size_split: "亮牌空气进攻里尺寸不超过 40% 底池的比例",
+  low_wsd_large_pot: "大底池走到摊牌且净额≤0 的比例（摊牌样本）",
+  thin_value_medium: "亮牌顶对/超对/中间对、转河可开火时选择进攻的比例（摊牌样本）",
+  weak_pays_big: "亮牌空气/底对面对大池下注时跟注而非弃牌的比例（摊牌样本）",
+  medium_calls_big: "亮牌顶对/中间对面对大池下注时跟注而非弃牌的比例（摊牌样本）",
+  river_weak_call: "亮牌空气/底对面对河牌下注时跟注而非弃牌的比例（摊牌样本）",
 };
 function quickMetricTitle(key, metric = null) {
   const name = quickMetricNames[key] || metricNames[key] || key;
@@ -468,6 +564,30 @@ function renderQuickMetric(profile, keys) {
     <em><b>${esc(deviation.degreeLabel)}</b> ${esc(signedPoints(deviation.delta))}<i>pp</i> · n${esc(metric.opportunities || 0)}</em>
   </span>`;
 }
+function renderPortraitTags(tags = []) {
+  return tags.map(tag => {
+    const showdown = tag.selection_bias === "showdown_only";
+    const bias = showdown ? " · 摊牌样本有偏" : "";
+    return `
+    <span class="portrait-tag family-${esc(tag.family || "other")} confidence-${esc(tag.confidence || "low")}${showdown ? " showdown-only" : ""}"
+      title="${esc(`${tag.exploit || ""} · n${tag.opportunities || 0} · ${tag.delta_pp >= 0 ? "+" : ""}${tag.delta_pp ?? ""}pp${bias}`)}">
+      ${esc(tag.label)}
+    </span>`;
+  }).join("");
+}
+function visiblePortraitTags(profile, street) {
+  const tags = [...(profile?.portrait_tags || [])];
+  if (!tags.length) return [];
+  const streetKey = String(street || "").toLowerCase();
+  if (!streetKey || streetKey === "preflop") return tags;
+  const matched = [];
+  const rest = [];
+  for (const tag of tags) {
+    if ((tag.streets || []).includes(streetKey)) matched.push(tag);
+    else rest.push(tag);
+  }
+  return matched.concat(rest);
+}
 function renderPlayerQuickProfile(profile, street = "preflop", isHero = false) {
   const streetLabel = streetNames[street] || street;
   if (isHero && !profile) {
@@ -489,25 +609,34 @@ function renderPlayerQuickProfile(profile, street = "preflop", isHero = false) {
   }
   const read = playerStreetRead(profile, street);
   const slots = quickStreetMetricSlots[street] || quickStreetMetricSlots.preflop;
-  const exploit = isHero ? "" : quickExploit(read);
+  const portrait = visiblePortraitTags(profile, street);
+  const exploit = portrait[0]
+    ? `${isHero ? "自检" : "剥削"} · ${portrait[0].exploit}`
+    : isHero
+      ? ""
+      : quickExploit(read);
   const sizing = profile.sizing?.[street];
   const footer = [
     sizing?.count ? `尺度中位 ${Number(sizing.median_pot || 0).toFixed(2)}P · n${sizing.count}` : "",
     street !== "preflop" ? `AF ${Number(profile.aggression_factor || 0).toFixed(2)}` : "",
   ].filter(Boolean).join(" · ");
+  const styleLabel = portrait[0]?.label
+    ? portrait[0].label
+    : `${isHero ? "本人 · " : ""}${read.label}`;
   return `<div class="player-street-profile${isHero ? " hero-profile" : ""}">
     <div class="player-profile-line">
       <span class="player-style-tag street-${esc(read.direction)}"
-        title="${esc(read.strongest ? quickMetricTitle(read.strongest.key, read.strongest.metric) : "样本积累中")}">
-        <b>${esc(streetLabel)}</b><span>${isHero ? "本人 · " : ""}${esc(read.label)}</span>
+        title="${esc(portrait[0]?.exploit || (read.strongest ? quickMetricTitle(read.strongest.key, read.strongest.metric) : "样本积累中"))}">
+        <b>${esc(streetLabel)}</b><span>${esc(styleLabel)}</span>
       </span>
       <span class="player-profile-sample">H ${esc(profile.hands || 0)} · 街 n${esc(read.sample)}</span>
     </div>
+    ${portrait.length ? `<div class="player-portrait-tags">${renderPortraitTags(portrait)}</div>` : ""}
     <div class="player-street-metrics">
       ${slots.map(keys => renderQuickMetric(profile, keys)).join("")}
     </div>
     ${exploit || footer ? `<div class="player-street-footer">
-      ${exploit ? `<strong>剥削 · ${esc(exploit)}</strong>` : ""}
+      ${exploit ? `<strong>${esc(exploit)}</strong>` : ""}
       ${footer ? `<span>${esc(footer)}</span>` : ""}
     </div>` : ""}
   </div>
@@ -1811,12 +1940,14 @@ function renderProfile(player) {
     </p>`).join("");
   const style = player.style || {};
   const caveats = (player.profile_caveats || []).map(item => `<li>${esc(item)}</li>`).join("");
+  const portrait = renderPortraitTags(player.portrait_tags || []);
   return `
     <div class="style-summary">
       <p class="profile-label">风格判断</p>
       <strong class="style-name">${esc(style.label || "样本积累中")}</strong>
       <p>${esc(style.summary || "尚未形成稳定风格标签。")}</p>
       <span class="confidence-chip">${esc(confidenceLabel(style.confidence || "very_low"))}置信度</span>
+      ${portrait ? `<div class="player-portrait-tags">${portrait}</div>` : ""}
     </div>
     <div class="metric-panel">
       <p class="profile-label">机会率后验 · 按街</p>

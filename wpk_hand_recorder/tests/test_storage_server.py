@@ -17,6 +17,13 @@ from wpk_recorder.server import _event_stream, create_app
 from wpk_recorder.storage import RecorderStore
 
 
+def _force_startup_repair(tmp_path):
+    with sqlite3.connect(tmp_path / "hands.sqlite3") as connection:
+        connection.execute(
+            "DELETE FROM recorder_metadata WHERE key = 'startup_repair_version'"
+        )
+
+
 def _save_range_node_hand(
     tmp_path,
     *,
@@ -175,7 +182,7 @@ def test_opportunity_schema_upgrade_rebuilds_historical_metrics(tmp_path):
         store.connection.execute(
             """
             DELETE FROM opportunities
-            WHERE hand_id = ? AND metric = 'turn_probe'
+            WHERE hand_id = ? AND metric IN ('turn_probe', 'call_then_lead')
             """,
             (hand.hand_id,),
         )
@@ -201,10 +208,20 @@ def test_opportunity_schema_upgrade_rebuilds_historical_metrics(tmp_path):
         WHERE key = 'opportunity_schema_version'
         """
     ).fetchone()
+    rebuilt = {
+        row[0]
+        for row in upgraded.connection.execute(
+            "SELECT metric FROM opportunities WHERE hand_id = ?",
+            (hand.hand_id,),
+        )
+    }
     upgraded.close()
 
     assert tuple(metric) == (1,)
-    assert tuple(version) == ("2",)
+    assert tuple(version) == ("6",)
+    assert "call_then_lead" in rebuilt
+    assert "missed_initiative" in rebuilt
+    assert "bet_aversion" in rebuilt
 
 
 def test_normalized_storage_analytics_and_dashboard(tmp_path):
@@ -1026,6 +1043,7 @@ def test_startup_repair_removes_cross_hand_actions_and_renumbers(tmp_path):
     store.save_hand(hand, final=False)
     store.close()
 
+    _force_startup_repair(tmp_path)
     repaired_store = RecorderStore(tmp_path)
     repaired = repaired_store.load_hand("room-35")
     repaired_store.close()
@@ -1075,6 +1093,7 @@ def test_existing_insured_hand_is_repaired_from_raw_result(tmp_path):
     )
     store.close()
 
+    _force_startup_repair(tmp_path)
     migrated = RecorderStore(tmp_path)
     migrated.close()
     repaired = snapshot(tmp_path)["hands"][0]
@@ -1128,6 +1147,7 @@ def test_existing_insured_hand_falls_back_to_history_fields(tmp_path):
     )
     store.close()
 
+    _force_startup_repair(tmp_path)
     migrated = RecorderStore(tmp_path)
     migrated.close()
     repaired = snapshot(tmp_path)["hands"][0]
@@ -1145,6 +1165,7 @@ def test_migration_deduplicates_ids_and_repairs_offset_sequences(tmp_path):
     store.save_hand(hand)
     store.close()
 
+    _force_startup_repair(tmp_path)
     migrated = RecorderStore(tmp_path)
     migrated.close()
     repaired = snapshot(tmp_path)["hands"][0]

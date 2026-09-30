@@ -551,6 +551,33 @@ export interface OpponentCounters {
   saw_flop: { k: number }; wtsd: Counter; won_sd: Counter;
   graded_pre: { n: number; mistakes: number }; graded_post: { n: number; mistakes: number };
   leaks_pre: Record<string, number>; leaks_post: Record<string, number>;
+  big_pot_calldown?: Counter;
+  river_station?: Counter;
+  missed_initiative?: Counter;
+  ip_river_checkback?: Counter;
+  call_then_lead?: Counter;
+  overfold_small_bet?: Counter;
+  fold_to_barrel?: Counter;
+  fold_to_postflop_raise?: Counter;
+  slowplay_two_pair_plus?: Counter;
+  checked_strong_pair?: Counter;
+  delayed_value?: Counter;
+  check_raise_nuts?: Counter;
+  hit_then_lead?: Counter;
+  shown_lead_was_hit?: Counter;
+  miss_then_give_up?: Counter;
+  shown_air_aggression?: Counter;
+  river_air_bluff?: Counter;
+  bet_aversion?: Counter;
+  call_vs_raise?: Counter;
+  overcall_overbet?: Counter;
+  draw_complete_donk?: Counter;
+  bluff_size_split?: Counter;
+  low_wsd_large_pot?: Counter;
+  thin_value_medium?: Counter;
+  weak_pays_big?: Counter;
+  medium_calls_big?: Counter;
+  river_weak_call?: Counter;
 }
 export interface ContribPlayer {
   alias: string;

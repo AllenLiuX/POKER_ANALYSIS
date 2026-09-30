@@ -189,7 +189,25 @@ class HandStateMachine:
         cards = _cards(event.get("cards"))
         if cards:
             player.hole_cards = cards
+            self._copy_cards_to_pending(player, seat, cards)
         self._refresh_button_from_blinds()
+
+    def _copy_cards_to_pending(
+        self,
+        player: Player,
+        seat: Optional[int],
+        cards: List[str],
+    ) -> None:
+        pending = self.current.pending_decision if self.current is not None else None
+        if pending is None or not cards:
+            return
+        same_seat = (
+            pending.seat is not None and seat is not None and pending.seat == seat
+        )
+        same_user = bool(pending.user_id and player.user_id == pending.user_id)
+        if not (same_seat or same_user):
+            return
+        pending.cards = list(cards)
 
     def _apply_decision_request(self, event: Dict[str, Any]) -> None:
         is_hero = event.get("is_hero") is True
@@ -213,6 +231,8 @@ class HandStateMachine:
             player.user_id = user_id or player.user_id
             if cards and is_hero:
                 player.hole_cards = cards
+            elif is_hero and player.hole_cards:
+                cards = list(player.hole_cards)
         legal_actions = []
         for value in event.get("legal_actions") or []:
             action = str(value or "").strip().lower().replace("-", "_")

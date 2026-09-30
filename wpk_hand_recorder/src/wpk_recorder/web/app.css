@@ -466,6 +466,33 @@ main { position: relative; padding: 18px 2vw 48px; }
 .player-style-tag.confidence-high { border-color: var(--ok); color: var(--ok); }
 .player-style-tag.street-high { border-color: var(--metric-high); color: var(--metric-high); }
 .player-style-tag.street-low { border-color: var(--metric-low); color: var(--metric-low); }
+.player-portrait-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 2px;
+}
+.portrait-tag {
+  display: inline-flex;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: 600 10px/1.2 ui-monospace, monospace;
+}
+.portrait-tag.family-stick { border-color: color-mix(in srgb, #d97706 55%, var(--line)); color: #fbbf24; }
+.portrait-tag.family-scared { border-color: color-mix(in srgb, #38bdf8 55%, var(--line)); color: #7dd3fc; }
+.portrait-tag.family-drawlead { border-color: color-mix(in srgb, #c084fc 55%, var(--line)); color: #e9d5ff; }
+.portrait-tag.family-fold { border-color: color-mix(in srgb, #94a3b8 55%, var(--line)); color: #cbd5e1; }
+.portrait-tag.family-aggro { border-color: color-mix(in srgb, #f87171 55%, var(--line)); color: #fca5a5; }
+.portrait-tag.family-trap { border-color: color-mix(in srgb, #34d399 55%, var(--line)); color: #6ee7b7; }
+.portrait-tag.family-air { border-color: color-mix(in srgb, #fb7185 55%, var(--line)); color: #fda4af; }
+.portrait-tag.showdown-only::after {
+  content: "摊";
+  margin-left: 4px;
+  opacity: .7;
+  font-weight: 700;
+}
+.portrait-tag.confidence-low { opacity: .72; }
 .player-profile-sample {
   flex: 0 0 auto;
   color: var(--muted);

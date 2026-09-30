@@ -54,6 +54,7 @@ from .opponent_model import (
     opponent_metrics,
 )
 from .poker import equity_vs_random, hand_features
+from .portrait import player_portrait_tags
 from .protocol import _card_list
 from .squid_value import (
     anonymize_squid_state,
@@ -971,6 +972,16 @@ def _build_opponent_node_profile(
     except (LookupError, ValueError, sqlite3.Error):
         pass
     response = response_model or {}
+    portrait_tags, active_portrait_tags = player_portrait_tags(
+        connection,
+        user_id,
+        game_mode or None,
+        street=str(decision.get("street") or "") or None,
+    )
+    for tag in portrait_tags:
+        tag["evidence_id"] = f"seat_{seat}:portrait:{tag.get('id')}"
+    for tag in active_portrait_tags:
+        tag["evidence_id"] = f"seat_{seat}:portrait:{tag.get('id')}"
     return {
         "player": f"seat_{seat}",
         "seat": seat,
@@ -980,6 +991,8 @@ def _build_opponent_node_profile(
         "position": player.get("position"),
         "folded": folded,
         "observations": metrics,
+        "portrait_tags": portrait_tags,
+        "active_portrait_tags": active_portrait_tags,
         "response_model": response,
         "automatic_exploits": exploit_directives(response),
         "preflop_range": range_model,
@@ -2736,8 +2749,11 @@ def _remote_opponent_profiles(
     compact = []
     for profile in profiles:
         player = str(profile.get("player") or "")
-        observations = selected_by_player.get(player)
-        if not observations:
+        observations = selected_by_player.get(player) or []
+        portrait_tags = list(profile.get("active_portrait_tags") or [])
+        if not portrait_tags:
+            portrait_tags = list(profile.get("portrait_tags") or [])
+        if not observations and not portrait_tags:
             continue
         range_model = profile.get("preflop_range") or {}
         compact.append(
@@ -2745,6 +2761,7 @@ def _remote_opponent_profiles(
                 "player": player,
                 "position": profile.get("position"),
                 "observations": observations,
+                "portrait_tags": portrait_tags,
                 "preflop_range": (
                     {
                         key: range_model.get(key)
@@ -4113,7 +4130,11 @@ def _validate_exploit_items(
     allowed_evidence = {
         str(metric.get("evidence_id"))
         for profile in profiles
-        for metric in profile.get("observations") or []
+        for metric in (
+            list(profile.get("observations") or [])
+            + list(profile.get("portrait_tags") or [])
+            + list(profile.get("active_portrait_tags") or [])
+        )
         if metric.get("evidence_id")
     }
     allowed_players = {

@@ -205,3 +205,456 @@ def test_stack_bucket_is_shared_across_model_features():
         assert stack_bucket(value) == label
         assert inference_stack_bucket(value) == label
         assert opponent_stack_bucket(value) == label
+
+
+def _hu_hand(hand_id, board, actions, big_blind=2, stacks=400, holes=None):
+    hand = HandHistory(
+        hand_id=hand_id,
+        button_seat=2,
+        big_blind=big_blind,
+        board=board,
+    )
+    hand.players = {
+        1: Player(1, user_id="bb", alias="BB", stack_start=stacks),
+        2: Player(2, user_id="btn", alias="BTN", stack_start=stacks),
+    }
+    if holes:
+        for seat, cards in holes.items():
+            hand.players[seat].hole_cards = list(cards)
+    hand.actions = actions
+    return hand
+
+
+def test_portrait_metrics_detect_calldown_lead_and_missed_initiative():
+    calldown = _hu_hand(
+        "calldown",
+        ["As", "7h", "2c", "Kd", "9s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "check", sequence=6, user_id="bb"),
+            Action("turn", 2, "BTN", "bet", amount=40, sequence=7, user_id="btn"),
+            Action("turn", 1, "BB", "call", amount=40, sequence=8, user_id="bb"),
+        ],
+        stacks=80,
+    )
+    turn_call = {
+        item.metric: item.success
+        for item in derive_decisions(calldown)
+        if item.action_sequence == 8
+        for item in item.opportunities
+    }
+    assert turn_call["big_pot_calldown"] is True
+    assert turn_call["call_vs_turn_bet"] is True
+
+    lead = _hu_hand(
+        "lead",
+        ["As", "7h", "2c", "Kd"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "bet", amount=16, sequence=6, user_id="bb"),
+        ],
+    )
+    lead_metrics = {
+        item.metric: item.success
+        for item in derive_decisions(lead)[-1].opportunities
+    }
+    assert lead_metrics["call_then_lead"] is True
+    assert lead_metrics["turn_donk"] is True
+
+    missed = _hu_hand(
+        "missed",
+        ["As", "7h", "2c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+        ],
+    )
+    missed_metrics = {
+        item.metric: item.success
+        for item in derive_decisions(missed)[-1].opportunities
+    }
+    assert missed_metrics["missed_initiative"] is True
+    assert missed_metrics["flop_cbet"] is False
+
+
+def test_ip_river_checkback_and_small_bet_overfold():
+    checkback = _hu_hand(
+        "checkback",
+        ["As", "7h", "2c", "Kd", "9s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+            Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+            Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+            Action("river", 2, "BTN", "check", sequence=8, user_id="btn"),
+        ],
+    )
+    river = {
+        item.metric: item.success
+        for item in derive_decisions(checkback)
+        if item.action_sequence == 8
+        for item in item.opportunities
+    }
+    assert river["ip_river_checkback"] is True
+    assert river["missed_initiative"] is True
+
+    overfold = _hu_hand(
+        "overfold",
+        ["As", "7h", "2c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=2, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "fold", sequence=5, user_id="bb"),
+        ],
+    )
+    fold_metrics = {
+        item.metric: item.success
+        for item in derive_decisions(overfold)[-1].opportunities
+    }
+    assert fold_metrics["overfold_small_bet"] is True
+    assert fold_metrics["fold_to_flop_cbet"] is True
+
+
+def _metrics_at(hand, sequence):
+    return {
+        item.metric: item.success
+        for snapshot in derive_decisions(hand)
+        if snapshot.action_sequence == sequence
+        for item in snapshot.opportunities
+    }
+
+
+def test_showdown_splits_trap_from_scared_pair_check():
+    trap = _hu_hand(
+        "trap",
+        ["7h", "2c", "2d"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+        ],
+        holes={1: ["7s", "7d"]},
+    )
+    trap_metrics = _metrics_at(trap, 3)
+    assert trap_metrics["slowplay_two_pair_plus"] is True
+    assert "checked_strong_pair" not in trap_metrics
+
+    scared = _hu_hand(
+        "scared-pair",
+        ["As", "8c", "3d"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+        ],
+        holes={1: ["Ah", "Kd"]},
+    )
+    scared_metrics = _metrics_at(scared, 3)
+    assert scared_metrics["checked_strong_pair"] is True
+    assert "slowplay_two_pair_plus" not in scared_metrics
+
+
+def test_showdown_delayed_value_and_check_raise_nuts():
+    delayed = _hu_hand(
+        "delayed",
+        ["7h", "2c", "Kd", "9s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "bet", amount=10, sequence=5, user_id="bb"),
+        ],
+        holes={1: ["7s", "7d"]},
+    )
+    delayed_metrics = _metrics_at(delayed, 5)
+    assert delayed_metrics["delayed_value"] is True
+    assert delayed_metrics["slowplay_two_pair_plus"] is False
+
+    cr = _hu_hand(
+        "cr-nuts",
+        ["7h", "2c", "2d"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "raise", amount=24, sequence=5, user_id="bb"),
+        ],
+        holes={1: ["7s", "7d"]},
+    )
+    cr_metrics = _metrics_at(cr, 5)
+    assert cr_metrics["check_raise_nuts"] is True
+    assert cr_metrics["slowplay_two_pair_plus"] is False
+
+
+def test_showdown_hit_then_lead_miss_give_up_and_air_bluff():
+    lead = _hu_hand(
+        "hit-lead",
+        ["Ah", "7h", "2c", "3h"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "bet", amount=16, sequence=6, user_id="bb"),
+        ],
+        holes={1: ["6h", "5h"]},
+    )
+    lead_metrics = _metrics_at(lead, 6)
+    assert lead_metrics["call_then_lead"] is True
+    assert lead_metrics["hit_then_lead"] is True
+    assert lead_metrics["shown_lead_was_hit"] is True
+
+    missed = _hu_hand(
+        "miss-give-up",
+        ["Ah", "7h", "2c", "Kd", "Qc"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "check", sequence=6, user_id="bb"),
+            Action("turn", 2, "BTN", "bet", amount=16, sequence=7, user_id="btn"),
+            Action("turn", 1, "BB", "call", amount=16, sequence=8, user_id="bb"),
+            Action("river", 1, "BB", "check", sequence=9, user_id="bb"),
+        ],
+        holes={1: ["6h", "5h"]},
+    )
+    miss_metrics = _metrics_at(missed, 9)
+    assert miss_metrics["miss_then_give_up"] is True
+    assert miss_metrics["call_then_lead"] is False
+
+    air = _hu_hand(
+        "river-air",
+        ["As", "7h", "2c", "Kd", "Qc"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+            Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+            Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+            Action("river", 2, "BTN", "bet", amount=12, sequence=8, user_id="btn"),
+        ],
+        holes={2: ["9c", "8d"]},
+    )
+    air_metrics = _metrics_at(air, 8)
+    assert air_metrics["shown_air_aggression"] is True
+    assert air_metrics["river_air_bluff"] is True
+    assert air_metrics.get("slowplay_two_pair_plus") is not True
+
+
+def test_remaining_catalog_action_and_showdown_metrics():
+    aversion = _hu_hand(
+        "aversion",
+        ["As", "7h", "2c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+        ],
+    )
+    assert _metrics_at(aversion, 3)["bet_aversion"] is True
+
+    raise_call = _hu_hand(
+        "call-raise",
+        ["As", "7h", "2c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "raise", amount=24, sequence=5, user_id="bb"),
+            Action("flop", 2, "BTN", "call", amount=16, sequence=6, user_id="btn"),
+        ],
+    )
+    call_metrics = _metrics_at(raise_call, 6)
+    assert call_metrics["call_vs_raise"] is True
+    assert call_metrics["fold_to_postflop_raise"] is False
+
+    overbet = _hu_hand(
+        "overbet",
+        ["As", "7h", "2c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=20, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=20, sequence=5, user_id="bb"),
+        ],
+    )
+    assert _metrics_at(overbet, 5)["overcall_overbet"] is True
+
+    donk = _hu_hand(
+        "draw-donk",
+        ["Ah", "7h", "2c", "3h"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "bet", amount=10, sequence=5, user_id="bb"),
+        ],
+        holes={1: ["6h", "5h"]},
+    )
+    donk_metrics = _metrics_at(donk, 5)
+    assert donk_metrics["draw_complete_donk"] is True
+    assert donk_metrics.get("call_then_lead") is not True
+
+    small_air = _hu_hand(
+        "small-air",
+        ["As", "7h", "2c", "Kd", "Qc"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+            Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+            Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+            Action("river", 2, "BTN", "bet", amount=4, sequence=8, user_id="btn"),
+        ],
+        holes={2: ["9c", "8d"]},
+    )
+    assert _metrics_at(small_air, 8)["bluff_size_split"] is True
+
+    lost = _hu_hand(
+        "lost-sd",
+        ["As", "7h", "2c", "Kd", "9s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "check", sequence=6, user_id="bb"),
+            Action("turn", 2, "BTN", "bet", amount=40, sequence=7, user_id="btn"),
+            Action("turn", 1, "BB", "call", amount=40, sequence=8, user_id="bb"),
+        ],
+        stacks=80,
+        holes={1: ["Ah", "Kd"]},
+    )
+    lost.players[1].net = -50
+    assert any(
+        item.metric == "low_wsd_large_pot" and item.success
+        for snapshot in derive_decisions(lost)
+        if snapshot.seat == 1
+        for item in snapshot.opportunities
+    )
+
+
+def test_showdown_strength_band_thin_value_and_weak_pays():
+    thin = _hu_hand(
+        "thin-value",
+        ["As", "8c", "3d", "2h", "4c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+            Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+            Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+            Action("river", 2, "BTN", "bet", amount=8, sequence=8, user_id="btn"),
+        ],
+        holes={2: ["Ah", "Kd"]},
+    )
+    assert _metrics_at(thin, 8)["thin_value_medium"] is True
+    assert "thin_value_medium" not in _metrics_at(thin, 4)
+
+    checks = _hu_hand(
+        "checks-medium",
+        ["As", "8c", "3d", "2h", "4c"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+            Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+            Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+            Action("river", 2, "BTN", "check", sequence=8, user_id="btn"),
+        ],
+        holes={2: ["Ah", "Kd"]},
+    )
+    assert _metrics_at(checks, 8)["thin_value_medium"] is False
+
+    weak = _hu_hand(
+        "weak-pays",
+        ["As", "7h", "2c", "Kd", "9s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "check", sequence=6, user_id="bb"),
+            Action("turn", 2, "BTN", "bet", amount=40, sequence=7, user_id="btn"),
+            Action("turn", 1, "BB", "call", amount=40, sequence=8, user_id="bb"),
+        ],
+        stacks=80,
+        holes={1: ["4c", "4d"]},
+    )
+    weak_metrics = _metrics_at(weak, 8)
+    assert weak_metrics["weak_pays_big"] is True
+    assert "medium_calls_big" not in weak_metrics
+
+    medium = _hu_hand(
+        "medium-calls",
+        ["As", "7h", "2c", "Kd", "9s"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "bet", amount=8, sequence=4, user_id="btn"),
+            Action("flop", 1, "BB", "call", amount=8, sequence=5, user_id="bb"),
+            Action("turn", 1, "BB", "check", sequence=6, user_id="bb"),
+            Action("turn", 2, "BTN", "bet", amount=40, sequence=7, user_id="btn"),
+            Action("turn", 1, "BB", "call", amount=40, sequence=8, user_id="bb"),
+        ],
+        stacks=80,
+        holes={1: ["Ah", "Qd"]},
+    )
+    medium_metrics = _metrics_at(medium, 8)
+    assert medium_metrics["medium_calls_big"] is True
+    assert "weak_pays_big" not in medium_metrics
+
+    river_weak = _hu_hand(
+        "river-weak-call",
+        ["As", "7h", "2c", "Kd", "Qc"],
+        [
+            Action("preflop", 2, "BTN", "raise", amount=6, sequence=1, user_id="btn"),
+            Action("preflop", 1, "BB", "call", amount=6, sequence=2, user_id="bb"),
+            Action("flop", 1, "BB", "check", sequence=3, user_id="bb"),
+            Action("flop", 2, "BTN", "check", sequence=4, user_id="btn"),
+            Action("turn", 1, "BB", "check", sequence=5, user_id="bb"),
+            Action("turn", 2, "BTN", "check", sequence=6, user_id="btn"),
+            Action("river", 1, "BB", "check", sequence=7, user_id="bb"),
+            Action("river", 2, "BTN", "bet", amount=3, sequence=8, user_id="btn"),
+            Action("river", 1, "BB", "call", amount=3, sequence=9, user_id="bb"),
+        ],
+        holes={1: ["9c", "8d"]},
+    )
+    river_metrics = _metrics_at(river_weak, 9)
+    assert river_metrics["river_weak_call"] is True
+    assert "weak_pays_big" not in river_metrics
+

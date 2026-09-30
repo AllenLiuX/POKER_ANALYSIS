@@ -796,12 +796,15 @@ def test_wpk_raise_increments_and_short_stack_all_in_are_canonicalized():
 def test_browser_hook_reads_decrypted_deal_list_for_hero():
     script = _event_hook_script()
 
-    assert "const hookVersion = 9" in script
+    assert "const hookVersion = 10" in script
     assert "component._dealList" in script
-    assert "currentHeroCards(currentUserId)" in script
+    assert "currentHeroCards(" in script
     assert "const recorderHeroCards = isDealEvent" in script
     assert "_recorderHeroCards: recorderHeroCards" in script
     assert 'safe("recorderHeroCards"' in script
+    assert "startHeroCardPoll" in script
+    assert "userOptNotify: true" in script
+    assert "forceSeeCardNotify: true" in script
     assert "3000" in script
     assert "typeof component.isFold" in script
     assert "_recorderPlayerStates: currentPlayerStates()" in script
@@ -860,6 +863,216 @@ def test_delayed_browser_hero_cards_update_current_hand_before_action():
     assert state.current is not None
     assert state.current.pending_decision is None
     assert state.current.players[5].hole_cards == ["9h", "6s"]
+
+
+def test_delayed_hero_cards_fill_pending_decision_at_action_time():
+    mapper = ProtocolMapper()
+    state = HandStateMachine()
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "upDateRoomNotify",
+                "_recorderCurrentUserId": 123,
+                "data": {
+                    "roomId": 99,
+                    "currentBoutNum": 9,
+                    "round": "TURN",
+                    "currentUserSeatNum": 5,
+                    "sitUserList": [
+                        {
+                            "seatNum": 5,
+                            "userId": 123,
+                            "nickname": "Hero",
+                        },
+                        {
+                            "seatNum": 6,
+                            "userId": 456,
+                            "nickname": "Villain",
+                        },
+                    ],
+                },
+            }
+        )
+    )
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "dealNotify",
+                "_recorderCurrentUserId": 123,
+                "data": {
+                    "currentBoutNum": 9,
+                    "list": [
+                        {
+                            "seatNum": 5,
+                            "userId": 123,
+                            "nickname": "Hero",
+                            "handCards": [-1, -1],
+                        },
+                        {
+                            "seatNum": 6,
+                            "userId": 456,
+                            "nickname": "Villain",
+                            "handCards": [],
+                        },
+                    ],
+                },
+            }
+        )
+    )
+    decision = next(
+        iter(
+            mapper.canonical_events(
+                {
+                    "event": "userOptNotify",
+                    "_recorderCurrentUserId": 123,
+                    "data": {
+                        "userId": 123,
+                        "handCards": [-1, -1],
+                        "canActionList": ["FOLD", "CHECK", "RAISE"],
+                    },
+                }
+            )
+        )
+    )
+    state.apply(decision)
+
+    assert state.current is not None
+    assert state.current.pending_decision is not None
+    assert state.current.pending_decision.cards == []
+    assert state.current.players[5].hole_cards == []
+
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "recorderHeroCards",
+                "_recorderCurrentUserId": 123,
+                "_recorderHeroCards": [410, 201],
+                "_recorderPlayerStates": [
+                    {
+                        "seatNum": 5,
+                        "userId": 123,
+                        "alias": "Hero",
+                    }
+                ],
+                "data": {},
+            }
+        )
+    )
+
+    assert state.current.players[5].hole_cards == ["Td", "Ah"]
+    assert state.current.pending_decision.cards == ["Td", "Ah"]
+    live = live_decision_from_hand(state.current)
+    assert live is not None
+    assert live["hero_cards"] == ["Td", "Ah"]
+
+
+def test_delayed_hero_cards_do_not_attach_to_opponent_pending():
+    mapper = ProtocolMapper()
+    state = HandStateMachine()
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "upDateRoomNotify",
+                "_recorderCurrentUserId": 123,
+                "data": {
+                    "roomId": 99,
+                    "currentBoutNum": 9,
+                    "round": "FLOP",
+                    "currentUserSeatNum": 5,
+                    "sitUserList": [
+                        {"seatNum": 5, "userId": 123, "nickname": "Hero"},
+                        {"seatNum": 6, "userId": 456, "nickname": "Villain"},
+                    ],
+                },
+            }
+        )
+    )
+    decision = next(
+        iter(
+            mapper.canonical_events(
+                {
+                    "event": "userOptNotify",
+                    "_recorderCurrentUserId": 123,
+                    "data": {
+                        "userId": 456,
+                        "handCards": [],
+                        "canActionList": ["FOLD", "CHECK", "RAISE"],
+                    },
+                }
+            )
+        )
+    )
+    state.apply(decision)
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "recorderHeroCards",
+                "_recorderCurrentUserId": 123,
+                "_recorderHeroCards": [410, 201],
+                "data": {},
+            }
+        )
+    )
+
+    assert state.current is not None
+    assert state.current.players[5].hole_cards == ["Td", "Ah"]
+    assert state.current.pending_decision is not None
+    assert state.current.pending_decision.user_id == "456"
+    assert state.current.pending_decision.cards == []
+
+
+def test_known_hero_cards_survive_empty_action_notify():
+    mapper = ProtocolMapper()
+    state = HandStateMachine()
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "upDateRoomNotify",
+                "_recorderCurrentUserId": 123,
+                "data": {
+                    "roomId": 99,
+                    "currentBoutNum": 9,
+                    "round": "FLOP",
+                    "currentUserSeatNum": 5,
+                    "sitUserList": [
+                        {"seatNum": 5, "userId": 123, "nickname": "Hero"},
+                        {"seatNum": 6, "userId": 456, "nickname": "Villain"},
+                    ],
+                },
+            }
+        )
+    )
+    state.apply_many(
+        mapper.canonical_events(
+            {
+                "event": "recorderHeroCards",
+                "_recorderCurrentUserId": 123,
+                "_recorderHeroCards": [410, 201],
+                "data": {},
+            }
+        )
+    )
+    decision = next(
+        iter(
+            mapper.canonical_events(
+                {
+                    "event": "userOptNotify",
+                    "_recorderCurrentUserId": 123,
+                    "data": {
+                        "userId": 123,
+                        "handCards": [-1, -1],
+                        "canActionList": ["FOLD", "CHECK", "RAISE"],
+                    },
+                }
+            )
+        )
+    )
+    state.apply(decision)
+
+    assert state.current is not None
+    assert state.current.players[5].hole_cards == ["Td", "Ah"]
+    assert state.current.pending_decision is not None
+    assert state.current.pending_decision.cards == ["Td", "Ah"]
 
 
 def test_restored_hand_skips_replayed_action_history():

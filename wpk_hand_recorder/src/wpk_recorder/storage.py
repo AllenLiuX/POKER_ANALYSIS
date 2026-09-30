@@ -24,7 +24,8 @@ from .protocol import ProtocolMapper
 from .quality import assess_hand
 
 
-OPPORTUNITY_SCHEMA_VERSION = "2"
+OPPORTUNITY_SCHEMA_VERSION = "6"
+STARTUP_REPAIR_VERSION = "1"
 
 
 class RecorderStore:
@@ -381,11 +382,7 @@ class RecorderStore:
         self.connection.commit()
         self._backfill_decisions()
         self._refresh_opportunities_if_needed()
-        self._repair_boards_from_raw_events()
-        self._repair_results_from_raw_events()
-        self._repair_action_sequences()
-        self._backfill_hand_squid_data()
-        self._audit_existing_hands()
+        self._run_startup_repairs_if_needed()
         has_showdown_observations = self.connection.execute(
             "SELECT 1 FROM showdown_observations LIMIT 1"
         ).fetchone()
@@ -428,13 +425,20 @@ class RecorderStore:
         rows = self.connection.execute(
             "SELECT hand_json FROM hands"
         ).fetchall()
-        for row in rows:
+        total = len(rows)
+        print(
+            f"Rebuilding opportunities to schema {OPPORTUNITY_SCHEMA_VERSION} "
+            f"for {total} hands"
+        )
+        for index, row in enumerate(rows, start=1):
             try:
                 hand = _hand_from_dict(json.loads(row[0]))
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if hand.actions:
                 self.save_hand(hand, final=False)
+            if index == total or index % 250 == 0:
+                print(f"  opportunity backfill {index}/{total}")
         with self.connection:
             self.connection.execute(
                 """
@@ -443,6 +447,33 @@ class RecorderStore:
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value
                 """,
                 (OPPORTUNITY_SCHEMA_VERSION,),
+            )
+
+    def _run_startup_repairs_if_needed(self) -> None:
+        row = self.connection.execute(
+            """
+            SELECT value FROM recorder_metadata
+            WHERE key = 'startup_repair_version'
+            """
+        ).fetchone()
+        if row and str(row[0]) == STARTUP_REPAIR_VERSION:
+            return
+        print(
+            f"Running one-shot startup repairs ({STARTUP_REPAIR_VERSION})"
+        )
+        self._repair_boards_from_raw_events()
+        self._repair_results_from_raw_events()
+        self._repair_action_sequences()
+        self._backfill_hand_squid_data()
+        self._audit_existing_hands()
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO recorder_metadata(key, value)
+                VALUES ('startup_repair_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (STARTUP_REPAIR_VERSION,),
             )
 
     def _repair_boards_from_raw_events(self) -> None:

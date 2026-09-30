@@ -162,6 +162,14 @@ export interface StatCell {
 export const BASE = {
   foldVsOpen: 0.5, callVsOpen: 0.32, threebet: 0.1,
   pfOpen: 0.4, afPost: 0.45, cbet: 0.55, foldVsCbet: 0.45, wtsd: 0.28, wonSd: 0.5,
+  bigPotCalldown: 0.52, riverStation: 0.48, missedInitiative: 0.38,
+  ipRiverCheckback: 0.42, callThenLead: 0.22, overfoldSmallBet: 0.38, foldToBarrel: 0.45,
+  slowplayTwoPairPlus: 0.35, checkedStrongPair: 0.45, delayedValue: 0.55,
+  checkRaiseNuts: 0.25, hitThenLead: 0.55, shownLeadWasHit: 0.62,
+  missThenGiveUp: 0.58, shownAirAggression: 0.22, riverAirBluff: 0.18,
+  betAversion: 0.48, callVsRaise: 0.42, overcallOverbet: 0.38,
+  drawCompleteDonk: 0.55, bluffSizeSplit: 0.45, lowWsdLargePot: 0.52,
+  thinValueMedium: 0.45, weakPaysBig: 0.38, mediumCallsBig: 0.50, riverWeakCall: 0.42,
 };
 const PRIOR_M = 6; // 先验强度（相当于 6 手观测）
 
@@ -186,6 +194,32 @@ export interface CloudProfile {
   foldVsCbet: StatCell;
   wtsd: StatCell;
   wonSd: StatCell;
+  bigPotCalldown: StatCell;
+  riverStation: StatCell;
+  missedInitiative: StatCell;
+  ipRiverCheckback: StatCell;
+  callThenLead: StatCell;
+  overfoldSmallBet: StatCell;
+  foldToBarrel: StatCell;
+  slowplayTwoPairPlus: StatCell;
+  checkedStrongPair: StatCell;
+  delayedValue: StatCell;
+  checkRaiseNuts: StatCell;
+  hitThenLead: StatCell;
+  shownLeadWasHit: StatCell;
+  missThenGiveUp: StatCell;
+  shownAirAggression: StatCell;
+  riverAirBluff: StatCell;
+  betAversion: StatCell;
+  callVsRaise: StatCell;
+  overcallOverbet: StatCell;
+  drawCompleteDonk: StatCell;
+  bluffSizeSplit: StatCell;
+  lowWsdLargePot: StatCell;
+  thinValueMedium: StatCell;
+  weakPaysBig: StatCell;
+  mediumCallsBig: StatCell;
+  riverWeakCall: StatCell;
   leaks: Record<string, number>;
   gradedPre: { n: number; mistakes: number };
   gradedPost: { n: number; mistakes: number };
@@ -228,6 +262,32 @@ export function deriveCloudProfile(row: OpponentAggregateRow): CloudProfile {
     foldVsCbet: cell(num(c.fold_vs_cbet_flop?.k), num(c.fold_vs_cbet_flop?.n), BASE.foldVsCbet),
     wtsd: cell(num(c.wtsd?.k), num(c.wtsd?.n), BASE.wtsd),
     wonSd: cell(num(c.won_sd?.k), num(c.won_sd?.n), BASE.wonSd),
+    bigPotCalldown: cell(num(c.big_pot_calldown?.k), num(c.big_pot_calldown?.n), BASE.bigPotCalldown),
+    riverStation: cell(num(c.river_station?.k), num(c.river_station?.n), BASE.riverStation),
+    missedInitiative: cell(num(c.missed_initiative?.k), num(c.missed_initiative?.n), BASE.missedInitiative),
+    ipRiverCheckback: cell(num(c.ip_river_checkback?.k), num(c.ip_river_checkback?.n), BASE.ipRiverCheckback),
+    callThenLead: cell(num(c.call_then_lead?.k), num(c.call_then_lead?.n), BASE.callThenLead),
+    overfoldSmallBet: cell(num(c.overfold_small_bet?.k), num(c.overfold_small_bet?.n), BASE.overfoldSmallBet),
+    foldToBarrel: cell(num(c.fold_to_barrel?.k), num(c.fold_to_barrel?.n), BASE.foldToBarrel),
+    slowplayTwoPairPlus: cell(num(c.slowplay_two_pair_plus?.k), num(c.slowplay_two_pair_plus?.n), BASE.slowplayTwoPairPlus),
+    checkedStrongPair: cell(num(c.checked_strong_pair?.k), num(c.checked_strong_pair?.n), BASE.checkedStrongPair),
+    delayedValue: cell(num(c.delayed_value?.k), num(c.delayed_value?.n), BASE.delayedValue),
+    checkRaiseNuts: cell(num(c.check_raise_nuts?.k), num(c.check_raise_nuts?.n), BASE.checkRaiseNuts),
+    hitThenLead: cell(num(c.hit_then_lead?.k), num(c.hit_then_lead?.n), BASE.hitThenLead),
+    shownLeadWasHit: cell(num(c.shown_lead_was_hit?.k), num(c.shown_lead_was_hit?.n), BASE.shownLeadWasHit),
+    missThenGiveUp: cell(num(c.miss_then_give_up?.k), num(c.miss_then_give_up?.n), BASE.missThenGiveUp),
+    shownAirAggression: cell(num(c.shown_air_aggression?.k), num(c.shown_air_aggression?.n), BASE.shownAirAggression),
+    riverAirBluff: cell(num(c.river_air_bluff?.k), num(c.river_air_bluff?.n), BASE.riverAirBluff),
+    betAversion: cell(num(c.bet_aversion?.k), num(c.bet_aversion?.n), BASE.betAversion),
+    callVsRaise: cell(num(c.call_vs_raise?.k), num(c.call_vs_raise?.n), BASE.callVsRaise),
+    overcallOverbet: cell(num(c.overcall_overbet?.k), num(c.overcall_overbet?.n), BASE.overcallOverbet),
+    drawCompleteDonk: cell(num(c.draw_complete_donk?.k), num(c.draw_complete_donk?.n), BASE.drawCompleteDonk),
+    bluffSizeSplit: cell(num(c.bluff_size_split?.k), num(c.bluff_size_split?.n), BASE.bluffSizeSplit),
+    lowWsdLargePot: cell(num(c.low_wsd_large_pot?.k), num(c.low_wsd_large_pot?.n), BASE.lowWsdLargePot),
+    thinValueMedium: cell(num(c.thin_value_medium?.k), num(c.thin_value_medium?.n), BASE.thinValueMedium),
+    weakPaysBig: cell(num(c.weak_pays_big?.k), num(c.weak_pays_big?.n), BASE.weakPaysBig),
+    mediumCallsBig: cell(num(c.medium_calls_big?.k), num(c.medium_calls_big?.n), BASE.mediumCallsBig),
+    riverWeakCall: cell(num(c.river_weak_call?.k), num(c.river_weak_call?.n), BASE.riverWeakCall),
     leaks,
     gradedPre: { n: num(c.graded_pre?.n), mistakes: num(c.graded_pre?.mistakes) },
     gradedPost: { n: num(c.graded_post?.n), mistakes: num(c.graded_post?.mistakes) },
@@ -340,6 +400,120 @@ const DEV_RULES: DevRule[] = [
   {
     key: "wonSd", get: (p) => p.wonSd, base: BASE.wonSd, gate: 4,
     low: { t: 0.42, label: "摊牌胜率偏低(跟太宽)", cat: "loose", hint: "他到摊牌常输——加大价值下注的频率与厚度。" },
+  },
+  {
+    key: "bigPotCalldown", get: (p) => p.bigPotCalldown, base: BASE.bigPotCalldown, gate: 5,
+    high: { t: 0.62, label: "大底池跟住", cat: "loose", hint: "大池少打无阻断诈唬，薄价值加频加厚。" },
+    low: { t: 0.38, label: "大底池易弃", cat: "tight", hint: "大池可增加合理阻断牌诈唬。" },
+  },
+  {
+    key: "riverStation", get: (p) => p.riverStation, base: BASE.riverStation, gate: 4,
+    high: { t: 0.58, label: "河牌大注黏", cat: "loose", hint: "河牌几乎只打价值，尺寸可以极化。" },
+  },
+  {
+    key: "missedInitiative", get: (p) => p.missedInitiative, base: BASE.missedInitiative, gate: 6,
+    high: { t: 0.50, label: "有主动权不敢开火", cat: "tight", hint: "他过牌后放心 probe/stab，其下注更像价值。" },
+    low: { t: 0.24, label: "有主动权爱开火", cat: "aggro", hint: "持续下注偏宽——多抓诈、少自动弃牌。" },
+  },
+  {
+    key: "ipRiverCheckback", get: (p) => p.ipRiverCheckback, base: BASE.ipRiverCheckback, gate: 5,
+    high: { t: 0.55, label: "IP 河牌过牌", cat: "tight", hint: "IP 过牌范围偏封顶，可薄价值或弃边缘抓诈。" },
+  },
+  {
+    key: "callThenLead", get: (p) => p.callThenLead, base: BASE.callThenLead, gate: 5,
+    high: { t: 0.32, label: "买牌领打", cat: "aggro", hint: "跟注后常抢主动权，其过牌更弱；这条只统计频率，不含牌力。" },
+  },
+  {
+    key: "overfoldSmallBet", get: (p) => p.overfoldSmallBet, base: BASE.overfoldSmallBet, gate: 6,
+    high: { t: 0.50, label: "面对小注过弃", cat: "tight", hint: "提高小注诈唬频率，大注改为价值。" },
+  },
+  {
+    key: "foldToBarrel", get: (p) => p.foldToBarrel, base: BASE.foldToBarrel, gate: 5,
+    high: { t: 0.56, label: "面对二枪易弃", cat: "tight", hint: "可多打合理二枪；他跟住则转价值。" },
+  },
+  {
+    key: "slowplayTwoPairPlus", get: (p) => p.slowplayTwoPairPlus, base: BASE.slowplayTwoPairPlus, gate: 4,
+    high: { t: 0.48, label: "大牌蹲坑", cat: "tight", hint: "摊牌样本：过牌/跟注含坚果，少空枪过牌加注。" },
+  },
+  {
+    key: "checkedStrongPair", get: (p) => p.checkedStrongPair, base: BASE.checkedStrongPair, gate: 4,
+    high: { t: 0.58, label: "一对不敢打", cat: "tight", hint: "摊牌样本：过牌一对偏多，可薄价值；其主动下注更像两对+。" },
+  },
+  {
+    key: "delayedValue", get: (p) => p.delayedValue, base: BASE.delayedValue, gate: 4,
+    high: { t: 0.68, label: "翻牌过牌后延迟价值", cat: "aggro", hint: "摊牌样本：转河开火更像价值，少当空气抓。" },
+  },
+  {
+    key: "checkRaiseNuts", get: (p) => p.checkRaiseNuts, base: BASE.checkRaiseNuts, gate: 3,
+    high: { t: 0.40, label: "过牌加注拿坚果", cat: "aggro", hint: "摊牌样本：面对 CR 少跟空气，除非有阻断/坚果。" },
+  },
+  {
+    key: "hitThenLead", get: (p) => p.hitThenLead, base: BASE.hitThenLead, gate: 4,
+    high: { t: 0.68, label: "命中后领打", cat: "aggro", hint: "摊牌样本：成牌后爱领打，过牌更像没中；领打是否价值看「领打亮牌是命中」。" },
+  },
+  {
+    key: "shownLeadWasHit", get: (p) => p.shownLeadWasHit, base: BASE.shownLeadWasHit, gate: 4,
+    high: { t: 0.74, label: "领打亮牌是命中", cat: "aggro", hint: "摊牌样本：亮牌领打里成牌偏多，少空枪反打、按价值防守。" },
+    low: { t: 0.45, label: "领打偏空气", cat: "aggro", hint: "摊牌样本：可加注惩罚领打，尤其在砖块公牌。" },
+  },
+  {
+    key: "missThenGiveUp", get: (p) => p.missThenGiveUp, base: BASE.missThenGiveUp, gate: 4,
+    high: { t: 0.70, label: "听牌没中就放弃", cat: "tight", hint: "摊牌样本：他过牌/弃牌后别再给免费牌，可薄打。" },
+  },
+  {
+    key: "shownAirAggression", get: (p) => p.shownAirAggression, base: BASE.shownAirAggression, gate: 5,
+    high: { t: 0.32, label: "亮牌进攻偏空气", cat: "aggro", hint: "摊牌样本：多抓诈、轻跟。" },
+    low: { t: 0.12, label: "进攻很少空气", cat: "tight", hint: "摊牌样本：其下注当价值，少抓空气。" },
+  },
+  {
+    key: "riverAirBluff", get: (p) => p.riverAirBluff, base: BASE.riverAirBluff, gate: 4,
+    high: { t: 0.28, label: "河牌空气诈唬", cat: "aggro", hint: "摊牌样本：河牌可多抓。" },
+    low: { t: 0.08, label: "河牌几乎不打空气", cat: "tight", hint: "摊牌样本：河牌只跟坚果/阻断。" },
+  },
+  {
+    key: "betAversion", get: (p) => p.betAversion, base: BASE.betAversion, gate: 8,
+    high: { t: 0.58, label: "有开火机会却过牌", cat: "tight", hint: "过牌就偷，其主动下注更像价值。" },
+  },
+  {
+    key: "callVsRaise", get: (p) => p.callVsRaise, base: BASE.callVsRaise, gate: 6,
+    high: { t: 0.52, label: "面对加注爱跟", cat: "loose", hint: "加注多为价值，减少轻率再加。" },
+  },
+  {
+    key: "overcallOverbet", get: (p) => p.overcallOverbet, base: BASE.overcallOverbet, gate: 4,
+    high: { t: 0.50, label: "面对超池爱跟", cat: "loose", hint: "超池多为价值，少空枪超池。" },
+  },
+  {
+    key: "drawCompleteDonk", get: (p) => p.drawCompleteDonk, base: BASE.drawCompleteDonk, gate: 3,
+    high: { t: 0.68, label: "听牌完成就领打", cat: "aggro", hint: "摊牌样本：donk 当价值，反打要更紧。" },
+  },
+  {
+    key: "bluffSizeSplit", get: (p) => p.bluffSizeSplit, base: BASE.bluffSizeSplit, gate: 6,
+    high: { t: 0.58, label: "空气爱打小注", cat: "aggro", hint: "摊牌样本：小注多抓，大注当价值。" },
+    low: { t: 0.30, label: "空气爱打大注", cat: "aggro", hint: "摊牌样本：大注更像空气，小注更像薄价值。" },
+  },
+  {
+    key: "lowWsdLargePot", get: (p) => p.lowWsdLargePot, base: BASE.lowWsdLargePot, gate: 4,
+    high: { t: 0.62, label: "大池摊牌常输", cat: "loose", hint: "摊牌样本：跟太宽，继续加压价值。" },
+  },
+  {
+    key: "thinValueMedium", get: (p) => p.thinValueMedium, base: BASE.thinValueMedium, gate: 4,
+    high: { t: 0.55, label: "中等牌力爱薄打", cat: "aggro", hint: "摊牌样本：一对转河常开火，过牌更弱可多偷。" },
+    low: { t: 0.32, label: "中等牌力不打薄价值", cat: "tight", hint: "摊牌样本：过牌含顶对，可薄打；其下注更像两对+。" },
+  },
+  {
+    key: "weakPaysBig", get: (p) => p.weakPaysBig, base: BASE.weakPaysBig, gate: 4,
+    high: { t: 0.50, label: "弱牌大池爱付钱", cat: "loose", hint: "摊牌样本：垃圾/底对也跟大池，少诈唬、价值加厚。" },
+    low: { t: 0.22, label: "弱牌大池会弃", cat: "tight", hint: "摊牌样本：大池弱牌会放，可打合理阻断诈唬。" },
+  },
+  {
+    key: "mediumCallsBig", get: (p) => p.mediumCallsBig, base: BASE.mediumCallsBig, gate: 4,
+    high: { t: 0.62, label: "一对大池爱跟", cat: "loose", hint: "摊牌样本：顶对/中间对在大池黏，继续加压价值。" },
+    low: { t: 0.35, label: "一对大池易弃", cat: "tight", hint: "摊牌样本：大池一对会放，可把一对压弃。" },
+  },
+  {
+    key: "riverWeakCall", get: (p) => p.riverWeakCall, base: BASE.riverWeakCall, gate: 4,
+    high: { t: 0.55, label: "河牌弱牌爱跟", cat: "loose", hint: "摊牌样本：河牌空气/底对也跟，价值加厚。" },
+    low: { t: 0.28, label: "河牌弱牌易弃", cat: "tight", hint: "摊牌样本：河牌弱牌会放，可合理诈唬。" },
   },
 ];
 
@@ -480,7 +654,7 @@ export interface FreqRow {
 }
 
 export function freqRows(p: CloudProfile): FreqRow[] {
-  return [
+  const core: FreqRow[] = [
     { label: "首入池开池 (open)", cell: p.pfOpen, base: BASE.pfOpen, hint: "越高越松" },
     { label: "面对开池 · 弃牌", cell: p.vsOpen.fold, base: BASE.foldVsOpen, hint: "越高越可偷" },
     { label: "面对开池 · 跟注", cell: p.vsOpen.call, base: BASE.callVsOpen, hint: "越高越黏" },
@@ -490,6 +664,31 @@ export function freqRows(p: CloudProfile): FreqRow[] {
     { label: "翻后激进度 (AF)", cell: p.afPost, base: BASE.afPost },
     { label: "看到摊牌 (WTSD)", cell: p.wtsd, base: BASE.wtsd, hint: "越高越少弃牌" },
   ];
+  const extra: FreqRow[] = [
+    { label: "大底池跟住", cell: p.bigPotCalldown, base: BASE.bigPotCalldown, hint: "越高越少诈唬" },
+    { label: "有主动权过牌", cell: p.missedInitiative, base: BASE.missedInitiative, hint: "越高越可偷" },
+    { label: "买牌领打", cell: p.callThenLead, base: BASE.callThenLead, hint: "越高越爱在跟注后抢主动" },
+    { label: "面对小注弃牌", cell: p.overfoldSmallBet, base: BASE.overfoldSmallBet, hint: "越高越可小注偷" },
+    { label: "河牌大注跟住", cell: p.riverStation, base: BASE.riverStation, hint: "越高越少河牌诈唬" },
+    { label: "IP 河牌过牌", cell: p.ipRiverCheckback, base: BASE.ipRiverCheckback, hint: "越高越可薄打" },
+    { label: "面对二枪弃牌", cell: p.foldToBarrel, base: BASE.foldToBarrel, hint: "越高越可二枪" },
+    { label: "大牌蹲坑（摊牌）", cell: p.slowplayTwoPairPlus, base: BASE.slowplayTwoPairPlus, hint: "越高越少空枪过牌加注" },
+    { label: "一对不敢打（摊牌）", cell: p.checkedStrongPair, base: BASE.checkedStrongPair, hint: "越高越可薄打过牌" },
+    { label: "命中后领打（摊牌）", cell: p.hitThenLead, base: BASE.hitThenLead, hint: "越高表示成牌后越爱领打" },
+    { label: "亮牌进攻偏空气", cell: p.shownAirAggression, base: BASE.shownAirAggression, hint: "越高越可抓诈" },
+    { label: "河牌空气诈唬", cell: p.riverAirBluff, base: BASE.riverAirBluff, hint: "越高越可河牌抓诈" },
+    { label: "有开火机会却过牌", cell: p.betAversion, base: BASE.betAversion, hint: "越高越可偷过牌" },
+    { label: "面对加注跟注", cell: p.callVsRaise, base: BASE.callVsRaise, hint: "越高越少轻率再加" },
+    { label: "面对超池跟注", cell: p.overcallOverbet, base: BASE.overcallOverbet, hint: "越高越少空枪超池" },
+    { label: "听牌完成领打（摊牌）", cell: p.drawCompleteDonk, base: BASE.drawCompleteDonk, hint: "越高越把 donk 当价值" },
+    { label: "空气小注（摊牌）", cell: p.bluffSizeSplit, base: BASE.bluffSizeSplit, hint: "越高越抓小注、信大注" },
+    { label: "大池摊牌常输", cell: p.lowWsdLargePot, base: BASE.lowWsdLargePot, hint: "越高越继续加压价值" },
+    { label: "中等牌力薄打（摊牌）", cell: p.thinValueMedium, base: BASE.thinValueMedium, hint: "越高表示一对爱拿薄价值" },
+    { label: "弱牌大池付钱（摊牌）", cell: p.weakPaysBig, base: BASE.weakPaysBig, hint: "越高越少诈唬、价值加厚" },
+    { label: "一对大池跟注（摊牌）", cell: p.mediumCallsBig, base: BASE.mediumCallsBig, hint: "越高越继续加压价值" },
+    { label: "河牌弱牌跟注（摊牌）", cell: p.riverWeakCall, base: BASE.riverWeakCall, hint: "越高越河牌价值加厚" },
+  ];
+  return [...core, ...extra.filter((row) => row.cell.n > 0)];
 }
 
 // ---------- 智能标签（根据聚合信息自动推断）----------
@@ -684,7 +883,16 @@ export async function ensureContributions(
       e.item?.ok &&
       e.item.recognized !== false &&
       e.item.reconstruction &&
-      !e.item.contributions?.players,
+      (
+        !e.item.contributions?.players
+        || e.item.contributions.players.some(
+          (player) =>
+            player.counters
+            && player.counters.call_then_lead == null
+            && player.counters.missed_initiative == null
+            && player.counters.shown_air_aggression == null,
+        )
+      ),
   );
   await mapLimit(need, 5, async (e) => {
     try {
